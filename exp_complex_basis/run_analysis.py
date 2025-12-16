@@ -121,9 +121,9 @@ def generate_portal_environments_data(
         )
 
         # Get portal config (source_state, action, dest_state in canonical space)
+        # portal_env.portals is a dict: {(state, action): dest_state}
         portals = []
-        for portal in portal_env.portals:
-            source_state, action, dest_state = portal
+        for (source_state, action), dest_state in portal_env.portals.items():
             # Convert to canonical indices
             source_canonical = jnp.where(canonical_states == source_state, size=1, fill_value=-1)[0][0]
             dest_canonical = jnp.where(canonical_states == dest_state, size=1, fill_value=-1)[0][0]
