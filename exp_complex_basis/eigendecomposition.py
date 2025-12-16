@@ -172,3 +172,55 @@ def analyze_eigenvalue_spectrum(eigendecomposition: Dict[str, jnp.ndarray]) -> D
         "mean_imaginary_component": float(mean_imag),
         "eigenvalue_magnitudes": magnitudes,
     }
+
+
+def compute_eigendecomposition_batched(
+    batched_transition_counts: jnp.ndarray,
+    k: Optional[int] = None,
+    smoothing: float = 1e-5,
+    normalize: bool = True,
+    sort_by_magnitude: bool = True
+) -> Dict[str, jnp.ndarray]:
+    """
+    Compute eigendecomposition for multiple environments in parallel using vmap.
+
+    Args:
+        batched_transition_counts: Shape [num_envs, num_states, num_actions, num_states]
+                                   or [num_envs, num_states, num_states]
+        k: Number of top eigenvalues/vectors to keep (None = keep all)
+        smoothing: Numerical stability parameter
+        normalize: Whether to row-normalize
+        sort_by_magnitude: Sort eigenvalues by magnitude
+
+    Returns:
+        Dictionary containing batched results:
+            - eigenvalues: Shape [num_envs, k] (complex)
+            - eigenvectors: Shape [num_envs, num_states, k] (complex)
+            - eigenvalues_real: [num_envs, k]
+            - eigenvalues_imag: [num_envs, k]
+            - eigenvectors_real: [num_envs, num_states, k]
+            - eigenvectors_imag: [num_envs, num_states, k]
+    """
+    def process_one_env(env_transition_counts):
+        """Process single environment."""
+        # Build transition matrix
+        transition_matrix = get_nonsymmetrized_transition_matrix(
+            env_transition_counts,
+            smoothing=smoothing,
+            normalize=normalize
+        )
+
+        # Compute eigendecomposition
+        eigendecomp = compute_eigendecomposition(
+            transition_matrix,
+            k=k,
+            sort_by_magnitude=sort_by_magnitude
+        )
+
+        return eigendecomp
+
+    # Vmap over all environments
+    # We need to handle the dictionary outputs
+    batched_eigendecomp = jax.vmap(process_one_env)(batched_transition_counts)
+
+    return batched_eigendecomp

@@ -352,3 +352,156 @@ def analyze_distance_relationships(
         }
 
     return results
+
+
+def analyze_distance_relationships_batched(
+    batched_eigendecomposition: Dict[str, jnp.ndarray],
+    states: jnp.ndarray,
+    grid_width: int,
+    batched_transition_matrices: Optional[jnp.ndarray] = None,
+    k_values: Optional[List[int]] = None,
+    eigenspace_metric: str = "euclidean"
+) -> Dict[str, any]:
+    """
+    Analyze distance relationships for multiple environments in parallel.
+
+    Args:
+        batched_eigendecomposition: Batched eigendecomposition results
+            - eigenvalues: [num_envs, k]
+            - eigenvectors_real: [num_envs, num_states, k]
+            - etc.
+        states: Array of state indices (same for all environments)
+        grid_width: Width of the grid
+        batched_transition_matrices: Optional [num_envs, num_states, num_states]
+        k_values: List of k values to analyze
+        eigenspace_metric: Distance metric
+
+    Returns:
+        Dictionary with per-environment and aggregated results
+    """
+    num_envs = batched_eigendecomposition["eigenvalues"].shape[0]
+
+    # Compute environment distances (same for all envs)
+    env_distances = compute_environment_distances(
+        states,
+        grid_width,
+        transition_matrix=None,  # Don't compute shortest path in batch
+        include_shortest_path=False
+    )
+
+    # Process each environment
+    per_env_results = []
+    for env_idx in range(num_envs):
+        # Extract single environment eigendecomposition
+        single_eigendecomp = {
+            key: value[env_idx] for key, value in batched_eigendecomposition.items()
+        }
+
+        # Get transition matrix for this env if available
+        trans_mat = batched_transition_matrices[env_idx] if batched_transition_matrices is not None else None
+
+        # Analyze this environment
+        result = analyze_distance_relationships(
+            eigendecomposition=single_eigendecomp,
+            states=states,
+            grid_width=grid_width,
+            transition_matrix=trans_mat,
+            k_values=k_values,
+            eigenspace_metric=eigenspace_metric
+        )
+        per_env_results.append(result)
+
+    # Aggregate results across environments
+    aggregated_results = aggregate_multi_environment_results(per_env_results, k_values)
+
+    return {
+        "num_envs": num_envs,
+        "per_env_results": per_env_results,
+        "aggregated_results": aggregated_results,
+        "environment_distances": env_distances,
+    }
+
+
+def aggregate_multi_environment_results(
+    per_env_results: List[Dict],
+    k_values: Optional[List[int]] = None
+) -> Dict[str, any]:
+    """
+    Aggregate analysis results across multiple environments.
+
+    Args:
+        per_env_results: List of analysis results, one per environment
+        k_values: List of k values that were analyzed
+
+    Returns:
+        Dictionary with aggregated statistics (mean, std, min, max)
+    """
+    if k_values is None:
+        k_values = [5, 10, 20, None]
+
+    num_envs = len(per_env_results)
+    aggregated = {}
+
+    for k in k_values:
+        k_label = f"k={k}" if k is not None else "k=all"
+        aggregated[k_label] = {}
+
+        # Extract comparison metrics for this k across all environments
+        for env_result in per_env_results:
+            comparisons = env_result["eigenspace_comparisons"][k_label]["comparisons"]
+
+            for env_type in comparisons.keys():
+                if env_type not in aggregated[k_label]:
+                    aggregated[k_label][env_type] = {
+                        "real": {"correlations": [], "spearman": [], "mse": [], "mae": []},
+                        "imag": {"correlations": [], "spearman": [], "mse": [], "mae": []},
+                        "combined": {"correlations": [], "spearman": [], "mse": [], "mae": []},
+                    }
+
+                for component in ["real", "imag", "combined"]:
+                    metrics = comparisons[env_type][component]
+                    aggregated[k_label][env_type][component]["correlations"].append(metrics["correlation"])
+                    aggregated[k_label][env_type][component]["spearman"].append(metrics["spearman_correlation"])
+                    aggregated[k_label][env_type][component]["mse"].append(metrics["mean_squared_error"])
+                    aggregated[k_label][env_type][component]["mae"].append(metrics["mean_absolute_error"])
+
+        # Compute statistics
+        for env_type in aggregated[k_label].keys():
+            for component in ["real", "imag", "combined"]:
+                corrs = np.array(aggregated[k_label][env_type][component]["correlations"])
+                spear = np.array(aggregated[k_label][env_type][component]["spearman"])
+                mse = np.array(aggregated[k_label][env_type][component]["mse"])
+                mae = np.array(aggregated[k_label][env_type][component]["mae"])
+
+                aggregated[k_label][env_type][component] = {
+                    "correlation": {
+                        "mean": float(np.mean(corrs)),
+                        "std": float(np.std(corrs)),
+                        "min": float(np.min(corrs)),
+                        "max": float(np.max(corrs)),
+                        "median": float(np.median(corrs)),
+                    },
+                    "spearman_correlation": {
+                        "mean": float(np.mean(spear)),
+                        "std": float(np.std(spear)),
+                        "min": float(np.min(spear)),
+                        "max": float(np.max(spear)),
+                        "median": float(np.median(spear)),
+                    },
+                    "mean_squared_error": {
+                        "mean": float(np.mean(mse)),
+                        "std": float(np.std(mse)),
+                        "min": float(np.min(mse)),
+                        "max": float(np.max(mse)),
+                        "median": float(np.median(mse)),
+                    },
+                    "mean_absolute_error": {
+                        "mean": float(np.mean(mae)),
+                        "std": float(np.std(mae)),
+                        "min": float(np.min(mae)),
+                        "max": float(np.max(mae)),
+                        "median": float(np.median(mae)),
+                    },
+                }
+
+    return aggregated
