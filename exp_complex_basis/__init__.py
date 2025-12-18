@@ -4,8 +4,8 @@ Experiment package for complex eigendecomposition analysis of non-symmetrized dy
 This package provides tools to:
 1. Compute eigendecomposition of non-symmetrized transition matrices
 2. Analyze distances between states in eigenspace (real and imaginary components)
-3. Compare eigenspace distances with actual environment distances
-4. Handle multiple environments with batched processing and aggregation
+3. Visualize eigenspace distances and compare with environment distances
+4. Handle multiple environments with batched processing
 """
 
 from .eigendecomposition import (
@@ -18,10 +18,13 @@ from .eigendecomposition import (
 from .distance_analysis import (
     compute_eigenspace_distances,
     compute_environment_distances,
-    compare_distances,
-    analyze_distance_relationships,
-    analyze_distance_relationships_batched,
-    aggregate_multi_environment_results,
+)
+
+from .distance_visualization import (
+    visualize_distance_comparison_for_state,
+    visualize_distance_heatmaps,
+    visualize_multiple_example_states,
+    create_distance_visualization_report,
 )
 
 __all__ = [
@@ -31,8 +34,8 @@ __all__ = [
     "analyze_eigenvalue_spectrum",
     "compute_eigenspace_distances",
     "compute_environment_distances",
-    "compare_distances",
-    "analyze_distance_relationships",
-    "analyze_distance_relationships_batched",
-    "aggregate_multi_environment_results",
+    "visualize_distance_comparison_for_state",
+    "visualize_distance_heatmaps",
+    "visualize_multiple_example_states",
+    "create_distance_visualization_report",
 ]

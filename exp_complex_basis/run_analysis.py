@@ -28,7 +28,11 @@ from exp_complex_basis.eigendecomposition import (
     get_nonsymmetrized_transition_matrix,
 )
 from exp_complex_basis.distance_analysis import (
-    analyze_distance_relationships_batched,
+    compute_eigenspace_distances,
+    compute_environment_distances,
+)
+from exp_complex_basis.distance_visualization import (
+    create_distance_visualization_report,
 )
 from src.data_collection import collect_transition_counts_batched_portals
 from src.envs.env import create_environment_from_text
@@ -262,53 +266,45 @@ def run_eigendecomposition_analysis(
     for i in range(min(5, k)):
         print(f"    λ_{i}: {avg_mags[i]:.6f}")
 
-    # Step 3: Build batched transition matrices for distance analysis
-    print("\n[3/4] Building non-symmetrized transition matrices...")
-    batched_transition_matrices = jax.vmap(
-        lambda counts: get_nonsymmetrized_transition_matrix(counts, smoothing=1e-5, normalize=True)
-    )(batched_transition_counts)
-    print(f"  Transition matrices shape: {batched_transition_matrices.shape}")
+    # Step 3: Compute and visualize distances for first environment as example
+    print("\n[3/3] Computing and visualizing distances (using first environment as example)...")
 
-    # Step 4: Analyze distances (batched with aggregation)
-    print("\n[4/4] Analyzing distances...")
-    if k_values_to_analyze is None:
-        k_values_to_analyze = [5, 10, 20, None]
+    # Use first environment for visualization
+    first_env_eigendecomp = {
+        key: value[0] for key, value in batched_eigendecomp.items()
+    }
 
-    distance_analysis = analyze_distance_relationships_batched(
-        batched_eigendecomposition=batched_eigendecomp,
-        states=canonical_states,
-        grid_width=grid_width,
-        batched_transition_matrices=batched_transition_matrices,
-        k_values=k_values_to_analyze,
-        eigenspace_metric="euclidean"
+    # Compute eigenspace distances
+    print("  Computing eigenspace distances...")
+    eigenspace_distances = compute_eigenspace_distances(
+        first_env_eigendecomp,
+        metric="euclidean",
+        use_real=True,
+        use_imag=True,
+        k=k
     )
 
-    # Print aggregated results
-    print("\n" + "=" * 80)
-    print("AGGREGATED RESULTS ACROSS ENVIRONMENTS")
-    print("=" * 80)
+    # Compute environment distances
+    print("  Computing environment distances...")
+    environment_distances = compute_environment_distances(
+        canonical_states,
+        grid_width,
+        transition_matrix=None,
+        include_shortest_path=False
+    )
 
-    aggregated = distance_analysis["aggregated_results"]
-
-    for k_label in aggregated.keys():
-        print(f"\n{k_label}:")
-        for env_type in aggregated[k_label].keys():
-            print(f"  {env_type.upper()} distances:")
-            for component in ["real", "imag", "combined"]:
-                corr_stats = aggregated[k_label][env_type][component]["correlation"]
-                print(f"    {component:10s}: Pearson r = {corr_stats['mean']:+.4f} ± {corr_stats['std']:.4f} " +
-                      f"(min={corr_stats['min']:+.4f}, max={corr_stats['max']:+.4f})")
+    print(f"  Eigenspace distances shape: {eigenspace_distances['distances_combined'].shape}")
+    print(f"  Environment distances computed: {list(environment_distances.keys())}")
 
     # Compile all results
     results = {
         "batched_eigendecomposition": batched_eigendecomp,
-        "batched_transition_matrices": batched_transition_matrices,
-        "distance_analysis": distance_analysis,
+        "eigenspace_distances": eigenspace_distances,
+        "environment_distances": environment_distances,
         "metadata": metadata,
         "parameters": {
             "k": k,
             "num_envs": num_envs,
-            "k_values_analyzed": k_values_to_analyze,
         }
     }
 
@@ -333,18 +329,22 @@ def run_eigendecomposition_analysis(
             f.write(f"Number of eigenvalues computed: {k}\n")
             f.write(f"Real eigenvalues per env (mean): {jnp.mean(num_real_per_env):.1f}\n")
             f.write(f"Complex eigenvalues per env (mean): {k - jnp.mean(num_real_per_env):.1f}\n\n")
-
-            f.write("Aggregated Distance Correlations:\n")
-            f.write("-" * 80 + "\n")
-            for k_label in aggregated.keys():
-                f.write(f"\n{k_label}:\n")
-                for env_type in aggregated[k_label].keys():
-                    f.write(f"  {env_type}:\n")
-                    for component in ["real", "imag", "combined"]:
-                        corr_stats = aggregated[k_label][env_type][component]["correlation"]
-                        f.write(f"    {component}: r={corr_stats['mean']:+.4f}±{corr_stats['std']:.4f}\n")
+            f.write("Distance matrices computed:\n")
+            f.write(f"  - Eigenspace (real, imaginary, combined)\n")
+            f.write(f"  - Environment (Euclidean, Manhattan)\n")
+            f.write(f"\nVisualizations saved to: {output_path}/visualizations/\n")
 
         print(f"Summary saved to {summary_file}")
+
+        # Generate visualizations
+        print("\nGenerating distance visualizations...")
+        create_distance_visualization_report(
+            eigenspace_distances=eigenspace_distances,
+            environment_distances=environment_distances,
+            grid_width=grid_width,
+            output_dir=str(output_path / "visualizations"),
+            num_example_states=5
+        )
 
     print("\n" + "=" * 80)
     print("ANALYSIS COMPLETE")
