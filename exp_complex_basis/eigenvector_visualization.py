@@ -24,6 +24,7 @@ def visualize_eigenvector_on_grid(
     ax: Optional[plt.Axes] = None,
     cmap: str = 'RdBu_r',
     show_colorbar: bool = True,
+    wall_color: str = 'gray',
 ) -> plt.Axes:
     """
     Visualize a single eigenvector's values overlaid on the grid.
@@ -39,6 +40,7 @@ def visualize_eigenvector_on_grid(
         ax: Optional axes to plot on
         cmap: Colormap to use
         show_colorbar: Whether to show the colorbar
+        wall_color: Color for wall/obstacle cells (default: 'gray')
 
     Returns:
         Matplotlib axes object
@@ -57,9 +59,16 @@ def visualize_eigenvector_on_grid(
         eigenvector_grid[y, x] = value
 
     # Plot eigenvector values with grid alignment
+    # Set up colormap to handle NaN values (walls) with the specified wall_color
+    from matplotlib.colors import LinearSegmentedColormap
+    import matplotlib.cm as cm
+
+    current_cmap = cm.get_cmap(cmap).copy()
+    current_cmap.set_bad(color=wall_color)
+
     im = ax.imshow(
         eigenvector_grid,
-        cmap=cmap,
+        cmap=current_cmap,
         origin='upper',
         interpolation='nearest',
         extent=[-0.5, grid_width - 0.5, grid_height - 0.5, -0.5]
@@ -234,7 +243,10 @@ def visualize_multiple_eigenvectors(
     portals: Optional[Dict[Tuple[int, int], int]] = None,
     eigenvector_type: str = 'right',
     component: str = 'real',
-    figsize: Tuple[int, int] = (20, 8),
+    nrows: Optional[int] = None,
+    ncols: Optional[int] = None,
+    figsize: Optional[Tuple[int, int]] = None,
+    wall_color: str = 'gray',
     save_path: Optional[str] = None
 ) -> plt.Figure:
     """
@@ -249,7 +261,10 @@ def visualize_multiple_eigenvectors(
         portals: Optional portal dictionary
         eigenvector_type: 'right' or 'left'
         component: 'real' or 'imag'
-        figsize: Figure size
+        nrows: Number of rows (if None, computed automatically)
+        ncols: Number of columns (if None, computed automatically)
+        figsize: Figure size (if None, computed based on nrows and ncols)
+        wall_color: Color for wall/obstacle cells (default: 'gray')
         save_path: Optional path to save the figure
 
     Returns:
@@ -257,9 +272,16 @@ def visualize_multiple_eigenvectors(
     """
     num_eigenvectors = len(eigenvector_indices)
 
-    # Create subplots
-    ncols = min(5, num_eigenvectors)
-    nrows = (num_eigenvectors + ncols - 1) // ncols
+    # Compute nrows and ncols if not provided
+    if ncols is None:
+        ncols = min(5, num_eigenvectors)
+    if nrows is None:
+        nrows = (num_eigenvectors + ncols - 1) // ncols
+
+    # Compute figsize if not provided
+    if figsize is None:
+        figsize = (ncols * 4, nrows * 4)
+
     fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
 
     # Flatten axes if needed
@@ -301,7 +323,8 @@ def visualize_multiple_eigenvectors(
             title=f'{eigenvector_type.capitalize()} Eigvec {eigenvec_idx} ({component})\nλ = {np.abs(eigenvalue):.3f}',
             ax=ax,
             cmap='RdBu_r',
-            show_colorbar=False
+            show_colorbar=False,
+            wall_color=wall_color
         )
 
     # Hide unused subplots
@@ -315,6 +338,118 @@ def visualize_multiple_eigenvectors(
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"Saved multiple eigenvectors visualization to {save_path}")
+
+    return fig
+
+
+def visualize_left_right_eigenvectors(
+    eigenvector_indices: List[int],
+    eigendecomposition: Dict[str, jnp.ndarray],
+    canonical_states: jnp.ndarray,
+    grid_width: int,
+    grid_height: int,
+    portals: Optional[Dict[Tuple[int, int], int]] = None,
+    component: str = 'real',
+    nrows: Optional[int] = None,
+    ncols: Optional[int] = None,
+    figsize: Optional[Tuple[int, int]] = None,
+    wall_color: str = 'gray',
+    save_path: Optional[str] = None
+) -> plt.Figure:
+    """
+    Visualize both left and right eigenvectors in the same figure.
+
+    Each row shows a specific eigenvector index, with left eigenvector
+    in the left column and right eigenvector in the right column.
+
+    Args:
+        eigenvector_indices: List of eigenvector indices to visualize
+        eigendecomposition: Dictionary containing eigendecomposition results
+        canonical_states: Mapping from canonical to full state indices
+        grid_width: Width of the grid
+        grid_height: Height of the grid
+        portals: Optional portal dictionary
+        component: 'real' or 'imag'
+        nrows: Number of rows (if None, set to len(eigenvector_indices))
+        ncols: Number of columns (if None, set to 2 for left/right)
+        figsize: Figure size (if None, computed based on nrows and ncols)
+        wall_color: Color for wall/obstacle cells (default: 'gray')
+        save_path: Optional path to save the figure
+
+    Returns:
+        Matplotlib figure object
+    """
+    num_eigenvectors = len(eigenvector_indices)
+
+    # Set default layout: each row is one eigenvector, 2 columns for left/right
+    if nrows is None:
+        nrows = num_eigenvectors
+    if ncols is None:
+        ncols = 2  # Left and Right
+
+    # Compute figsize if not provided
+    if figsize is None:
+        figsize = (ncols * 5, nrows * 4)
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False)
+
+    # Get eigenvector matrices
+    if component == 'real':
+        left_eigenvector_matrix = eigendecomposition['left_eigenvectors_real']
+        right_eigenvector_matrix = eigendecomposition['right_eigenvectors_real']
+    else:
+        left_eigenvector_matrix = eigendecomposition['left_eigenvectors_imag']
+        right_eigenvector_matrix = eigendecomposition['right_eigenvectors_imag']
+
+    # Plot each eigenvector
+    for row_idx, eigenvec_idx in enumerate(eigenvector_indices):
+        if row_idx >= nrows:
+            break
+
+        eigenvalue = eigendecomposition['eigenvalues'][eigenvec_idx]
+
+        # Plot left eigenvector
+        left_values = left_eigenvector_matrix[:, eigenvec_idx]
+        visualize_eigenvector_on_grid(
+            eigenvector_idx=eigenvec_idx,
+            eigenvector_values=np.array(left_values),
+            canonical_states=canonical_states,
+            grid_width=grid_width,
+            grid_height=grid_height,
+            portals=portals,
+            title=f'Left Eigvec {eigenvec_idx} ({component})\nλ = {np.abs(eigenvalue):.3f}',
+            ax=axes[row_idx, 0],
+            cmap='RdBu_r',
+            show_colorbar=False,
+            wall_color=wall_color
+        )
+
+        # Plot right eigenvector
+        right_values = right_eigenvector_matrix[:, eigenvec_idx]
+        visualize_eigenvector_on_grid(
+            eigenvector_idx=eigenvec_idx,
+            eigenvector_values=np.array(right_values),
+            canonical_states=canonical_states,
+            grid_width=grid_width,
+            grid_height=grid_height,
+            portals=portals,
+            title=f'Right Eigvec {eigenvec_idx} ({component})\nλ = {np.abs(eigenvalue):.3f}',
+            ax=axes[row_idx, 1],
+            cmap='RdBu_r',
+            show_colorbar=False,
+            wall_color=wall_color
+        )
+
+    # Hide unused subplots
+    for row_idx in range(num_eigenvectors, nrows):
+        for col_idx in range(ncols):
+            axes[row_idx, col_idx].axis('off')
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Saved left-right eigenvectors visualization to {save_path}")
 
     return fig
 
@@ -409,7 +544,35 @@ def create_eigenvector_visualization_report(
     )
     plt.close()
 
-    # 5. Detailed views for first few eigenvectors (both components)
+    # 5. Combined left-right visualizations (real component)
+    print(f"  Visualizing left and right eigenvectors side-by-side (real)...")
+    visualize_left_right_eigenvectors(
+        eigenvector_indices=list(range(num_to_visualize)),
+        eigendecomposition=eigendecomposition,
+        canonical_states=canonical_states,
+        grid_width=grid_width,
+        grid_height=grid_height,
+        portals=portals,
+        component='real',
+        save_path=output_path / "left_right_eigenvectors_real.png"
+    )
+    plt.close()
+
+    # 6. Combined left-right visualizations (imaginary component)
+    print(f"  Visualizing left and right eigenvectors side-by-side (imaginary)...")
+    visualize_left_right_eigenvectors(
+        eigenvector_indices=list(range(num_to_visualize)),
+        eigendecomposition=eigendecomposition,
+        canonical_states=canonical_states,
+        grid_width=grid_width,
+        grid_height=grid_height,
+        portals=portals,
+        component='imag',
+        save_path=output_path / "left_right_eigenvectors_imag.png"
+    )
+    plt.close()
+
+    # 7. Detailed views for first few eigenvectors (both components)
     print("  Creating detailed views for specific eigenvectors...")
     for i in range(min(3, num_to_visualize)):
         # Right eigenvector

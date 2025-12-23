@@ -19,6 +19,7 @@ from .eigenvector_visualization import (
     visualize_eigenvector_on_grid,
     visualize_eigenvector_components,
     visualize_multiple_eigenvectors,
+    visualize_left_right_eigenvectors,
     create_eigenvector_visualization_report,
 )
 
@@ -30,5 +31,6 @@ __all__ = [
     "visualize_eigenvector_on_grid",
     "visualize_eigenvector_components",
     "visualize_multiple_eigenvectors",
+    "visualize_left_right_eigenvectors",
     "create_eigenvector_visualization_report",
 ]
