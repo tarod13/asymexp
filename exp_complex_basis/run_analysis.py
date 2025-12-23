@@ -34,6 +34,9 @@ from exp_complex_basis.distance_analysis import (
 from exp_complex_basis.distance_visualization import (
     create_distance_visualization_report,
 )
+from exp_complex_basis.grid_visualization import (
+    create_grid_visualization_report,
+)
 from src.data_collection import collect_transition_counts_batched_portals
 from src.envs.env import create_environment_from_text
 from src.envs.portal_gridworld import create_random_portal_env
@@ -158,6 +161,11 @@ def generate_portal_environments_data(
     print(f"  Collected transition counts: {transition_counts.shape}")
     print(f"  Shape: [num_envs={num_envs}, num_states={num_canonical_states}, num_actions={num_actions}, num_states={num_canonical_states}]")
 
+    # Get obstacle information from base environment
+    obstacles = []
+    if base_env.has_obstacles:
+        obstacles = [(int(obs[0]), int(obs[1])) for obs in base_env.obstacles]
+
     metadata = {
         "num_envs": num_envs,
         "num_states": num_states,
@@ -168,6 +176,8 @@ def generate_portal_environments_data(
         "num_portals": num_portals,
         "grid_width": base_env.width,
         "grid_height": base_env.height,
+        "obstacles": obstacles,
+        "first_env_portals": portal_configs_list[0] if num_envs > 0 else [],
     }
 
     return transition_counts, metadata
@@ -336,13 +346,20 @@ def run_eigendecomposition_analysis(
 
         print(f"Summary saved to {summary_file}")
 
-        # Generate visualizations
-        print("\nGenerating distance visualizations...")
-        create_distance_visualization_report(
+        # Generate grid-based visualizations
+        print("\nGenerating grid-based distance visualizations...")
+        obstacles = metadata.get("obstacles", [])
+        grid_height = metadata.get("grid_height", grid_width)
+
+        create_grid_visualization_report(
             eigenspace_distances=eigenspace_distances,
             environment_distances=environment_distances,
             grid_width=grid_width,
-            output_dir=str(output_path / "visualizations"),
+            grid_height=grid_height,
+            obstacles=obstacles,
+            portals=None,  # Can add portal visualization later
+            canonical_states=canonical_states,
+            output_dir=str(output_path / "grid_visualizations"),
             num_example_states=5
         )
 
