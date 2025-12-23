@@ -351,14 +351,28 @@ def run_eigendecomposition_analysis(
         obstacles = metadata.get("obstacles", [])
         grid_height = metadata.get("grid_height", grid_width)
 
+        # Reconstruct portals from first environment (for visualization)
+        portals = None
+        if "first_env_portals" in metadata and len(metadata["first_env_portals"]) > 0:
+            portals = {}
+            for portal in metadata["first_env_portals"]:
+                if len(portal) == 3:
+                    # portal is [source_canonical, action, dest_canonical]
+                    # Convert back to full state space for visualization
+                    source_canonical, action, dest_canonical = portal
+                    if source_canonical >= 0 and dest_canonical >= 0:
+                        source_full = int(canonical_states[source_canonical])
+                        dest_full = int(canonical_states[dest_canonical])
+                        portals[(source_full, action)] = dest_full
+
         create_grid_visualization_report(
             eigenspace_distances=eigenspace_distances,
             environment_distances=environment_distances,
+            canonical_states=canonical_states,
             grid_width=grid_width,
             grid_height=grid_height,
             obstacles=obstacles,
-            portals=None,  # Can add portal visualization later
-            canonical_states=canonical_states,
+            portals=portals,
             output_dir=str(output_path / "grid_visualizations"),
             num_example_states=5
         )
