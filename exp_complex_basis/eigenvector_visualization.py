@@ -461,7 +461,10 @@ def create_eigenvector_visualization_report(
     grid_height: int,
     portals: Optional[Dict[Tuple[int, int], int]] = None,
     output_dir: str = "exp_complex_basis/results/visualizations",
-    num_eigenvectors: int = 6
+    num_eigenvectors: int = 6,
+    nrows: Optional[int] = None,
+    ncols: Optional[int] = None,
+    wall_color: str = 'gray'
 ):
     """
     Create a complete visualization report for eigenvector analysis.
@@ -474,6 +477,9 @@ def create_eigenvector_visualization_report(
         portals: Optional portal dictionary
         output_dir: Directory to save visualizations
         num_eigenvectors: Number of top eigenvectors to visualize
+        nrows: Number of rows for grid layout (None = auto)
+        ncols: Number of columns for grid layout (None = auto)
+        wall_color: Color for wall/obstacle cells (default: 'gray')
     """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -495,6 +501,9 @@ def create_eigenvector_visualization_report(
         portals=portals,
         eigenvector_type='right',
         component='real',
+        nrows=nrows,
+        ncols=ncols,
+        wall_color=wall_color,
         save_path=output_path / "right_eigenvectors_real.png"
     )
     plt.close()
@@ -510,6 +519,9 @@ def create_eigenvector_visualization_report(
         portals=portals,
         eigenvector_type='right',
         component='imag',
+        nrows=nrows,
+        ncols=ncols,
+        wall_color=wall_color,
         save_path=output_path / "right_eigenvectors_imag.png"
     )
     plt.close()
@@ -525,6 +537,9 @@ def create_eigenvector_visualization_report(
         portals=portals,
         eigenvector_type='left',
         component='real',
+        nrows=nrows,
+        ncols=ncols,
+        wall_color=wall_color,
         save_path=output_path / "left_eigenvectors_real.png"
     )
     plt.close()
@@ -540,6 +555,9 @@ def create_eigenvector_visualization_report(
         portals=portals,
         eigenvector_type='left',
         component='imag',
+        nrows=nrows,
+        ncols=ncols,
+        wall_color=wall_color,
         save_path=output_path / "left_eigenvectors_imag.png"
     )
     plt.close()
@@ -554,6 +572,7 @@ def create_eigenvector_visualization_report(
         grid_height=grid_height,
         portals=portals,
         component='real',
+        wall_color=wall_color,
         save_path=output_path / "left_right_eigenvectors_real.png"
     )
     plt.close()
@@ -568,6 +587,7 @@ def create_eigenvector_visualization_report(
         grid_height=grid_height,
         portals=portals,
         component='imag',
+        wall_color=wall_color,
         save_path=output_path / "left_right_eigenvectors_imag.png"
     )
     plt.close()

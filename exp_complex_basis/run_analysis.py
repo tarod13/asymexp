@@ -207,7 +207,11 @@ def run_eigendecomposition_analysis(
     k: int = 20,
     k_values_to_analyze: Optional[List[int]] = None,
     output_dir: str = "exp_complex_basis/results",
-    save_results: bool = True
+    save_results: bool = True,
+    num_eigenvectors_to_visualize: int = 6,
+    nrows: Optional[int] = None,
+    ncols: Optional[int] = None,
+    wall_color: str = 'gray'
 ) -> Dict:
     """
     Run complete eigendecomposition analysis on batched transition data.
@@ -219,6 +223,10 @@ def run_eigendecomposition_analysis(
         k_values_to_analyze: List of k values for distance analysis
         output_dir: Directory to save results
         save_results: Whether to save results to disk
+        num_eigenvectors_to_visualize: Number of eigenvectors to show in visualizations
+        nrows: Number of rows for visualization grid (None = auto)
+        ncols: Number of columns for visualization grid (None = auto)
+        wall_color: Color for wall/obstacle cells in visualizations (default: 'gray')
 
     Returns:
         Dictionary containing all analysis results
@@ -341,7 +349,10 @@ def run_eigendecomposition_analysis(
             grid_height=grid_height,
             portals=portals,
             output_dir=str(output_path / "visualizations"),
-            num_eigenvectors=6
+            num_eigenvectors=num_eigenvectors_to_visualize,
+            nrows=nrows,
+            ncols=ncols,
+            wall_color=wall_color
         )
 
     print("\n" + "=" * 80)
@@ -415,6 +426,30 @@ def main():
         default=42,
         help="Random seed (default: 42)"
     )
+    parser.add_argument(
+        "--nrows",
+        type=int,
+        default=None,
+        help="Number of rows for visualization grid layout (default: auto)"
+    )
+    parser.add_argument(
+        "--ncols",
+        type=int,
+        default=None,
+        help="Number of columns for visualization grid layout (default: auto)"
+    )
+    parser.add_argument(
+        "--wall-color",
+        type=str,
+        default="gray",
+        help="Color for wall/obstacle cells in visualizations (default: gray)"
+    )
+    parser.add_argument(
+        "--num-eigenvectors",
+        type=int,
+        default=6,
+        help="Number of eigenvectors to visualize (default: 6)"
+    )
 
     args = parser.parse_args()
 
@@ -436,7 +471,11 @@ def main():
         metadata=metadata,
         k=args.k,
         output_dir=args.output_dir,
-        save_results=True
+        save_results=True,
+        num_eigenvectors_to_visualize=args.num_eigenvectors,
+        nrows=args.nrows,
+        ncols=args.ncols,
+        wall_color=args.wall_color
     )
 
     return results
