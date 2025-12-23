@@ -59,8 +59,9 @@ def visualize_distances_on_grid(
         if y < grid_height and x < grid_width:
             distance_grid[y, x] = dist
 
-    # Plot distances as heatmap
-    im = ax.imshow(distance_grid, cmap=cmap, origin='upper', interpolation='nearest')
+    # Plot distances as heatmap with proper extent to align with grid coordinates
+    im = ax.imshow(distance_grid, cmap=cmap, origin='upper', interpolation='nearest',
+                   extent=[-0.5, grid_width - 0.5, grid_height - 0.5, -0.5])
 
     # Mark obstacles
     if obstacles is not None:
@@ -187,18 +188,24 @@ def compare_distances_on_grid(
     # Add portals to all subplots if provided
     if portals is not None:
         action_offsets = {0: (0, -0.25), 1: (0.25, 0), 2: (0, 0.25), 3: (-0.25, 0)}
+        # Generate unique colors for each portal
+        portal_list = list(portals.items())
+        num_portals = len(portal_list)
+        colors = plt.cm.rainbow(np.linspace(0, 1, num_portals))
+
         for ax in axes.flat:
-            for (source_idx, action), dest_idx in portals.items():
+            for idx, ((source_idx, action), dest_idx) in enumerate(portal_list):
                 source_y_p = source_idx // grid_width
                 source_x_p = source_idx % grid_width
                 dest_y_p = dest_idx // grid_width
                 dest_x_p = dest_idx % grid_width
                 dx, dy = action_offsets.get(action, (0, 0))
+                color = colors[idx]
                 ax.arrow(
                     source_x_p + dx, source_y_p + dy,
                     dest_x_p - source_x_p - 2*dx, dest_y_p - source_y_p - 2*dy,
                     head_width=0.15, head_length=0.15,
-                    fc='yellow', ec='yellow', alpha=0.7, linewidth=1.5, zorder=5
+                    fc=color, ec=color, alpha=0.8, linewidth=1.5, zorder=5
                 )
 
     plt.tight_layout()
@@ -247,6 +254,12 @@ def visualize_multiple_states_on_grid(
 
     action_offsets = {0: (0, -0.25), 1: (0.25, 0), 2: (0, 0.25), 3: (-0.25, 0)}
 
+    # Generate unique colors for each portal
+    if portals is not None:
+        portal_list = list(portals.items())
+        num_portals = len(portal_list)
+        portal_colors = plt.cm.rainbow(np.linspace(0, 1, num_portals))
+
     for idx, source_idx in enumerate(source_state_indices[:ncols]):
         eigen_dists = np.array(eigenspace_distances_combined[source_idx, :])
         eucl_dists = np.array(environment_distances_euclidean[source_idx, :])
@@ -272,17 +285,18 @@ def visualize_multiple_states_on_grid(
         # Add portals if provided
         if portals is not None:
             for ax in [axes[0, idx], axes[1, idx]]:
-                for (source_idx_p, action), dest_idx in portals.items():
+                for p_idx, ((source_idx_p, action), dest_idx) in enumerate(portal_list):
                     source_y_p = source_idx_p // grid_width
                     source_x_p = source_idx_p % grid_width
                     dest_y_p = dest_idx // grid_width
                     dest_x_p = dest_idx % grid_width
                     dx, dy = action_offsets.get(action, (0, 0))
+                    color = portal_colors[p_idx]
                     ax.arrow(
                         source_x_p + dx, source_y_p + dy,
                         dest_x_p - source_x_p - 2*dx, dest_y_p - source_y_p - 2*dy,
                         head_width=0.15, head_length=0.15,
-                        fc='yellow', ec='yellow', alpha=0.7, linewidth=1.5, zorder=5
+                        fc=color, ec=color, alpha=0.8, linewidth=1.5, zorder=5
                     )
 
     plt.tight_layout()
@@ -344,7 +358,12 @@ def visualize_grid_with_portals(
             3: (-0.3, 0)    # Left
         }
 
-        for (source_idx, action), dest_idx in portals.items():
+        # Generate unique colors for each portal
+        portal_list = list(portals.items())
+        num_portals = len(portal_list)
+        colors = plt.cm.rainbow(np.linspace(0, 1, num_portals))
+
+        for idx, ((source_idx, action), dest_idx) in enumerate(portal_list):
             # Convert to grid coordinates
             source_y = source_idx // grid_width
             source_x = source_idx % grid_width
@@ -354,12 +373,13 @@ def visualize_grid_with_portals(
             # Add offset based on action
             dx, dy = action_offsets.get(action, (0, 0))
 
-            # Draw arrow
+            # Draw arrow with unique color
+            color = colors[idx]
             ax.arrow(
                 source_x + dx, source_y + dy,
                 dest_x - source_x - 2*dx, dest_y - source_y - 2*dy,
                 head_width=0.2, head_length=0.2,
-                fc='red', ec='red', alpha=0.6, linewidth=2
+                fc=color, ec=color, alpha=0.8, linewidth=2, zorder=10
             )
 
     ax.set_xlim(-0.5, grid_width - 0.5)
