@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Experiment results and visualizations
+exp_complex_basis/results/
+**/results/*.pkl
+**/results/*.png
+**/results/*.txt
