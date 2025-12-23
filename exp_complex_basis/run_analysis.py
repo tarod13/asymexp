@@ -27,15 +27,8 @@ from exp_complex_basis.eigendecomposition import (
     analyze_eigenvalue_spectrum,
     get_nonsymmetrized_transition_matrix,
 )
-from exp_complex_basis.distance_analysis import (
-    compute_eigenspace_distances,
-    compute_environment_distances,
-)
-from exp_complex_basis.distance_visualization import (
-    create_distance_visualization_report,
-)
-from exp_complex_basis.grid_visualization import (
-    create_grid_visualization_report,
+from exp_complex_basis.eigenvector_visualization import (
+    create_eigenvector_visualization_report,
 )
 from src.data_collection import collect_transition_counts_batched_portals
 from src.envs.env import create_environment_from_text
@@ -276,41 +269,17 @@ def run_eigendecomposition_analysis(
     for i in range(min(5, k)):
         print(f"    λ_{i}: {avg_mags[i]:.6f}")
 
-    # Step 3: Compute and visualize distances for first environment as example
-    print("\n[3/3] Computing and visualizing distances (using first environment as example)...")
+    # Step 3: Visualize eigenvectors for first environment as example
+    print("\n[3/3] Visualizing eigenvectors (using first environment as example)...")
 
     # Use first environment for visualization
     first_env_eigendecomp = {
         key: value[0] for key, value in batched_eigendecomp.items()
     }
 
-    # Compute eigenspace distances
-    print("  Computing eigenspace distances...")
-    eigenspace_distances = compute_eigenspace_distances(
-        first_env_eigendecomp,
-        metric="euclidean",
-        use_real=True,
-        use_imag=True,
-        k=k
-    )
-
-    # Compute environment distances
-    print("  Computing environment distances...")
-    environment_distances = compute_environment_distances(
-        canonical_states,
-        grid_width,
-        transition_matrix=None,
-        include_shortest_path=False
-    )
-
-    print(f"  Eigenspace distances shape: {eigenspace_distances['distances_combined'].shape}")
-    print(f"  Environment distances computed: {list(environment_distances.keys())}")
-
     # Compile all results
     results = {
         "batched_eigendecomposition": batched_eigendecomp,
-        "eigenspace_distances": eigenspace_distances,
-        "environment_distances": environment_distances,
         "metadata": metadata,
         "parameters": {
             "k": k,
@@ -339,15 +308,15 @@ def run_eigendecomposition_analysis(
             f.write(f"Number of eigenvalues computed: {k}\n")
             f.write(f"Real eigenvalues per env (mean): {jnp.mean(num_real_per_env):.1f}\n")
             f.write(f"Complex eigenvalues per env (mean): {k - jnp.mean(num_real_per_env):.1f}\n\n")
-            f.write("Distance matrices computed:\n")
-            f.write(f"  - Eigenspace (real, imaginary, combined)\n")
-            f.write(f"  - Environment (Euclidean, Manhattan)\n")
+            f.write("Eigenvector visualizations:\n")
+            f.write(f"  - Left eigenvectors (real and imaginary components)\n")
+            f.write(f"  - Right eigenvectors (real and imaginary components)\n")
             f.write(f"\nVisualizations saved to: {output_path}/visualizations/\n")
 
         print(f"Summary saved to {summary_file}")
 
-        # Generate grid-based visualizations
-        print("\nGenerating grid-based distance visualizations...")
+        # Generate eigenvector visualizations
+        print("\nGenerating eigenvector visualizations...")
         obstacles = metadata.get("obstacles", [])
         grid_height = metadata.get("grid_height", grid_width)
 
@@ -365,16 +334,14 @@ def run_eigendecomposition_analysis(
                         dest_full = int(canonical_states[dest_canonical])
                         portals[(source_full, action)] = dest_full
 
-        create_grid_visualization_report(
-            eigenspace_distances=eigenspace_distances,
-            environment_distances=environment_distances,
+        create_eigenvector_visualization_report(
+            eigendecomposition=first_env_eigendecomp,
             canonical_states=canonical_states,
             grid_width=grid_width,
             grid_height=grid_height,
-            obstacles=obstacles,
             portals=portals,
-            output_dir=str(output_path / "grid_visualizations"),
-            num_example_states=5
+            output_dir=str(output_path / "visualizations"),
+            num_eigenvectors=6
         )
 
     print("\n" + "=" * 80)

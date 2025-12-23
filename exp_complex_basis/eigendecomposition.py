@@ -53,7 +53,7 @@ def compute_eigendecomposition(
     Compute eigendecomposition of a non-symmetric matrix.
 
     For non-symmetric matrices, eigenvalues and eigenvectors can be complex.
-    Returns both eigenvalues and eigenvectors (right eigenvectors by default).
+    Returns both left and right eigenvectors.
 
     Args:
         transition_matrix: Shape [num_states, num_states], non-symmetric
@@ -63,41 +63,59 @@ def compute_eigendecomposition(
     Returns:
         Dictionary containing:
             - eigenvalues: Shape [k] (complex)
-            - eigenvectors: Shape [num_states, k] (complex, column vectors)
+            - right_eigenvectors: Shape [num_states, k] (complex, column vectors)
+            - left_eigenvectors: Shape [num_states, k] (complex, column vectors)
             - eigenvalues_real: Real part of eigenvalues
             - eigenvalues_imag: Imaginary part of eigenvalues
-            - eigenvectors_real: Real part of eigenvectors [num_states, k]
-            - eigenvectors_imag: Imaginary part of eigenvectors [num_states, k]
+            - right_eigenvectors_real: Real part of right eigenvectors [num_states, k]
+            - right_eigenvectors_imag: Imaginary part of right eigenvectors [num_states, k]
+            - left_eigenvectors_real: Real part of left eigenvectors [num_states, k]
+            - left_eigenvectors_imag: Imaginary part of left eigenvectors [num_states, k]
     """
-    # Compute eigendecomposition
+    # Compute right eigendecomposition
     # jnp.linalg.eig returns (eigenvalues, right_eigenvectors)
-    eigenvalues, eigenvectors = jnp.linalg.eig(transition_matrix)
+    eigenvalues, right_eigenvectors = jnp.linalg.eig(transition_matrix)
+
+    # Compute left eigendecomposition via transpose
+    # For left eigenvectors: v^T A = lambda v^T => A^T v = lambda v
+    eigenvalues_left, left_eigenvectors = jnp.linalg.eig(transition_matrix.T)
 
     # Sort by magnitude if requested
     if sort_by_magnitude:
         magnitudes = jnp.abs(eigenvalues)
         sorted_indices = jnp.argsort(-magnitudes)  # Descending order
         eigenvalues = eigenvalues[sorted_indices]
-        eigenvectors = eigenvectors[:, sorted_indices]
+        right_eigenvectors = right_eigenvectors[:, sorted_indices]
+
+        # Sort left eigenvectors by same ordering as right
+        magnitudes_left = jnp.abs(eigenvalues_left)
+        sorted_indices_left = jnp.argsort(-magnitudes_left)
+        left_eigenvectors = left_eigenvectors[:, sorted_indices_left]
 
     # Keep only top k if specified
     if k is not None:
         eigenvalues = eigenvalues[:k]
-        eigenvectors = eigenvectors[:, :k]
+        right_eigenvectors = right_eigenvectors[:, :k]
+        left_eigenvectors = left_eigenvectors[:, :k]
 
     # Separate into real and imaginary parts
     eigenvalues_real = jnp.real(eigenvalues)
     eigenvalues_imag = jnp.imag(eigenvalues)
-    eigenvectors_real = jnp.real(eigenvectors)
-    eigenvectors_imag = jnp.imag(eigenvectors)
+    right_eigenvectors_real = jnp.real(right_eigenvectors)
+    right_eigenvectors_imag = jnp.imag(right_eigenvectors)
+    left_eigenvectors_real = jnp.real(left_eigenvectors)
+    left_eigenvectors_imag = jnp.imag(left_eigenvectors)
 
     return {
         "eigenvalues": eigenvalues,
-        "eigenvectors": eigenvectors,
+        "right_eigenvectors": right_eigenvectors,
+        "left_eigenvectors": left_eigenvectors,
         "eigenvalues_real": eigenvalues_real,
         "eigenvalues_imag": eigenvalues_imag,
-        "eigenvectors_real": eigenvectors_real,
-        "eigenvectors_imag": eigenvectors_imag,
+        "right_eigenvectors_real": right_eigenvectors_real,
+        "right_eigenvectors_imag": right_eigenvectors_imag,
+        "left_eigenvectors_real": left_eigenvectors_real,
+        "left_eigenvectors_imag": left_eigenvectors_imag,
     }
 
 
