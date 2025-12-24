@@ -25,6 +25,8 @@ def visualize_eigenvector_on_grid(
     cmap: str = 'RdBu_r',
     show_colorbar: bool = True,
     wall_color: str = 'gray',
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
 ) -> plt.Axes:
     """
     Visualize a single eigenvector's values overlaid on the grid.
@@ -41,6 +43,8 @@ def visualize_eigenvector_on_grid(
         cmap: Colormap to use
         show_colorbar: Whether to show the colorbar
         wall_color: Color for wall/obstacle cells (default: 'gray')
+        vmin: Minimum value for colormap (if None, auto-computed)
+        vmax: Maximum value for colormap (if None, auto-computed)
 
     Returns:
         Matplotlib axes object
@@ -71,7 +75,9 @@ def visualize_eigenvector_on_grid(
         cmap=current_cmap,
         origin='upper',
         interpolation='nearest',
-        extent=[-0.5, grid_width - 0.5, grid_height - 0.5, -0.5]
+        extent=[-0.5, grid_width - 0.5, grid_height - 0.5, -0.5],
+        vmin=vmin,
+        vmax=vmax
     )
 
     # Add colorbar
@@ -442,8 +448,15 @@ def visualize_left_right_eigenvectors(
 
         eigenvalue = eigendecomposition['eigenvalues'][eigenvec_idx]
 
-        # Plot left eigenvector
+        # Get left and right eigenvector values
         left_values = left_eigenvector_matrix[:, eigenvec_idx]
+        right_values = right_eigenvector_matrix[:, eigenvec_idx]
+
+        # Compute shared color limits for this pair
+        vmin = min(np.min(left_values), np.min(right_values))
+        vmax = max(np.max(left_values), np.max(right_values))
+
+        # Plot left eigenvector
         visualize_eigenvector_on_grid(
             eigenvector_idx=eigenvec_idx,
             eigenvector_values=np.array(left_values),
@@ -455,11 +468,12 @@ def visualize_left_right_eigenvectors(
             ax=axes[left_row, col_idx],
             cmap='RdBu_r',
             show_colorbar=False,
-            wall_color=wall_color
+            wall_color=wall_color,
+            vmin=vmin,
+            vmax=vmax
         )
 
-        # Plot right eigenvector
-        right_values = right_eigenvector_matrix[:, eigenvec_idx]
+        # Plot right eigenvector with small colorbar in top-right corner
         visualize_eigenvector_on_grid(
             eigenvector_idx=eigenvec_idx,
             eigenvector_values=np.array(right_values),
@@ -471,8 +485,17 @@ def visualize_left_right_eigenvectors(
             ax=axes[right_row, col_idx],
             cmap='RdBu_r',
             show_colorbar=False,
-            wall_color=wall_color
+            wall_color=wall_color,
+            vmin=vmin,
+            vmax=vmax
         )
+
+        # Add a small colorbar in the top-right corner of the right eigenvector plot
+        from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+        cax = inset_axes(axes[right_row, col_idx], width="5%", height="30%", loc='upper right', borderpad=0.5)
+        sm = plt.cm.ScalarMappable(cmap='RdBu_r', norm=plt.Normalize(vmin=vmin, vmax=vmax))
+        sm.set_array([])
+        plt.colorbar(sm, cax=cax, orientation='vertical')
 
     # Hide unused subplots
     for group_idx in range(num_groups):
