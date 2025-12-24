@@ -338,6 +338,11 @@ def visualize_multiple_eigenvectors(
         else:
             eigenvector_matrix = eigendecomposition['left_eigenvectors_imag']
 
+    # Compute global color limits across ALL eigenvectors in this figure
+    all_values = np.concatenate([eigenvector_matrix[:, idx] for idx in eigenvector_indices])
+    vmin = np.min(all_values)
+    vmax = np.max(all_values)
+
     # Plot each eigenvector
     for plot_idx, eigenvec_idx in enumerate(eigenvector_indices):
         row = plot_idx // ncols
@@ -358,7 +363,9 @@ def visualize_multiple_eigenvectors(
             ax=ax,
             cmap='RdBu_r',
             show_colorbar=False,
-            wall_color=wall_color
+            wall_color=wall_color,
+            vmin=vmin,
+            vmax=vmax
         )
 
     # Hide unused subplots
@@ -366,6 +373,15 @@ def visualize_multiple_eigenvectors(
         row = plot_idx // ncols
         col = plot_idx % ncols
         axes[row, col].axis('off')
+
+    # Add a single small colorbar in the top-right corner of the figure
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+    # Use the top-right subplot for positioning
+    cax = inset_axes(axes[0, -1], width="8%", height="40%", loc='upper right', borderpad=1.0)
+    sm = plt.cm.ScalarMappable(cmap='RdBu_r', norm=plt.Normalize(vmin=vmin, vmax=vmax))
+    sm.set_array([])
+    cbar = plt.colorbar(sm, cax=cax, orientation='vertical')
+    cbar.ax.tick_params(labelsize=8)
 
     plt.tight_layout()
 
@@ -438,6 +454,13 @@ def visualize_left_right_eigenvectors(
         left_eigenvector_matrix = eigendecomposition['left_eigenvectors_imag']
         right_eigenvector_matrix = eigendecomposition['right_eigenvectors_imag']
 
+    # Compute global color limits across ALL eigenvectors in this figure
+    all_left_values = [left_eigenvector_matrix[:, idx] for idx in eigenvector_indices]
+    all_right_values = [right_eigenvector_matrix[:, idx] for idx in eigenvector_indices]
+    all_values = np.concatenate([np.concatenate(all_left_values), np.concatenate(all_right_values)])
+    vmin = np.min(all_values)
+    vmax = np.max(all_values)
+
     # Plot eigenvectors in the new layout
     for idx, eigenvec_idx in enumerate(eigenvector_indices):
         group_idx = idx // ncols  # Which group (0, 1, 2, ...)
@@ -451,10 +474,6 @@ def visualize_left_right_eigenvectors(
         # Get left and right eigenvector values
         left_values = left_eigenvector_matrix[:, eigenvec_idx]
         right_values = right_eigenvector_matrix[:, eigenvec_idx]
-
-        # Compute shared color limits for this pair
-        vmin = min(np.min(left_values), np.min(right_values))
-        vmax = max(np.max(left_values), np.max(right_values))
 
         # Plot left eigenvector
         visualize_eigenvector_on_grid(
@@ -473,7 +492,7 @@ def visualize_left_right_eigenvectors(
             vmax=vmax
         )
 
-        # Plot right eigenvector with small colorbar in top-right corner
+        # Plot right eigenvector
         visualize_eigenvector_on_grid(
             eigenvector_idx=eigenvec_idx,
             eigenvector_values=np.array(right_values),
@@ -490,13 +509,6 @@ def visualize_left_right_eigenvectors(
             vmax=vmax
         )
 
-        # Add a small colorbar in the top-right corner of the right eigenvector plot
-        from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-        cax = inset_axes(axes[right_row, col_idx], width="5%", height="30%", loc='upper right', borderpad=0.5)
-        sm = plt.cm.ScalarMappable(cmap='RdBu_r', norm=plt.Normalize(vmin=vmin, vmax=vmax))
-        sm.set_array([])
-        plt.colorbar(sm, cax=cax, orientation='vertical')
-
     # Hide unused subplots
     for group_idx in range(num_groups):
         # How many eigenvectors in this group?
@@ -511,6 +523,15 @@ def visualize_left_right_eigenvectors(
         for col_idx in range(num_in_group, ncols):
             axes[left_row, col_idx].axis('off')
             axes[right_row, col_idx].axis('off')
+
+    # Add a single small colorbar in the top-right corner of the figure
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+    # Use the top-right subplot for positioning
+    cax = inset_axes(axes[0, -1], width="8%", height="40%", loc='upper right', borderpad=1.0)
+    sm = plt.cm.ScalarMappable(cmap='RdBu_r', norm=plt.Normalize(vmin=vmin, vmax=vmax))
+    sm.set_array([])
+    cbar = plt.colorbar(sm, cax=cax, orientation='vertical')
+    cbar.ax.tick_params(labelsize=8)
 
     plt.tight_layout()
 
