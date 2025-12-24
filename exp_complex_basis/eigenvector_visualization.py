@@ -97,50 +97,41 @@ def visualize_eigenvector_on_grid(
 
             # Action mapping: 0=up, 1=right, 2=down, 3=left
             # Determine rectangle position and dimensions based on action
-            # Arrow should be fully contained within rectangle
-            # The arrow length is reduced to keep both shaft and arrowhead inside
-            arrow_length_ratio = 0.5  # Use 50% of rectangle thickness for arrow length
+            # Keep arrow fully inside by staying away from edges
+            edge_margin = 0.02  # Distance from rectangle edge
 
             if action == 0:  # Up - rectangle on top edge
                 rect_x = source_x - rect_width / 2
                 rect_y = source_y - 0.5 - rect_thickness / 2
                 rect_w = rect_width
                 rect_h = rect_thickness
-                # Arrow points upward (negative y direction)
-                arrow_center_y = source_y - 0.5
-                arrow_half_length = rect_thickness * arrow_length_ratio / 2
-                arrow_start = (source_x, arrow_center_y + arrow_half_length)
-                arrow_end = (source_x, arrow_center_y - arrow_half_length)
+                # Arrow points upward, starts near bottom of rect, ends near top
+                arrow_start = (source_x, source_y - 0.5 + rect_thickness / 2 - edge_margin)
+                arrow_end = (source_x, source_y - 0.5 - rect_thickness / 2 + edge_margin)
             elif action == 1:  # Right - rectangle on right edge
                 rect_x = source_x + 0.5 - rect_thickness / 2
                 rect_y = source_y - rect_width / 2
                 rect_w = rect_thickness
                 rect_h = rect_width
-                # Arrow points rightward (positive x direction)
-                arrow_center_x = source_x + 0.5
-                arrow_half_length = rect_thickness * arrow_length_ratio / 2
-                arrow_start = (arrow_center_x - arrow_half_length, source_y)
-                arrow_end = (arrow_center_x + arrow_half_length, source_y)
+                # Arrow points rightward, starts near left of rect, ends near right
+                arrow_start = (source_x + 0.5 - rect_thickness / 2 + edge_margin, source_y)
+                arrow_end = (source_x + 0.5 + rect_thickness / 2 - edge_margin, source_y)
             elif action == 2:  # Down - rectangle on bottom edge
                 rect_x = source_x - rect_width / 2
                 rect_y = source_y + 0.5 - rect_thickness / 2
                 rect_w = rect_width
                 rect_h = rect_thickness
-                # Arrow points downward (positive y direction)
-                arrow_center_y = source_y + 0.5
-                arrow_half_length = rect_thickness * arrow_length_ratio / 2
-                arrow_start = (source_x, arrow_center_y - arrow_half_length)
-                arrow_end = (source_x, arrow_center_y + arrow_half_length)
+                # Arrow points downward, starts near top of rect, ends near bottom
+                arrow_start = (source_x, source_y + 0.5 - rect_thickness / 2 + edge_margin)
+                arrow_end = (source_x, source_y + 0.5 + rect_thickness / 2 - edge_margin)
             else:  # Left - rectangle on left edge
                 rect_x = source_x - 0.5 - rect_thickness / 2
                 rect_y = source_y - rect_width / 2
                 rect_w = rect_thickness
                 rect_h = rect_width
-                # Arrow points leftward (negative x direction)
-                arrow_center_x = source_x - 0.5
-                arrow_half_length = rect_thickness * arrow_length_ratio / 2
-                arrow_start = (arrow_center_x + arrow_half_length, source_y)
-                arrow_end = (arrow_center_x - arrow_half_length, source_y)
+                # Arrow points leftward, starts near right of rect, ends near left
+                arrow_start = (source_x - 0.5 + rect_thickness / 2 - edge_margin, source_y)
+                arrow_end = (source_x - 0.5 - rect_thickness / 2 + edge_margin, source_y)
 
             # Draw black rectangle
             rect = mpatches.Rectangle(
