@@ -97,41 +97,60 @@ def visualize_eigenvector_on_grid(
 
             # Action mapping: 0=up, 1=right, 2=down, 3=left
             # Determine rectangle position and dimensions based on action
-            # Keep arrow fully inside by staying away from edges
-            edge_margin = 0.02  # Distance from rectangle edge
+            margin = 0.02  # Margin from rectangle edges
 
             if action == 0:  # Up - rectangle on top edge
                 rect_x = source_x - rect_width / 2
                 rect_y = source_y - 0.5 - rect_thickness / 2
                 rect_w = rect_width
                 rect_h = rect_thickness
-                # Arrow points upward, starts near bottom of rect, ends near top
-                arrow_start = (source_x, source_y - 0.5 + rect_thickness / 2 - edge_margin)
-                arrow_end = (source_x, source_y - 0.5 - rect_thickness / 2 + edge_margin)
+                # Triangle pointing upward
+                tri_base = rect_thickness - 2 * margin
+                tri_height = rect_thickness - 2 * margin
+                triangle = mpatches.Polygon([
+                    (source_x, source_y - 0.5 - rect_thickness / 2 + margin),  # Top point
+                    (source_x - tri_base / 2, source_y - 0.5 + rect_thickness / 2 - margin),  # Bottom left
+                    (source_x + tri_base / 2, source_y - 0.5 + rect_thickness / 2 - margin)   # Bottom right
+                ], facecolor='white', edgecolor='none', zorder=11)
             elif action == 1:  # Right - rectangle on right edge
                 rect_x = source_x + 0.5 - rect_thickness / 2
                 rect_y = source_y - rect_width / 2
                 rect_w = rect_thickness
                 rect_h = rect_width
-                # Arrow points rightward, starts near left of rect, ends near right
-                arrow_start = (source_x + 0.5 - rect_thickness / 2 + edge_margin, source_y)
-                arrow_end = (source_x + 0.5 + rect_thickness / 2 - edge_margin, source_y)
+                # Triangle pointing rightward
+                tri_base = rect_thickness - 2 * margin
+                tri_height = rect_thickness - 2 * margin
+                triangle = mpatches.Polygon([
+                    (source_x + 0.5 + rect_thickness / 2 - margin, source_y),  # Right point
+                    (source_x + 0.5 - rect_thickness / 2 + margin, source_y - tri_base / 2),  # Left bottom
+                    (source_x + 0.5 - rect_thickness / 2 + margin, source_y + tri_base / 2)   # Left top
+                ], facecolor='white', edgecolor='none', zorder=11)
             elif action == 2:  # Down - rectangle on bottom edge
                 rect_x = source_x - rect_width / 2
                 rect_y = source_y + 0.5 - rect_thickness / 2
                 rect_w = rect_width
                 rect_h = rect_thickness
-                # Arrow points downward, starts near top of rect, ends near bottom
-                arrow_start = (source_x, source_y + 0.5 - rect_thickness / 2 + edge_margin)
-                arrow_end = (source_x, source_y + 0.5 + rect_thickness / 2 - edge_margin)
+                # Triangle pointing downward
+                tri_base = rect_thickness - 2 * margin
+                tri_height = rect_thickness - 2 * margin
+                triangle = mpatches.Polygon([
+                    (source_x, source_y + 0.5 + rect_thickness / 2 - margin),  # Bottom point
+                    (source_x - tri_base / 2, source_y + 0.5 - rect_thickness / 2 + margin),  # Top left
+                    (source_x + tri_base / 2, source_y + 0.5 - rect_thickness / 2 + margin)   # Top right
+                ], facecolor='white', edgecolor='none', zorder=11)
             else:  # Left - rectangle on left edge
                 rect_x = source_x - 0.5 - rect_thickness / 2
                 rect_y = source_y - rect_width / 2
                 rect_w = rect_thickness
                 rect_h = rect_width
-                # Arrow points leftward, starts near right of rect, ends near left
-                arrow_start = (source_x - 0.5 + rect_thickness / 2 - edge_margin, source_y)
-                arrow_end = (source_x - 0.5 - rect_thickness / 2 + edge_margin, source_y)
+                # Triangle pointing leftward
+                tri_base = rect_thickness - 2 * margin
+                tri_height = rect_thickness - 2 * margin
+                triangle = mpatches.Polygon([
+                    (source_x - 0.5 - rect_thickness / 2 + margin, source_y),  # Left point
+                    (source_x - 0.5 + rect_thickness / 2 - margin, source_y - tri_base / 2),  # Right bottom
+                    (source_x - 0.5 + rect_thickness / 2 - margin, source_y + tri_base / 2)   # Right top
+                ], facecolor='white', edgecolor='none', zorder=11)
 
             # Draw black rectangle
             rect = mpatches.Rectangle(
@@ -143,18 +162,8 @@ def visualize_eigenvector_on_grid(
             )
             ax.add_patch(rect)
 
-            # Draw white arrow inside rectangle
-            ax.annotate('',
-                       xy=arrow_end,
-                       xytext=arrow_start,
-                       arrowprops=dict(
-                           arrowstyle='->',
-                           lw=2,
-                           color='white',
-                           shrinkA=0,
-                           shrinkB=0,
-                           zorder=11
-                       ))
+            # Draw white triangle inside rectangle
+            ax.add_patch(triangle)
 
     # Set limits and labels
     ax.set_xlim(-0.5, grid_width - 0.5)

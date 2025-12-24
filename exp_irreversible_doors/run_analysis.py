@@ -119,41 +119,60 @@ def visualize_doors_on_grid(
         s_x = s_full % grid_width
 
         # Determine rectangle position and dimensions based on action
-        # Keep arrow fully inside by staying away from edges
-        edge_margin = 0.02  # Distance from rectangle edge
+        margin = 0.02  # Margin from rectangle edges
 
         if a_forward == 0:  # Up - rectangle on top edge
             rect_x = s_x - rect_width / 2
             rect_y = s_y - 0.5 - rect_thickness / 2
             rect_w = rect_width
             rect_h = rect_thickness
-            # Arrow points upward, starts near bottom of rect, ends near top
-            arrow_start = (s_x, s_y - 0.5 + rect_thickness / 2 - edge_margin)
-            arrow_end = (s_x, s_y - 0.5 - rect_thickness / 2 + edge_margin)
+            # Triangle pointing upward
+            tri_base = rect_thickness - 2 * margin
+            tri_height = rect_thickness - 2 * margin
+            triangle = mpatches.Polygon([
+                (s_x, s_y - 0.5 - rect_thickness / 2 + margin),  # Top point
+                (s_x - tri_base / 2, s_y - 0.5 + rect_thickness / 2 - margin),  # Bottom left
+                (s_x + tri_base / 2, s_y - 0.5 + rect_thickness / 2 - margin)   # Bottom right
+            ], facecolor='white', edgecolor='none')
         elif a_forward == 1:  # Right - rectangle on right edge
             rect_x = s_x + 0.5 - rect_thickness / 2
             rect_y = s_y - rect_width / 2
             rect_w = rect_thickness
             rect_h = rect_width
-            # Arrow points rightward, starts near left of rect, ends near right
-            arrow_start = (s_x + 0.5 - rect_thickness / 2 + edge_margin, s_y)
-            arrow_end = (s_x + 0.5 + rect_thickness / 2 - edge_margin, s_y)
+            # Triangle pointing rightward
+            tri_base = rect_thickness - 2 * margin
+            tri_height = rect_thickness - 2 * margin
+            triangle = mpatches.Polygon([
+                (s_x + 0.5 + rect_thickness / 2 - margin, s_y),  # Right point
+                (s_x + 0.5 - rect_thickness / 2 + margin, s_y - tri_base / 2),  # Left bottom
+                (s_x + 0.5 - rect_thickness / 2 + margin, s_y + tri_base / 2)   # Left top
+            ], facecolor='white', edgecolor='none')
         elif a_forward == 2:  # Down - rectangle on bottom edge
             rect_x = s_x - rect_width / 2
             rect_y = s_y + 0.5 - rect_thickness / 2
             rect_w = rect_width
             rect_h = rect_thickness
-            # Arrow points downward, starts near top of rect, ends near bottom
-            arrow_start = (s_x, s_y + 0.5 - rect_thickness / 2 + edge_margin)
-            arrow_end = (s_x, s_y + 0.5 + rect_thickness / 2 - edge_margin)
+            # Triangle pointing downward
+            tri_base = rect_thickness - 2 * margin
+            tri_height = rect_thickness - 2 * margin
+            triangle = mpatches.Polygon([
+                (s_x, s_y + 0.5 + rect_thickness / 2 - margin),  # Bottom point
+                (s_x - tri_base / 2, s_y + 0.5 - rect_thickness / 2 + margin),  # Top left
+                (s_x + tri_base / 2, s_y + 0.5 - rect_thickness / 2 + margin)   # Top right
+            ], facecolor='white', edgecolor='none')
         else:  # Left - rectangle on left edge
             rect_x = s_x - 0.5 - rect_thickness / 2
             rect_y = s_y - rect_width / 2
             rect_w = rect_thickness
             rect_h = rect_width
-            # Arrow points leftward, starts near right of rect, ends near left
-            arrow_start = (s_x - 0.5 + rect_thickness / 2 - edge_margin, s_y)
-            arrow_end = (s_x - 0.5 - rect_thickness / 2 + edge_margin, s_y)
+            # Triangle pointing leftward
+            tri_base = rect_thickness - 2 * margin
+            tri_height = rect_thickness - 2 * margin
+            triangle = mpatches.Polygon([
+                (s_x - 0.5 - rect_thickness / 2 + margin, s_y),  # Left point
+                (s_x - 0.5 + rect_thickness / 2 - margin, s_y - tri_base / 2),  # Right bottom
+                (s_x - 0.5 + rect_thickness / 2 - margin, s_y + tri_base / 2)   # Right top
+            ], facecolor='white', edgecolor='none')
 
         # Draw black rectangle
         rect = mpatches.Rectangle(
@@ -164,17 +183,8 @@ def visualize_doors_on_grid(
         )
         ax.add_patch(rect)
 
-        # Draw white arrow inside rectangle
-        ax.annotate('',
-                   xy=arrow_end,
-                   xytext=arrow_start,
-                   arrowprops=dict(
-                       arrowstyle='->',
-                       lw=2,
-                       color='white',
-                       shrinkA=0,
-                       shrinkB=0
-                   ))
+        # Draw white triangle inside rectangle
+        ax.add_patch(triangle)
 
     ax.set_xlim(-0.5, grid_width - 0.5)
     ax.set_ylim(grid_height - 0.5, -0.5)
