@@ -73,6 +73,9 @@ def visualize_doors_on_grid(
     """
     Create a simple visualization showing door locations.
 
+    Draws a black rectangle with a white arrow on the edge of each tile
+    where a door is located, pointing in the allowed direction.
+
     Args:
         doors: List of door tuples (s, a, s', a_reverse)
         canonical_states: Canonical state mapping
@@ -91,31 +94,73 @@ def visualize_doors_on_grid(
     for j in range(grid_width + 1):
         ax.axvline(j - 0.5, color='black', linewidth=1)
 
-    # Draw doors with arrows
-    colors = plt.cm.rainbow(np.linspace(0, 1, len(doors)))
+    # Door rectangle dimensions
+    rect_thickness = 0.15  # Thin dimension
+    rect_width = 0.7  # Wide dimension (parallel to action)
+    arrow_scale = 0.4  # Arrow size relative to rectangle
 
+    # Action mapping: 0=up, 1=right, 2=down, 3=left
     for idx, (s_canonical, a_forward, s_prime_canonical, a_reverse) in enumerate(doors):
         s_full = int(canonical_states[s_canonical])
-        s_prime_full = int(canonical_states[s_prime_canonical])
 
         s_y = s_full // grid_width
         s_x = s_full % grid_width
-        s_prime_y = s_prime_full // grid_width
-        s_prime_x = s_prime_full % grid_width
 
-        # Draw arrow from s to s' (allowed direction)
+        # Determine rectangle position and dimensions based on action
+        if a_forward == 0:  # Up - rectangle on top edge
+            rect_x = s_x - rect_width / 2
+            rect_y = s_y - 0.5 - rect_thickness / 2
+            rect_w = rect_width
+            rect_h = rect_thickness
+            arrow_start = (s_x, s_y - 0.5 + rect_thickness / 4)
+            arrow_end = (s_x, s_y - 0.5 - rect_thickness / 4)
+        elif a_forward == 1:  # Right - rectangle on right edge
+            rect_x = s_x + 0.5 - rect_thickness / 2
+            rect_y = s_y - rect_width / 2
+            rect_w = rect_thickness
+            rect_h = rect_width
+            arrow_start = (s_x + 0.5 - rect_thickness / 4, s_y)
+            arrow_end = (s_x + 0.5 + rect_thickness / 4, s_y)
+        elif a_forward == 2:  # Down - rectangle on bottom edge
+            rect_x = s_x - rect_width / 2
+            rect_y = s_y + 0.5 - rect_thickness / 2
+            rect_w = rect_width
+            rect_h = rect_thickness
+            arrow_start = (s_x, s_y + 0.5 - rect_thickness / 4)
+            arrow_end = (s_x, s_y + 0.5 + rect_thickness / 4)
+        else:  # Left - rectangle on left edge
+            rect_x = s_x - 0.5 - rect_thickness / 2
+            rect_y = s_y - rect_width / 2
+            rect_w = rect_thickness
+            rect_h = rect_width
+            arrow_start = (s_x - 0.5 + rect_thickness / 4, s_y)
+            arrow_end = (s_x - 0.5 - rect_thickness / 4, s_y)
+
+        # Draw black rectangle
+        rect = mpatches.Rectangle(
+            (rect_x, rect_y), rect_w, rect_h,
+            linewidth=0,
+            edgecolor='none',
+            facecolor='black'
+        )
+        ax.add_patch(rect)
+
+        # Draw white arrow inside rectangle
         ax.annotate('',
-                   xy=(s_prime_x, s_prime_y),
-                   xytext=(s_x, s_y),
-                   arrowprops=dict(arrowstyle='->', lw=3, color=colors[idx]))
-
-        # Draw X at reverse location (blocked direction)
-        ax.plot(s_x, s_y, 'x', color=colors[idx], markersize=15, markeredgewidth=3)
+                   xy=arrow_end,
+                   xytext=arrow_start,
+                   arrowprops=dict(
+                       arrowstyle='->',
+                       lw=2,
+                       color='white',
+                       shrinkA=0,
+                       shrinkB=0
+                   ))
 
     ax.set_xlim(-0.5, grid_width - 0.5)
     ax.set_ylim(grid_height - 0.5, -0.5)
     ax.set_aspect('equal')
-    ax.set_title(f'Irreversible Doors ({len(doors)} total)\nArrow=Allowed, X=Blocked', fontsize=14)
+    ax.set_title(f'Irreversible Doors ({len(doors)} total)\nBlack rectangles with arrows show one-way passages', fontsize=14)
     ax.set_xticks(range(grid_width))
     ax.set_yticks(range(grid_height))
 
