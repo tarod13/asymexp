@@ -97,34 +97,37 @@ def visualize_eigenvector_on_grid(
 
             # Action mapping: 0=up, 1=right, 2=down, 3=left
             # Determine rectangle position and dimensions based on action
+            # Arrow should be shorter to stay within rectangle
+            arrow_margin = 0.03  # Margin from rectangle edges
+
             if action == 0:  # Up - rectangle on top edge
                 rect_x = source_x - rect_width / 2
                 rect_y = source_y - 0.5 - rect_thickness / 2
                 rect_w = rect_width
                 rect_h = rect_thickness
-                arrow_start = (source_x, source_y - 0.5 + rect_thickness / 4)
-                arrow_end = (source_x, source_y - 0.5 - rect_thickness / 4)
+                arrow_start = (source_x, source_y - 0.5 + rect_thickness / 2 - arrow_margin)
+                arrow_end = (source_x, source_y - 0.5 - rect_thickness / 2 + arrow_margin)
             elif action == 1:  # Right - rectangle on right edge
                 rect_x = source_x + 0.5 - rect_thickness / 2
                 rect_y = source_y - rect_width / 2
                 rect_w = rect_thickness
                 rect_h = rect_width
-                arrow_start = (source_x + 0.5 - rect_thickness / 4, source_y)
-                arrow_end = (source_x + 0.5 + rect_thickness / 4, source_y)
+                arrow_start = (source_x + 0.5 - rect_thickness / 2 + arrow_margin, source_y)
+                arrow_end = (source_x + 0.5 + rect_thickness / 2 - arrow_margin, source_y)
             elif action == 2:  # Down - rectangle on bottom edge
                 rect_x = source_x - rect_width / 2
                 rect_y = source_y + 0.5 - rect_thickness / 2
                 rect_w = rect_width
                 rect_h = rect_thickness
-                arrow_start = (source_x, source_y + 0.5 - rect_thickness / 4)
-                arrow_end = (source_x, source_y + 0.5 + rect_thickness / 4)
+                arrow_start = (source_x, source_y + 0.5 - rect_thickness / 2 + arrow_margin)
+                arrow_end = (source_x, source_y + 0.5 + rect_thickness / 2 - arrow_margin)
             else:  # Left - rectangle on left edge
                 rect_x = source_x - 0.5 - rect_thickness / 2
                 rect_y = source_y - rect_width / 2
                 rect_w = rect_thickness
                 rect_h = rect_width
-                arrow_start = (source_x - 0.5 + rect_thickness / 4, source_y)
-                arrow_end = (source_x - 0.5 - rect_thickness / 4, source_y)
+                arrow_start = (source_x - 0.5 + rect_thickness / 2 - arrow_margin, source_y)
+                arrow_end = (source_x - 0.5 - rect_thickness / 2 + arrow_margin, source_y)
 
             # Draw black rectangle
             rect = mpatches.Rectangle(
@@ -371,8 +374,8 @@ def visualize_left_right_eigenvectors(
     """
     Visualize both left and right eigenvectors in the same figure.
 
-    Each row shows a specific eigenvector index, with left eigenvector
-    in the left column and right eigenvector in the right column.
+    Layout: Row 1 shows left eigenvectors 1 to n, row 2 shows right eigenvectors 1 to n,
+    row 3 shows left eigenvectors n+1 to 2n, row 4 shows right eigenvectors n+1 to 2n, etc.
 
     Args:
         eigenvector_indices: List of eigenvector indices to visualize
@@ -382,8 +385,8 @@ def visualize_left_right_eigenvectors(
         grid_height: Height of the grid
         portals: Optional portal dictionary
         component: 'real' or 'imag'
-        nrows: Number of rows (if None, set to len(eigenvector_indices))
-        ncols: Number of columns (if None, set to 2 for left/right)
+        nrows: Number of rows (if None, computed automatically)
+        ncols: Number of columns (if None, set to min(5, num_eigenvectors))
         figsize: Figure size (if None, computed based on nrows and ncols)
         wall_color: Color for wall/obstacle cells (default: 'gray')
         save_path: Optional path to save the figure
@@ -393,15 +396,18 @@ def visualize_left_right_eigenvectors(
     """
     num_eigenvectors = len(eigenvector_indices)
 
-    # Set default layout: each row is one eigenvector, 2 columns for left/right
-    if nrows is None:
-        nrows = num_eigenvectors
+    # Set default layout: ncols eigenvectors per row, alternating left/right
     if ncols is None:
-        ncols = 2  # Left and Right
+        ncols = min(5, num_eigenvectors)
+
+    # Calculate number of groups and total rows
+    num_groups = (num_eigenvectors + ncols - 1) // ncols  # Ceiling division
+    if nrows is None:
+        nrows = num_groups * 2  # 2 rows per group (left and right)
 
     # Compute figsize if not provided
     if figsize is None:
-        figsize = (ncols * 5, nrows * 4)
+        figsize = (ncols * 4, nrows * 4)
 
     fig, axes = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False)
 
@@ -413,10 +419,13 @@ def visualize_left_right_eigenvectors(
         left_eigenvector_matrix = eigendecomposition['left_eigenvectors_imag']
         right_eigenvector_matrix = eigendecomposition['right_eigenvectors_imag']
 
-    # Plot each eigenvector
-    for row_idx, eigenvec_idx in enumerate(eigenvector_indices):
-        if row_idx >= nrows:
-            break
+    # Plot eigenvectors in the new layout
+    for idx, eigenvec_idx in enumerate(eigenvector_indices):
+        group_idx = idx // ncols  # Which group (0, 1, 2, ...)
+        col_idx = idx % ncols      # Which column within the group
+
+        left_row = group_idx * 2      # Left eigenvectors on even rows
+        right_row = group_idx * 2 + 1 # Right eigenvectors on odd rows
 
         eigenvalue = eigendecomposition['eigenvalues'][eigenvec_idx]
 
@@ -430,7 +439,7 @@ def visualize_left_right_eigenvectors(
             grid_height=grid_height,
             portals=portals,
             title=f'Left Eigvec {eigenvec_idx} ({component})\nλ = {np.abs(eigenvalue):.3f}',
-            ax=axes[row_idx, 0],
+            ax=axes[left_row, col_idx],
             cmap='RdBu_r',
             show_colorbar=False,
             wall_color=wall_color
@@ -446,16 +455,26 @@ def visualize_left_right_eigenvectors(
             grid_height=grid_height,
             portals=portals,
             title=f'Right Eigvec {eigenvec_idx} ({component})\nλ = {np.abs(eigenvalue):.3f}',
-            ax=axes[row_idx, 1],
+            ax=axes[right_row, col_idx],
             cmap='RdBu_r',
             show_colorbar=False,
             wall_color=wall_color
         )
 
     # Hide unused subplots
-    for row_idx in range(num_eigenvectors, nrows):
-        for col_idx in range(ncols):
-            axes[row_idx, col_idx].axis('off')
+    for group_idx in range(num_groups):
+        # How many eigenvectors in this group?
+        start_idx = group_idx * ncols
+        end_idx = min(start_idx + ncols, num_eigenvectors)
+        num_in_group = end_idx - start_idx
+
+        # Hide unused columns in this group's left and right rows
+        left_row = group_idx * 2
+        right_row = group_idx * 2 + 1
+
+        for col_idx in range(num_in_group, ncols):
+            axes[left_row, col_idx].axis('off')
+            axes[right_row, col_idx].axis('off')
 
     plt.tight_layout()
 

@@ -110,7 +110,7 @@ def visualize_doors_on_grid(
     # Door rectangle dimensions
     rect_thickness = 0.15  # Thin dimension
     rect_width = 0.7  # Wide dimension (parallel to action)
-    arrow_scale = 0.4  # Arrow size relative to rectangle
+    arrow_margin = 0.03  # Margin from rectangle edges to keep arrow inside
 
     # Action mapping: 0=up, 1=right, 2=down, 3=left
     for idx, (s_canonical, a_forward, s_prime_canonical, a_reverse) in enumerate(doors):
@@ -120,34 +120,35 @@ def visualize_doors_on_grid(
         s_x = s_full % grid_width
 
         # Determine rectangle position and dimensions based on action
+        # Arrow should be shorter to stay within rectangle
         if a_forward == 0:  # Up - rectangle on top edge
             rect_x = s_x - rect_width / 2
             rect_y = s_y - 0.5 - rect_thickness / 2
             rect_w = rect_width
             rect_h = rect_thickness
-            arrow_start = (s_x, s_y - 0.5 + rect_thickness / 4)
-            arrow_end = (s_x, s_y - 0.5 - rect_thickness / 4)
+            arrow_start = (s_x, s_y - 0.5 + rect_thickness / 2 - arrow_margin)
+            arrow_end = (s_x, s_y - 0.5 - rect_thickness / 2 + arrow_margin)
         elif a_forward == 1:  # Right - rectangle on right edge
             rect_x = s_x + 0.5 - rect_thickness / 2
             rect_y = s_y - rect_width / 2
             rect_w = rect_thickness
             rect_h = rect_width
-            arrow_start = (s_x + 0.5 - rect_thickness / 4, s_y)
-            arrow_end = (s_x + 0.5 + rect_thickness / 4, s_y)
+            arrow_start = (s_x + 0.5 - rect_thickness / 2 + arrow_margin, s_y)
+            arrow_end = (s_x + 0.5 + rect_thickness / 2 - arrow_margin, s_y)
         elif a_forward == 2:  # Down - rectangle on bottom edge
             rect_x = s_x - rect_width / 2
             rect_y = s_y + 0.5 - rect_thickness / 2
             rect_w = rect_width
             rect_h = rect_thickness
-            arrow_start = (s_x, s_y + 0.5 - rect_thickness / 4)
-            arrow_end = (s_x, s_y + 0.5 + rect_thickness / 4)
+            arrow_start = (s_x, s_y + 0.5 - rect_thickness / 2 + arrow_margin)
+            arrow_end = (s_x, s_y + 0.5 + rect_thickness / 2 - arrow_margin)
         else:  # Left - rectangle on left edge
             rect_x = s_x - 0.5 - rect_thickness / 2
             rect_y = s_y - rect_width / 2
             rect_w = rect_thickness
             rect_h = rect_width
-            arrow_start = (s_x - 0.5 + rect_thickness / 4, s_y)
-            arrow_end = (s_x - 0.5 - rect_thickness / 4, s_y)
+            arrow_start = (s_x - 0.5 + rect_thickness / 2 - arrow_margin, s_y)
+            arrow_end = (s_x - 0.5 - rect_thickness / 2 + arrow_margin, s_y)
 
         # Draw black rectangle
         rect = mpatches.Rectangle(
