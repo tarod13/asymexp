@@ -84,58 +84,70 @@ def visualize_eigenvector_on_grid(
     for j in range(grid_width + 1):
         ax.axvline(j - 0.5, color='gray', linewidth=0.5, alpha=0.3)
 
-    # Add portals if provided
+    # Add portals/doors if provided
     if portals is not None and len(portals) > 0:
-        # Create unique colors for each portal
-        portal_list = list(portals.items())
-        colors = plt.cm.rainbow(np.linspace(0, 1, len(portal_list)))
+        # Door rectangle dimensions
+        rect_thickness = 0.15  # Thin dimension
+        rect_width = 0.7  # Wide dimension (parallel to action)
 
-        for idx, ((source_idx, action), dest_idx) in enumerate(portal_list):
+        for (source_idx, action), dest_idx in portals.items():
             # Convert state indices to grid coordinates
             source_y = source_idx // grid_width
             source_x = source_idx % grid_width
-            dest_y = dest_idx // grid_width
-            dest_x = dest_idx % grid_width
 
-            # Action to direction mapping (assuming: 0=down, 1=up, 2=right, 3=left)
-            action_offsets = {
-                0: (0, 0.3),    # down
-                1: (0, -0.3),   # up
-                2: (0.3, 0),    # right
-                3: (-0.3, 0),   # left
-            }
+            # Action mapping: 0=up, 1=right, 2=down, 3=left
+            # Determine rectangle position and dimensions based on action
+            if action == 0:  # Up - rectangle on top edge
+                rect_x = source_x - rect_width / 2
+                rect_y = source_y - 0.5 - rect_thickness / 2
+                rect_w = rect_width
+                rect_h = rect_thickness
+                arrow_start = (source_x, source_y - 0.5 + rect_thickness / 4)
+                arrow_end = (source_x, source_y - 0.5 - rect_thickness / 4)
+            elif action == 1:  # Right - rectangle on right edge
+                rect_x = source_x + 0.5 - rect_thickness / 2
+                rect_y = source_y - rect_width / 2
+                rect_w = rect_thickness
+                rect_h = rect_width
+                arrow_start = (source_x + 0.5 - rect_thickness / 4, source_y)
+                arrow_end = (source_x + 0.5 + rect_thickness / 4, source_y)
+            elif action == 2:  # Down - rectangle on bottom edge
+                rect_x = source_x - rect_width / 2
+                rect_y = source_y + 0.5 - rect_thickness / 2
+                rect_w = rect_width
+                rect_h = rect_thickness
+                arrow_start = (source_x, source_y + 0.5 - rect_thickness / 4)
+                arrow_end = (source_x, source_y + 0.5 + rect_thickness / 4)
+            else:  # Left - rectangle on left edge
+                rect_x = source_x - 0.5 - rect_thickness / 2
+                rect_y = source_y - rect_width / 2
+                rect_w = rect_thickness
+                rect_h = rect_width
+                arrow_start = (source_x - 0.5 + rect_thickness / 4, source_y)
+                arrow_end = (source_x - 0.5 - rect_thickness / 4, source_y)
 
-            # Draw portal symbol at source with arrow indicating action
-            if action in action_offsets:
-                dx, dy = action_offsets[action]
-                # Draw a circle at source
-                circle = mpatches.Circle(
-                    (source_x, source_y),
-                    radius=0.15,
-                    facecolor=colors[idx],
-                    edgecolor='black',
-                    linewidth=1.5,
-                    alpha=0.8,
-                    zorder=10
-                )
-                ax.add_patch(circle)
+            # Draw black rectangle
+            rect = mpatches.Rectangle(
+                (rect_x, rect_y), rect_w, rect_h,
+                linewidth=0,
+                edgecolor='none',
+                facecolor='black',
+                zorder=10
+            )
+            ax.add_patch(rect)
 
-                # Draw arrow indicating action direction
-                ax.arrow(
-                    source_x, source_y,
-                    dx, dy,
-                    head_width=0.15,
-                    head_length=0.1,
-                    fc='black',
-                    ec='black',
-                    linewidth=1.5,
-                    alpha=0.9,
-                    zorder=11
-                )
-
-                # Draw destination marker (small X or different symbol)
-                ax.plot(dest_x, dest_y, 'x', color=colors[idx],
-                       markersize=12, markeredgewidth=3, zorder=10)
+            # Draw white arrow inside rectangle
+            ax.annotate('',
+                       xy=arrow_end,
+                       xytext=arrow_start,
+                       arrowprops=dict(
+                           arrowstyle='->',
+                           lw=2,
+                           color='white',
+                           shrinkA=0,
+                           shrinkB=0,
+                           zorder=11
+                       ))
 
     # Set limits and labels
     ax.set_xlim(-0.5, grid_width - 0.5)

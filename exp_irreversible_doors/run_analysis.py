@@ -14,7 +14,7 @@ import numpy as np
 import pickle
 import argparse
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 import sys
 
 # Add parent directory to path for imports
@@ -68,6 +68,7 @@ def visualize_doors_on_grid(
     canonical_states: jnp.ndarray,
     grid_width: int,
     grid_height: int,
+    obstacles: List[Tuple[int, int]],
     output_path: str
 ):
     """
@@ -81,12 +82,24 @@ def visualize_doors_on_grid(
         canonical_states: Canonical state mapping
         grid_width: Grid width
         grid_height: Grid height
+        obstacles: List of obstacle positions (x, y)
         output_path: Path to save visualization
     """
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
 
     fig, ax = plt.subplots(figsize=(10, 10))
+
+    # Draw obstacles/walls first
+    for obs_x, obs_y in obstacles:
+        rect = mpatches.Rectangle(
+            (obs_x - 0.5, obs_y - 0.5), 1, 1,
+            linewidth=0,
+            edgecolor='none',
+            facecolor='gray',
+            alpha=0.7
+        )
+        ax.add_patch(rect)
 
     # Draw grid
     for i in range(grid_height + 1):
@@ -292,6 +305,7 @@ def run_door_analysis(
                 canonical_states=canonical_states,
                 grid_width=grid_width,
                 grid_height=metadata.get("grid_height", grid_width),
+                obstacles=metadata.get("obstacles", []),
                 output_path=str(output_path / "door_locations.png")
             )
 
