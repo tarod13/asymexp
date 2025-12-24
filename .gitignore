@@ -208,6 +208,7 @@ __marimo__/
 
 # Experiment results and visualizations
 exp_complex_basis/results/
+exp_irreversible_doors/results/
 **/results/*.pkl
 **/results/*.png
 **/results/*.txt
