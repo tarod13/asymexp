@@ -7,7 +7,8 @@ This script:
 3. Analyzes distances in eigenspace (real and imaginary components)
 4. Compares with actual environment distances
 5. Aggregates results across environments
-6. Saves results and generates visualizations
+6. Computes hitting times and evaluates imaginary error
+7. Saves results and generates visualizations
 """
 
 import jax
@@ -22,14 +23,9 @@ import sys
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
 
-from exp_complex_basis.eigendecomposition import (
-    compute_eigendecomposition_batched,
-    analyze_eigenvalue_spectrum,
-    get_nonsymmetrized_transition_matrix,
-)
-from exp_complex_basis.eigenvector_visualization import (
-    create_eigenvector_visualization_report,
-)
+from exp_complex_basis.eigendecomposition import compute_eigendecomposition_batched
+from exp_complex_basis.eigenvector_visualization import create_eigenvector_visualization_report
+from exp_complex_basis.hitting_times import compute_hitting_times_batched
 from src.data_collection import collect_transition_counts_batched_portals
 from src.envs.env import create_environment_from_text
 from src.envs.portal_gridworld import create_random_portal_env
@@ -211,7 +207,9 @@ def run_eigendecomposition_analysis(
     num_eigenvectors_to_visualize: int = 6,
     nrows: Optional[int] = None,
     ncols: Optional[int] = None,
-    wall_color: str = 'gray'
+    wall_color: str = 'gray',
+    smoothing: float = 1e-5,
+    normalize: bool = True,
 ) -> Dict:
     """
     Run complete eigendecomposition analysis on batched transition data.
@@ -247,8 +245,8 @@ def run_eigendecomposition_analysis(
     batched_eigendecomp = compute_eigendecomposition_batched(
         batched_transition_counts,
         k=k,
-        smoothing=1e-5,
-        normalize=True,
+        smoothing=smoothing,
+        normalize=normalize,
         sort_by_magnitude=True
     )
     print(f"  Computed {k} eigenvalues/vectors for {num_envs} environments")
@@ -278,13 +276,17 @@ def run_eigendecomposition_analysis(
         print(f"    λ_{i}: {avg_mags[i]:.6f}")
 
     # Step 3: Visualize eigenvectors for first environment as example
-    print("\n[3/3] Visualizing eigenvectors (using first environment as example)...")
+    print("\n[3/4] Visualizing eigenvectors (using first environment as example)...")
 
     # Use first environment for visualization
     first_env_eigendecomp = {
         key: value[0] for key, value in batched_eigendecomp.items()
     }
 
+    # Compute hitting times for the first environment
+    first_env_hitting_times, first_env_hitting_times_imag_error = compute_hitting_times_batched(first_env_eigendecomp)
+    print(f"  First env hitting times imaginary error: {first_env_hitting_times_imag_error:.6e}")
+    
     # Compile all results
     results = {
         "batched_eigendecomposition": batched_eigendecomp,
@@ -319,7 +321,9 @@ def run_eigendecomposition_analysis(
             f.write("Eigenvector visualizations:\n")
             f.write(f"  - Left eigenvectors (real and imaginary components)\n")
             f.write(f"  - Right eigenvectors (real and imaginary components)\n")
+            f.write(f"  - Hitting times imaginary error (first env): {first_env_hitting_times_imag_error:.6e}\n")
             f.write(f"\nVisualizations saved to: {output_path}/visualizations/\n")
+
 
         print(f"Summary saved to {summary_file}")
 
@@ -450,6 +454,17 @@ def main():
         default=6,
         help="Number of eigenvectors to visualize (default: 6)"
     )
+    parser.add_argument(
+        "--smoothing",
+        type=float,
+        default=0.0,
+        help="Smoothing parameter for transition matrix computation (default: 0.0)"
+    )
+    parser.add_argument(
+        "--normalization",
+        action="store_true",
+        help="Enable row-normalization of transition matrix (default: False)"
+    )
 
     args = parser.parse_args()
 
@@ -475,7 +490,9 @@ def main():
         num_eigenvectors_to_visualize=args.num_eigenvectors,
         nrows=args.nrows,
         ncols=args.ncols,
-        wall_color=args.wall_color
+        wall_color=args.wall_color,
+        smoothing=args.smoothing,
+        normalize=args.normalization,
     )
 
     return results

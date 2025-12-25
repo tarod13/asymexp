@@ -23,6 +23,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from exp_complex_basis.eigendecomposition import (
     compute_eigendecomposition_batched,
 )
+from exp_complex_basis.hitting_times import compute_hitting_times_batched
 from exp_complex_basis.eigenvector_visualization import (
     create_eigenvector_visualization_report,
 )
@@ -240,7 +241,7 @@ def run_door_analysis(
     print(f"Doors per environment: {metadata.get('num_doors_per_env', 'unknown')}")
 
     # Compute batched eigendecomposition
-    print("\n[1/3] Computing batched eigendecomposition...")
+    print("\n[1/4] Computing batched eigendecomposition...")
     batched_eigendecomp = compute_eigendecomposition_batched(
         batched_transition_counts,
         k=k,
@@ -251,7 +252,7 @@ def run_door_analysis(
     print(f"  Computed {k} eigenvalues/vectors for {num_envs} environments")
 
     # Analyze eigenvalue spectrum
-    print("\n[2/3] Analyzing eigenvalue spectrum...")
+    print("\n[2/4] Analyzing eigenvalue spectrum...")
     eigenvalues_real = batched_eigendecomp["eigenvalues_real"]
     eigenvalues_imag = batched_eigendecomp["eigenvalues_imag"]
     eigenvalue_mags = jnp.abs(batched_eigendecomp["eigenvalues"])
@@ -271,14 +272,21 @@ def run_door_analysis(
         print(f"    λ_{i}: {avg_mags[i]:.6f}")
 
     # Visualize eigenvectors
-    print("\n[3/3] Visualizing eigenvectors (using first environment)...")
+    print("\n[3/4] Visualizing eigenvectors (using first environment)...")
     first_env_eigendecomp = {
         key: value[0] for key, value in batched_eigendecomp.items()
     }
 
+    # Compute hitting times
+    print("\n[4/4] Computing hitting times for all environments...")
+    batched_hitting_times, batched_hitting_times_imag_error = compute_hitting_times_batched(batched_eigendecomp)
+    print(f"  Hitting times imaginary error: mean={jnp.mean(batched_hitting_times_imag_error):.6e}, std={jnp.std(batched_hitting_times_imag_error):.6e}")
+
     # Compile results
     results = {
         "batched_eigendecomposition": batched_eigendecomp,
+        "batched_hitting_times": batched_hitting_times,
+        "batched_hitting_times_imaginary_error": batched_hitting_times_imag_error,
         "metadata": metadata,
         "parameters": {
             "k": k,
@@ -311,6 +319,8 @@ def run_door_analysis(
             f.write(f"  - Left eigenvectors (real and imaginary components)\n")
             f.write(f"  - Right eigenvectors (real and imaginary components)\n")
             f.write(f"\nVisualizations saved to: {output_path}/visualizations/\n")
+            f.write(f"Hitting times imaginary error (mean): {jnp.mean(batched_hitting_times_imag_error):.6e}\n")
+            f.write(f"Hitting times imaginary error (std): {jnp.std(batched_hitting_times_imag_error):.6e}\n")
 
         print(f"Summary saved to {summary_file}")
 
@@ -325,10 +335,6 @@ def run_door_analysis(
                 output_path=str(output_path / "door_locations.png")
             )
 
-        # Generate eigenvector visualizations
-        print("\nGenerating eigenvector visualizations...")
-        grid_height = metadata.get("grid_height", grid_width)
-
         # Convert doors to portal-like format for visualization (just to show door locations)
         # Doors are (s, a, s', a_reverse), convert to {(s_full, a): s'_full}
         door_markers = {}
@@ -338,6 +344,8 @@ def run_door_analysis(
                 s_prime_full = int(canonical_states[s_prime_canonical])
                 door_markers[(s_full, a)] = s_prime_full
 
+        # Generate eigenvector visualizations
+        grid_height = metadata.get("grid_height", grid_width)
         create_eigenvector_visualization_report(
             eigendecomposition=first_env_eigendecomp,
             canonical_states=canonical_states,
