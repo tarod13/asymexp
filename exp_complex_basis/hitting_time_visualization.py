@@ -80,8 +80,9 @@ def visualize_hitting_time_on_grid(
 
     # Add colorbar
     if show_colorbar:
-        label = 'Log(Expected Steps + 1)' if log_scale else 'Expected Steps'
-        plt.colorbar(im, ax=ax, label=label)
+        label = 'Log(Steps+1)' if log_scale else 'Steps'
+        # Shrink colorbar to fit better next to subplot
+        plt.colorbar(im, ax=ax, label=label, fraction=0.046, pad=0.04)
 
     # Add grid lines
     for i in range(grid_height + 1):
@@ -161,9 +162,28 @@ def visualize_source_vs_target_hitting_times(
     wall_color: str = 'gray',
     save_path: Optional[str] = None,
     log_scale: bool = False,
+    shared_colorbar: bool = True,
 ) -> plt.Figure:
     """
     Visualize hitting times for states acting as Targets (columns) vs Sources (rows).
+    
+    Args:
+        state_indices: List of state indices to visualize
+        hitting_time_matrix: Matrix [num_states, num_states]
+        canonical_states: State mapping
+        grid_width: Grid width
+        grid_height: Grid height
+        portals: Portal/Door dict
+        ncols: Number of states per row
+        figsize: Figure size
+        wall_color: Color for walls
+        save_path: Path to save
+        log_scale: Whether to plot log(values + 1)
+        shared_colorbar: If True, all plots share the same color scale and one colorbar.
+                         If False, each plot is scaled independently with its own colorbar.
+
+    Returns:
+        Matplotlib figure
     """
     num_states = len(state_indices)
     
@@ -184,20 +204,22 @@ def visualize_source_vs_target_hitting_times(
     elif ncols == 1:
         axes = axes.reshape(-1, 1)
 
-    # Compute global color scales
-    # Clip to 0 for safety in visualization scale
+    # Compute global color scales if shared
     safe_matrix = np.maximum(hitting_time_matrix, 0)
     
-    if log_scale:
-        max_val = np.log1p(np.max(safe_matrix))
-    else:
-        max_val = np.max(safe_matrix)
+    vmin = None
+    vmax = None
     
-    if np.isnan(max_val):
-        max_val = np.nanmax(np.log1p(safe_matrix) if log_scale else safe_matrix)
-
-    vmin = 0
-    vmax = max_val
+    if shared_colorbar:
+        vmin = 0
+        if log_scale:
+            max_val = np.log1p(np.max(safe_matrix))
+        else:
+            max_val = np.max(safe_matrix)
+        
+        if np.isnan(max_val):
+            max_val = np.nanmax(np.log1p(safe_matrix) if log_scale else safe_matrix)
+        vmax = max_val
 
     for idx, state_idx in enumerate(state_indices):
         r_logical = idx // ncols
@@ -223,7 +245,7 @@ def visualize_source_vs_target_hitting_times(
             title=f'State {state_idx}\n(Target View: Times TO here)',
             ax=ax_target,
             cmap='viridis',
-            show_colorbar=False,
+            show_colorbar=not shared_colorbar,
             wall_color=wall_color,
             vmin=vmin,
             vmax=vmax,
@@ -244,7 +266,7 @@ def visualize_source_vs_target_hitting_times(
             title=f'State {state_idx}\n(Source View: Times FROM here)',
             ax=ax_source,
             cmap='viridis',
-            show_colorbar=False,
+            show_colorbar=not shared_colorbar,
             wall_color=wall_color,
             vmin=vmin,
             vmax=vmax,
@@ -258,23 +280,24 @@ def visualize_source_vs_target_hitting_times(
         axes[r_logical * 2, c].axis('off')
         axes[r_logical * 2 + 1, c].axis('off')
 
-    # Apply tight layout first to organize the subplots
     plt.tight_layout()
     
-    # Adjust the right margin to create space for the colorbar
-    fig.subplots_adjust(right=0.9)
-    
-    # Add a global colorbar on the right side
-    # Coordinates are [left, bottom, width, height] in figure relative coords
-    cax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
-    
-    sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
-    sm.set_array([])
-    cbar = plt.colorbar(sm, cax=cax, orientation='vertical')
-    cbar.ax.tick_params(labelsize=10)
-    
-    cbar_label = 'Log(Expected Steps + 1)' if log_scale else 'Expected Steps'
-    cbar.set_label(cbar_label, fontsize=12)
+    # Add global colorbar if shared
+    if shared_colorbar:
+        # Adjust the right margin to create space for the colorbar
+        fig.subplots_adjust(right=0.9)
+        
+        # Add a global colorbar on the right side
+        # Coordinates are [left, bottom, width, height] in figure relative coords
+        cax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+        
+        sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
+        sm.set_array([])
+        cbar = plt.colorbar(sm, cax=cax, orientation='vertical')
+        cbar.ax.tick_params(labelsize=10)
+        
+        cbar_label = 'Log(Expected Steps + 1)' if log_scale else 'Expected Steps'
+        cbar.set_label(cbar_label, fontsize=12)
 
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -298,6 +321,7 @@ def create_hitting_time_visualization_report(
 ):
     """
     Create a complete visualization report for hitting times.
+    Generates two versions: one with shared scale (limits compared) and one with independent scales.
     """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -311,9 +335,8 @@ def create_hitting_time_visualization_report(
     
     print(f"  Visualizing source/target comparisons for {len(target_indices)} states...")
     
-    # Use the new source vs target visualization
-    filename = f"hitting_times_asymmetry{'_log' if log_scale else ''}.png"
-    
+    # 1. Shared Scale Version (Limits compared)
+    filename_shared = f"hitting_times_asymmetry{'_log' if log_scale else ''}_shared_scale.png"
     visualize_source_vs_target_hitting_times(
         state_indices=target_indices,
         hitting_time_matrix=hitting_time_matrix,
@@ -323,9 +346,27 @@ def create_hitting_time_visualization_report(
         portals=portals,
         ncols=ncols,
         wall_color=wall_color,
-        save_path=output_path / filename,
-        log_scale=log_scale
+        save_path=output_path / filename_shared,
+        log_scale=log_scale,
+        shared_colorbar=True
     )
     plt.close()
 
-    print(f"\nHitting time visualization report saved to {output_dir}")
+    # 2. Independent Scale Version
+    filename_independent = f"hitting_times_asymmetry{'_log' if log_scale else ''}_independent_scale.png"
+    visualize_source_vs_target_hitting_times(
+        state_indices=target_indices,
+        hitting_time_matrix=hitting_time_matrix,
+        canonical_states=canonical_states,
+        grid_width=grid_width,
+        grid_height=grid_height,
+        portals=portals,
+        ncols=ncols,
+        wall_color=wall_color,
+        save_path=output_path / filename_independent,
+        log_scale=log_scale,
+        shared_colorbar=False
+    )
+    plt.close()
+
+    print(f"\nHitting time visualization reports saved to {output_dir}")
