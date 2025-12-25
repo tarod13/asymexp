@@ -80,17 +80,28 @@ def compute_eigendecomposition(
     # For left eigenvectors: v^T A = lambda v^T => A^T v = lambda v
     eigenvalues_left, left_eigenvectors = jnp.linalg.eig(transition_matrix.T)
 
+    # Match left eigenvectors to right eigenvectors
+    cross_products = jnp.einsum('ij,ik->jk', left_eigenvectors, right_eigenvectors)
+    
+    # For each right eigenvector (column j), find the best matching left eigenvector (row i)
+    best_left_indices = jnp.argmax(jnp.abs(cross_products), axis=0)
+    
+    # Reorder left eigenvectors to match right eigenvectors
+    left_eigenvectors = left_eigenvectors[:, best_left_indices]
+    
+    # Normalize left eigenvectors
+    dot_products = cross_products[best_left_indices, jnp.arange(cross_products.shape[1])]
+    
+    # Scale left vectors by 1/dot_product
+    left_eigenvectors = left_eigenvectors / dot_products[None, :]
+
     # Sort by magnitude if requested
     if sort_by_magnitude:
         magnitudes = jnp.abs(eigenvalues)
         sorted_indices = jnp.argsort(-magnitudes)  # Descending order
         eigenvalues = eigenvalues[sorted_indices]
         right_eigenvectors = right_eigenvectors[:, sorted_indices]
-
-        # Sort left eigenvectors by same ordering as right
-        magnitudes_left = jnp.abs(eigenvalues_left)
-        sorted_indices_left = jnp.argsort(-magnitudes_left)
-        left_eigenvectors = left_eigenvectors[:, sorted_indices_left]
+        left_eigenvectors = left_eigenvectors[:, sorted_indices]
 
     # Keep only top k if specified
     if k is not None:

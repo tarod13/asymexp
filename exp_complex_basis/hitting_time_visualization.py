@@ -29,6 +29,7 @@ def visualize_hitting_time_on_grid(
     wall_color: str = 'gray',
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
+    log_scale: bool = False,
 ) -> plt.Axes:
     """
     Visualize hitting times overlaid on the grid.
@@ -48,6 +49,7 @@ def visualize_hitting_time_on_grid(
         wall_color: Color for wall/obstacle cells
         vmin: Minimum value for colormap
         vmax: Maximum value for colormap
+        log_scale: Whether to plot log(values + 1)
 
     Returns:
         Matplotlib axes object
@@ -55,11 +57,19 @@ def visualize_hitting_time_on_grid(
     if ax is None:
         fig, ax = plt.subplots(figsize=(8, 8))
 
+    # Transform values if log_scale is requested
+    if log_scale:
+        # Clip to 0 to prevent NaNs from small negative errors
+        safe_values = np.maximum(hitting_time_values, 0)
+        values_to_plot = np.log1p(safe_values)
+    else:
+        values_to_plot = hitting_time_values
+
     # Create grid for hitting time values
     ht_grid = np.full((grid_height, grid_width), np.nan)
 
     # Map canonical states to full grid positions
-    for canonical_idx, value in enumerate(hitting_time_values):
+    for canonical_idx, value in enumerate(values_to_plot):
         full_state_idx = canonical_states[canonical_idx]
         y = int(full_state_idx) // grid_width
         x = int(full_state_idx) % grid_width
@@ -94,7 +104,8 @@ def visualize_hitting_time_on_grid(
 
     # Add colorbar
     if show_colorbar:
-        plt.colorbar(im, ax=ax, label='Expected Steps')
+        label = 'Log(Expected Steps + 1)' if log_scale else 'Expected Steps'
+        plt.colorbar(im, ax=ax, label=label)
 
     # Add grid lines
     for i in range(grid_height + 1):
@@ -172,17 +183,12 @@ def visualize_source_vs_target_hitting_times(
     ncols: int = 5,
     figsize: Optional[Tuple[int, int]] = None,
     wall_color: str = 'gray',
-    save_path: Optional[str] = None
+    save_path: Optional[str] = None,
+    log_scale: bool = False,
 ) -> plt.Figure:
     """
     Visualize hitting times for states acting as Targets (columns) vs Sources (rows).
     
-    Layout:
-    - Row 0: State 1 (Target), State 2 (Target)...
-    - Row 1: State 1 (Source), State 2 (Source)...
-    - Row 2: State N+1 (Target)...
-    - Row 3: State N+1 (Source)...
-
     Args:
         state_indices: List of state indices to visualize
         hitting_time_matrix: Matrix [num_states, num_states]
@@ -194,6 +200,7 @@ def visualize_source_vs_target_hitting_times(
         figsize: Figure size
         wall_color: Color for walls
         save_path: Path to save
+        log_scale: Whether to plot log(values + 1)
 
     Returns:
         Matplotlib figure
@@ -201,11 +208,7 @@ def visualize_source_vs_target_hitting_times(
     num_states = len(state_indices)
     
     # Calculate grid dimensions
-    # We create pairs of rows. 
-    # num_logical_rows is how many rows of STATES we have
     num_logical_rows = (num_states + ncols - 1) // ncols
-    
-    # Actual rows in plot is double that (one for target view, one for source view)
     nrows = num_logical_rows * 2
 
     if figsize is None:
@@ -221,10 +224,23 @@ def visualize_source_vs_target_hitting_times(
     elif ncols == 1:
         axes = axes.reshape(-1, 1)
 
-    # Compute global color scales to make comparison easier
-    # We compute one vmin/vmax for the whole set to keep colors consistent
+    # Compute global color scales
+    # If log_scale is on, we compute the max of log(1+H)
+    # If log_scale is off, we compute the max of H
+    
+    # Clip to 0 for safety in visualization scale
+    safe_matrix = np.maximum(hitting_time_matrix, 0)
+    
+    if log_scale:
+        max_val = np.log1p(np.max(safe_matrix))
+    else:
+        max_val = np.max(safe_matrix)
+    
+    if np.isnan(max_val):
+        max_val = np.nanmax(np.log1p(safe_matrix) if log_scale else safe_matrix)
+
     vmin = 0
-    vmax = np.percentile(hitting_time_matrix, 95)
+    vmax = max_val
 
     for idx, state_idx in enumerate(state_indices):
         r_logical = idx // ncols
@@ -237,7 +253,6 @@ def visualize_source_vs_target_hitting_times(
         ax_source = axes[r_logical * 2 + 1, c]
 
         # 1. Target View: Column of H (Time TO state_idx)
-        # H[:, j] is time from all i to j
         times_to_state = hitting_time_matrix[:, state_idx]
         
         visualize_hitting_time_on_grid(
@@ -254,11 +269,11 @@ def visualize_source_vs_target_hitting_times(
             show_colorbar=False,
             wall_color=wall_color,
             vmin=vmin,
-            vmax=vmax
+            vmax=vmax,
+            log_scale=log_scale
         )
 
         # 2. Source View: Row of H (Time FROM state_idx)
-        # H[i, :] is time from i to all j
         times_from_state = hitting_time_matrix[state_idx, :]
         
         visualize_hitting_time_on_grid(
@@ -275,7 +290,8 @@ def visualize_source_vs_target_hitting_times(
             show_colorbar=False,
             wall_color=wall_color,
             vmin=vmin,
-            vmax=vmax
+            vmax=vmax,
+            log_scale=log_scale
         )
 
     # Hide unused axes
@@ -292,7 +308,9 @@ def visualize_source_vs_target_hitting_times(
     sm.set_array([])
     cbar = plt.colorbar(sm, cax=cax, orientation='vertical')
     cbar.ax.tick_params(labelsize=8)
-    cbar.set_label('Expected Steps')
+    
+    cbar_label = 'Log(Expected Steps + 1)' if log_scale else 'Expected Steps'
+    cbar.set_label(cbar_label)
 
     plt.tight_layout()
 
@@ -313,7 +331,8 @@ def create_hitting_time_visualization_report(
     num_targets: int = 6,
     target_indices: Optional[List[int]] = None,
     ncols: int = 6,
-    wall_color: str = 'gray'
+    wall_color: str = 'gray',
+    log_scale: bool = False,
 ):
     """
     Create a complete visualization report for hitting times.
@@ -331,6 +350,8 @@ def create_hitting_time_visualization_report(
     print(f"  Visualizing source/target comparisons for {len(target_indices)} states...")
     
     # Use the new source vs target visualization
+    filename = f"hitting_times_asymmetry{'_log' if log_scale else ''}.png"
+    
     visualize_source_vs_target_hitting_times(
         state_indices=target_indices,
         hitting_time_matrix=hitting_time_matrix,
@@ -340,7 +361,8 @@ def create_hitting_time_visualization_report(
         portals=portals,
         ncols=ncols,
         wall_color=wall_color,
-        save_path=output_path / "hitting_times_asymmetry.png"
+        save_path=output_path / filename,
+        log_scale=log_scale
     )
     plt.close()
 

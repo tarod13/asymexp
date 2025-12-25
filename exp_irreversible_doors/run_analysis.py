@@ -38,9 +38,7 @@ from src.envs.env import create_environment_from_text
 
 
 def get_canonical_free_states(base_env):
-    """
-    Get the canonical set of free (non-obstacle) states from the base environment.
-    """
+    """Get the canonical set of free (non-obstacle) states from the base environment."""
     width = base_env.width
     height = base_env.height
     all_states = set(range(width * height))
@@ -152,7 +150,8 @@ def run_door_analysis(
     num_targets_to_visualize: int = 6,
     nrows: Optional[int] = None,
     ncols: Optional[int] = None,
-    wall_color: str = 'gray'
+    wall_color: str = 'gray',
+    log_scale: bool = False
 ) -> Dict:
     """Run eigendecomposition analysis on door environments."""
     num_envs = batched_transition_counts.shape[0]
@@ -264,7 +263,8 @@ def run_door_analysis(
             output_dir=str(output_path / "visualizations"),
             num_targets=num_targets_to_visualize,
             ncols=ht_ncols,
-            wall_color=wall_color
+            wall_color=wall_color,
+            log_scale=log_scale
         )
 
     print("\n" + "=" * 80)
@@ -290,6 +290,7 @@ def main():
     parser.add_argument("--wall-color", type=str, default="gray", help="Color for walls")
     parser.add_argument("--num-eigenvectors", type=int, default=6, help="Eigenvectors to visualize")
     parser.add_argument("--num-targets", type=int, default=6, help="Number of target states to visualize for hitting times")
+    parser.add_argument("--log-scale", action="store_true", help="Use logarithmic scale (log(x+1)) for hitting time plots")
 
     args = parser.parse_args()
 
@@ -324,7 +325,8 @@ def main():
         num_targets_to_visualize=args.num_targets,
         nrows=args.nrows,
         ncols=args.ncols,
-        wall_color=args.wall_color
+        wall_color=args.wall_color,
+        log_scale=args.log_scale
     )
 
     return results
