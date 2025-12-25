@@ -8,7 +8,10 @@ the eigenvectors through an augmented Lagrangian optimization approach.
 import os
 import random
 import time
+import json
+import pickle
 from typing import Dict
+from pathlib import Path
 
 import numpy as np
 import jax
@@ -18,18 +21,11 @@ import tyro
 from tqdm import tqdm
 from flax.training.train_state import TrainState
 import flax.linen as nn
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from src.envs.gridworld import GridWorldEnv
 from src.data_collection import collect_transition_counts
-
-import wandb
-import certifi
-
-# Setup certificates and WandB
-ca_cert_path = certifi.where()
-os.environ['WANDB_CA_CERTS'] = ca_cert_path
-os.environ['WANDB_API_KEY'] = '83c25550226f8a86fdd4874026d2c0804cd3dc05'
-os.environ['WANDB_ENTITY'] = 'tarod13'
 
 
 # Simple MLP network for (x,y) coordinates
@@ -181,16 +177,12 @@ class Args:
     turn_off_above_threshold: bool = False
     cum_error_threshold: float = 0.1
 
-    # Logging
-    track: bool = True
-    wandb_project_name: str = "asymexp_allo"
-    wandb_mode: str = "online"
-    wandb_dir: str = "./wandb"
+    # Logging and saving
     log_freq: int = 100
+    plot_freq: int = 1000
     save_freq: int = 1000
-
-    # Saving
     save_model: bool = True
+    results_dir: str = "./results"
 
     # Misc
     seed: int = 42
@@ -207,6 +199,106 @@ def create_gridworld_env(args: Args):
         precision=32,
     )
     return env
+
+
+def plot_learning_curves(metrics_history: Dict, save_path: str):
+    """Plot and save learning curves."""
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    fig.suptitle('Training Metrics', fontsize=16)
+
+    # Extract data
+    steps = [m['gradient_step'] for m in metrics_history]
+
+    # Plot 1: Total loss
+    axes[0, 0].plot(steps, [m['allo'] for m in metrics_history])
+    axes[0, 0].set_xlabel('Gradient Step')
+    axes[0, 0].set_ylabel('Total Loss')
+    axes[0, 0].set_title('ALLO Loss')
+    axes[0, 0].grid(True, alpha=0.3)
+
+    # Plot 2: Graph loss
+    axes[0, 1].plot(steps, [m['graph_loss'] for m in metrics_history])
+    axes[0, 1].set_xlabel('Gradient Step')
+    axes[0, 1].set_ylabel('Graph Loss')
+    axes[0, 1].set_title('Graph Drawing Loss')
+    axes[0, 1].grid(True, alpha=0.3)
+
+    # Plot 3: Total error
+    axes[0, 2].plot(steps, [m['total_error'] for m in metrics_history])
+    axes[0, 2].set_xlabel('Gradient Step')
+    axes[0, 2].set_ylabel('Total Error')
+    axes[0, 2].set_title('Orthogonality Error')
+    axes[0, 2].grid(True, alpha=0.3)
+
+    # Plot 4: Dual loss
+    axes[1, 0].plot(steps, [m['dual_loss'] for m in metrics_history], label='Positive')
+    axes[1, 0].plot(steps, [m['dual_loss_neg'] for m in metrics_history], label='Negative')
+    axes[1, 0].set_xlabel('Gradient Step')
+    axes[1, 0].set_ylabel('Dual Loss')
+    axes[1, 0].set_title('Dual Losses')
+    axes[1, 0].legend()
+    axes[1, 0].grid(True, alpha=0.3)
+
+    # Plot 5: Barrier loss
+    axes[1, 1].plot(steps, [m['barrier_loss'] for m in metrics_history])
+    axes[1, 1].set_xlabel('Gradient Step')
+    axes[1, 1].set_ylabel('Barrier Loss')
+    axes[1, 1].set_title('Barrier Loss')
+    axes[1, 1].grid(True, alpha=0.3)
+
+    # Plot 6: Gradient norm
+    axes[1, 2].plot(steps, [m['grad_norm'] for m in metrics_history])
+    axes[1, 2].set_xlabel('Gradient Step')
+    axes[1, 2].set_ylabel('Gradient Norm')
+    axes[1, 2].set_title('Gradient Norm')
+    axes[1, 2].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Learning curves saved to {save_path}")
+
+
+def plot_eigenvectors_grid(eigenvectors: np.ndarray, grid_width: int, grid_height: int,
+                           save_path: str, title_prefix: str = "Eigenvector"):
+    """Plot eigenvectors as heatmaps on the grid."""
+    num_eigenvectors = eigenvectors.shape[1]
+    n_cols = min(4, num_eigenvectors)
+    n_rows = (num_eigenvectors + n_cols - 1) // n_cols
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows))
+    if n_rows == 1 and n_cols == 1:
+        axes = np.array([[axes]])
+    elif n_rows == 1:
+        axes = axes.reshape(1, -1)
+    elif n_cols == 1:
+        axes = axes.reshape(-1, 1)
+
+    for idx in range(num_eigenvectors):
+        row = idx // n_cols
+        col = idx % n_cols
+        ax = axes[row, col]
+
+        # Reshape eigenvector to grid
+        eigvec_grid = eigenvectors[:, idx].reshape(grid_height, grid_width)
+
+        # Plot heatmap
+        im = ax.imshow(eigvec_grid, cmap='RdBu_r', aspect='auto')
+        ax.set_title(f'{title_prefix} {idx}')
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        plt.colorbar(im, ax=ax)
+
+    # Hide empty subplots
+    for idx in range(num_eigenvectors, n_rows * n_cols):
+        row = idx // n_cols
+        col = idx % n_cols
+        axes[row, col].axis('off')
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Eigenvector plots saved to {save_path}")
 
 
 def state_idx_to_xy(state_idx: int, width: int) -> tuple:
@@ -277,24 +369,20 @@ def learn_eigenvectors(args):
     # Set up run
     run_name = f"{args.env_name}__{args.exp_name}__{args.exp_number}__{args.seed}__{int(time.time())}"
 
-    if args.track:
-        if args.wandb_mode == 'offline':
-            os.environ['WANDB_MODE'] = 'offline'
-        run = wandb.init(
-            project=args.wandb_project_name,
-            config=vars(args),
-            save_code=True,
-            dir=args.wandb_dir,
-            mode=args.wandb_mode,
-        )
-    else:
-        run = None
+    # Create results directories
+    results_dir = Path(args.results_dir) / args.env_name / run_name
+    results_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create results directory
-    if args.save_model:
-        path = f'./results/models/{args.env_name}/placeholder.pkl'
-        if not os.path.exists(os.path.dirname(path)):
-            os.makedirs(os.path.dirname(path))
+    plots_dir = results_dir / "plots"
+    plots_dir.mkdir(exist_ok=True)
+
+    models_dir = results_dir / "models"
+    models_dir.mkdir(exist_ok=True)
+
+    # Save args
+    with open(results_dir / "args.json", 'w') as f:
+        json.dump(vars(args), f, indent=2)
+    print(f"Results will be saved to: {results_dir}")
 
     # Seeding
     random.seed(args.seed)
@@ -546,6 +634,18 @@ def learn_eigenvectors(args):
     # Precompute transition probabilities for sampling
     transition_probs = transition_matrix  # Already normalized
 
+    # Track metrics history
+    metrics_history = []
+
+    # Plot ground truth eigenvectors
+    plot_eigenvectors_grid(
+        np.array(gt_eigenvectors),
+        args.grid_width,
+        args.grid_height,
+        str(plots_dir / "ground_truth_eigenvectors.png"),
+        title_prefix="GT Eigenvector"
+    )
+
     for gradient_step in tqdm(range(args.num_gradient_steps)):
         # Sample random batches
         rng_key, subkey1, subkey2, subkey3, subkey4 = jax.random.split(rng_key, 5)
@@ -586,37 +686,88 @@ def learn_eigenvectors(args):
             or (gradient_step == args.num_gradient_steps - 1)
         )
         if is_log_step:
-            if args.track:
-                log_dict = {
-                    "SPS": int(gradient_step / (time.time() - start_time)),
-                    "gradient_step": gradient_step,
-                    "allo": allo.item(),
-                }
-                for k, v in metrics.items():
-                    log_dict[f"{k}"] = v.item()
-                run.log(log_dict)
+            # Store metrics
+            metrics_dict = {
+                "gradient_step": gradient_step,
+                "allo": float(allo.item()),
+                "sps": int(gradient_step / (time.time() - start_time)),
+            }
+            for k, v in metrics.items():
+                metrics_dict[k] = float(v.item())
+            metrics_history.append(metrics_dict)
 
             if gradient_step % (args.log_freq * 10) == 0:
                 print(f"Step {gradient_step}: loss={allo.item():.4f}, "
                       f"total_error={metrics['total_error'].item():.4f}")
 
+        # Plot learned eigenvectors periodically
+        is_plot_step = (
+            ((gradient_step % args.plot_freq) == 0 and gradient_step > 0)
+            or (gradient_step == args.num_gradient_steps - 1)
+        )
+        if is_plot_step:
+            # Compute learned eigenvectors on all states
+            learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
+            plot_eigenvectors_grid(
+                np.array(learned_features),
+                args.grid_width,
+                args.grid_height,
+                str(plots_dir / f"learned_eigenvectors_step_{gradient_step}.png"),
+                title_prefix="Learned Feature"
+            )
+
+            # Plot learning curves
+            plot_learning_curves(metrics_history, str(plots_dir / "learning_curves.png"))
+
     print("\nTraining complete!")
 
-    # Save model
+    # Save final metrics
+    with open(results_dir / "metrics_history.json", 'w') as f:
+        json.dump(metrics_history, f, indent=2)
+    print(f"Metrics saved to {results_dir / 'metrics_history.json'}")
+
+    # Save final model
     if args.save_model:
-        import pickle
-        save_path = f'./results/models/{args.env_name}/{run_name}.pkl'
+        save_path = models_dir / "final_model.pkl"
         with open(save_path, 'wb') as f:
             pickle.dump({
                 'params': encoder_state.params,
                 'args': vars(args),
+                'gt_eigenvalues': np.array(gt_eigenvalues),
+                'gt_eigenvectors': np.array(gt_eigenvectors),
             }, f)
         print(f"Model saved to {save_path}")
 
-    if args.track:
-        run.finish()
+    # Save final learned eigenvectors
+    final_learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
+    np.save(results_dir / "final_learned_eigenvectors.npy", np.array(final_learned_features))
 
-    return encoder_state, run
+    # Create final comparison plot
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    # Plot first ground truth eigenvector
+    gt_grid = gt_eigenvectors[:, 1].reshape(args.grid_height, args.grid_width)  # Skip constant eigenvector
+    im1 = axes[0].imshow(gt_grid, cmap='RdBu_r', aspect='auto')
+    axes[0].set_title('Ground Truth Eigenvector 1')
+    axes[0].set_xlabel('X')
+    axes[0].set_ylabel('Y')
+    plt.colorbar(im1, ax=axes[0])
+
+    # Plot first learned feature
+    learned_grid = final_learned_features[:, 1].reshape(args.grid_height, args.grid_width)
+    im2 = axes[1].imshow(learned_grid, cmap='RdBu_r', aspect='auto')
+    axes[1].set_title('Learned Feature 1')
+    axes[1].set_xlabel('X')
+    axes[1].set_ylabel('Y')
+    plt.colorbar(im2, ax=axes[1])
+
+    plt.tight_layout()
+    plt.savefig(plots_dir / "final_comparison.png", dpi=150, bbox_inches='tight')
+    plt.close()
+
+    print(f"\nAll results saved to: {results_dir}")
+
+    return encoder_state, results_dir
 
 
 if __name__ == "__main__":
