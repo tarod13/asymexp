@@ -1,9 +1,5 @@
 """
 Visualization utilities for hitting time analysis.
-
-This module provides functions to visualize hitting time values on grid environments,
-showing the expected time to reach specific target states (columns of H)
-or the expected time to reach other states from a source (rows of H).
 """
 
 import jax.numpy as jnp
@@ -33,26 +29,6 @@ def visualize_hitting_time_on_grid(
 ) -> plt.Axes:
     """
     Visualize hitting times overlaid on the grid.
-
-    Args:
-        hitting_time_values: Vector of hitting times [num_states]
-        center_state_idx: Canonical index of the state being analyzed (source or target)
-        canonical_states: Mapping from canonical indices to full state indices [num_states]
-        grid_width: Width of the grid
-        grid_height: Height of the grid
-        mode: 'target' (plotting column: times TO this state) or 'source' (plotting row: times FROM this state)
-        portals: Optional dict mapping (source_state_idx, action) -> dest_state_idx
-        title: Optional title for the plot
-        ax: Optional axes to plot on
-        cmap: Colormap to use
-        show_colorbar: Whether to show the colorbar
-        wall_color: Color for wall/obstacle cells
-        vmin: Minimum value for colormap
-        vmax: Maximum value for colormap
-        log_scale: Whether to plot log(values + 1)
-
-    Returns:
-        Matplotlib axes object
     """
     if ax is None:
         fig, ax = plt.subplots(figsize=(8, 8))
@@ -188,22 +164,6 @@ def visualize_source_vs_target_hitting_times(
 ) -> plt.Figure:
     """
     Visualize hitting times for states acting as Targets (columns) vs Sources (rows).
-    
-    Args:
-        state_indices: List of state indices to visualize
-        hitting_time_matrix: Matrix [num_states, num_states]
-        canonical_states: State mapping
-        grid_width: Grid width
-        grid_height: Grid height
-        portals: Portal/Door dict
-        ncols: Number of states per row
-        figsize: Figure size
-        wall_color: Color for walls
-        save_path: Path to save
-        log_scale: Whether to plot log(values + 1)
-
-    Returns:
-        Matplotlib figure
     """
     num_states = len(state_indices)
     
@@ -225,9 +185,6 @@ def visualize_source_vs_target_hitting_times(
         axes = axes.reshape(-1, 1)
 
     # Compute global color scales
-    # If log_scale is on, we compute the max of log(1+H)
-    # If log_scale is off, we compute the max of H
-    
     # Clip to 0 for safety in visualization scale
     safe_matrix = np.maximum(hitting_time_matrix, 0)
     
@@ -301,18 +258,23 @@ def visualize_source_vs_target_hitting_times(
         axes[r_logical * 2, c].axis('off')
         axes[r_logical * 2 + 1, c].axis('off')
 
-    # Add a single colorbar
-    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-    cax = inset_axes(axes[0, -1], width="8%", height="40%", loc='upper right', borderpad=1.0)
+    # Apply tight layout first to organize the subplots
+    plt.tight_layout()
+    
+    # Adjust the right margin to create space for the colorbar
+    fig.subplots_adjust(right=0.9)
+    
+    # Add a global colorbar on the right side
+    # Coordinates are [left, bottom, width, height] in figure relative coords
+    cax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+    
     sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
     sm.set_array([])
     cbar = plt.colorbar(sm, cax=cax, orientation='vertical')
-    cbar.ax.tick_params(labelsize=8)
+    cbar.ax.tick_params(labelsize=10)
     
     cbar_label = 'Log(Expected Steps + 1)' if log_scale else 'Expected Steps'
-    cbar.set_label(cbar_label)
-
-    plt.tight_layout()
+    cbar.set_label(cbar_label, fontsize=12)
 
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
