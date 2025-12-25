@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from src.envs.gridworld import GridWorldEnv
+from src.envs.env import create_environment_from_text, EXAMPLE_ENVIRONMENTS
 from src.data_collection import collect_transition_counts
 
 
@@ -141,9 +142,9 @@ def compute_symmetrized_eigendecomposition(
 # Training arguments
 class Args:
     # Environment
-    env_name: str = "gridworld"
-    grid_width: int = 10
-    grid_height: int = 10
+    env_type: str = "room4"  # 'room4', 'maze', 'spiral', 'obstacles', 'empty', or 'file'
+    env_file: str = None  # Path to environment text file (if env_type='file')
+    env_file_name: str = None  # Name of environment file in src/envs/txt/ (e.g., 'GridRoom-4')
     max_episode_length: int = 100
 
     # Data collection
@@ -191,13 +192,43 @@ class Args:
 
 
 def create_gridworld_env(args: Args):
-    """Create a simple gridworld environment."""
-    env = GridWorldEnv(
-        width=args.grid_width,
-        height=args.grid_height,
-        max_steps=args.max_episode_length,
-        precision=32,
-    )
+    """
+    Create a gridworld environment from text file or example.
+
+    Args:
+        args: Arguments containing env_type, env_file, or env_file_name
+
+    Returns:
+        env: GridWorld environment instance
+    """
+    if args.env_type == 'file':
+        # Load from file path
+        if args.env_file is None and args.env_file_name is None:
+            raise ValueError("Must specify either env_file or env_file_name when env_type='file'")
+
+        env = create_environment_from_text(
+            file_path=args.env_file,
+            file_name=args.env_file_name,
+            max_steps=args.max_episode_length,
+            precision=32,
+        )
+    else:
+        # Load from example environments
+        if args.env_type not in EXAMPLE_ENVIRONMENTS:
+            raise ValueError(f"Unknown env_type: {args.env_type}. "
+                           f"Must be one of {list(EXAMPLE_ENVIRONMENTS.keys())} or 'file'")
+
+        text_content = EXAMPLE_ENVIRONMENTS[args.env_type]
+        env = create_environment_from_text(
+            text_content=text_content,
+            max_steps=args.max_episode_length,
+            precision=32,
+        )
+
+    print(f"Loaded environment: {args.env_type}")
+    print(f"  Grid size: {env.width} x {env.height}")
+    print(f"  Number of obstacles: {len(env.obstacles) if env.has_obstacles else 0}")
+
     return env
 
 
@@ -367,10 +398,10 @@ def learn_eigenvectors(args):
         args.exp_name = os.path.basename(__file__)[: -len(".py")]
 
     # Set up run
-    run_name = f"{args.env_name}__{args.exp_name}__{args.exp_number}__{args.seed}__{int(time.time())}"
+    run_name = f"{args.env_type}__{args.exp_name}__{args.exp_number}__{args.seed}__{int(time.time())}"
 
     # Create results directories
-    results_dir = Path(args.results_dir) / args.env_name / run_name
+    results_dir = Path(args.results_dir) / args.env_type / run_name
     results_dir.mkdir(parents=True, exist_ok=True)
 
     plots_dir = results_dir / "plots"
@@ -640,8 +671,8 @@ def learn_eigenvectors(args):
     # Plot ground truth eigenvectors
     plot_eigenvectors_grid(
         np.array(gt_eigenvectors),
-        args.grid_width,
-        args.grid_height,
+        env.width,
+        env.height,
         str(plots_dir / "ground_truth_eigenvectors.png"),
         title_prefix="GT Eigenvector"
     )
@@ -710,8 +741,8 @@ def learn_eigenvectors(args):
             learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
             plot_eigenvectors_grid(
                 np.array(learned_features),
-                args.grid_width,
-                args.grid_height,
+                env.width,
+                env.height,
                 str(plots_dir / f"learned_eigenvectors_step_{gradient_step}.png"),
                 title_prefix="Learned Feature"
             )
@@ -746,7 +777,7 @@ def learn_eigenvectors(args):
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
     # Plot first ground truth eigenvector
-    gt_grid = gt_eigenvectors[:, 1].reshape(args.grid_height, args.grid_width)  # Skip constant eigenvector
+    gt_grid = gt_eigenvectors[:, 1].reshape(env.height, env.width)  # Skip constant eigenvector
     im1 = axes[0].imshow(gt_grid, cmap='RdBu_r', aspect='auto')
     axes[0].set_title('Ground Truth Eigenvector 1')
     axes[0].set_xlabel('X')
@@ -754,7 +785,7 @@ def learn_eigenvectors(args):
     plt.colorbar(im1, ax=axes[0])
 
     # Plot first learned feature
-    learned_grid = final_learned_features[:, 1].reshape(args.grid_height, args.grid_width)
+    learned_grid = final_learned_features[:, 1].reshape(env.height, env.width)
     im2 = axes[1].imshow(learned_grid, cmap='RdBu_r', aspect='auto')
     axes[1].set_title('Learned Feature 1')
     axes[1].set_xlabel('X')
