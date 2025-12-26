@@ -174,8 +174,12 @@ class EpisodicReplayBuffer:
                 terminal_indices = np.where(terminals == 1)[0]
 
                 if len(terminal_indices) > 0:
-                    # Distance to next terminal
-                    max_durations[i] = terminal_indices[0]
+                    # Terminals are marked for both obs and next_obs when done occurs
+                    # Use the second terminal (next_obs boundary) if available
+                    if len(terminal_indices) > 1:
+                        max_durations[i] = terminal_indices[1]
+                    else:
+                        max_durations[i] = terminal_indices[0]
                 else:
                     # No terminal found, use remaining episode length
                     max_durations[i] = ep_length - start_idx - 1
