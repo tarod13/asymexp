@@ -212,3 +212,4 @@ exp_irreversible_doors/results/
 **/results/*.pkl
 **/results/*.png
 **/results/*.txt
+results/*
