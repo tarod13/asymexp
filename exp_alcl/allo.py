@@ -332,14 +332,17 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
     """
     Plot the evolution of dual variables (eigenvalue estimates) vs ground truth eigenvalues.
 
-    The duals are eigenvalues of the Laplacian L = I - gamma*S, where S is the symmetrized
-    transition matrix. They are converted to approximate eigenvalues of S using:
-    approx_eigenvalue = (gamma + dual) / (gamma * (1 + dual))
+    The duals are eigenvalues of the Laplacian L = I - SR_gamma, where SR_gamma is the
+    successor representation with discount gamma. They are converted to approximate
+    eigenvalues of the transition matrix using:
+    approx_eigenvalue = (gamma + 0.5*dual) / (gamma * (1 + 0.5*dual))
+
+    The 0.5 factor arises from the sampling scheme with the episodic replay buffer.
 
     Args:
         metrics_history: List of metric dictionaries
         ground_truth_eigenvalues: Array of ground truth eigenvalues of the transition matrix
-        gamma: Discount factor used in the Laplacian
+        gamma: Discount factor used in the successor representation
         save_path: Path to save the plot
         num_eigenvectors: Number of eigenvectors to plot
     """
@@ -358,7 +361,9 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
         if dual_key in metrics_history[0]:
             # Get dual values and convert to approximate eigenvalues
             dual_values = np.array([m[dual_key] for m in metrics_history])
-            approx_eigenvalues = (gamma + dual_values) / (gamma * (1 + dual_values))
+            # Apply 0.5 factor before conversion (due to sampling scheme)
+            dual_values_scaled = 0.5 * dual_values
+            approx_eigenvalues = (gamma + dual_values_scaled) / (gamma * (1 + dual_values_scaled))
 
             ax1.plot(steps, approx_eigenvalues, label=f'Approx λ_{i}', color=colors[i], linewidth=1.5)
 
@@ -380,7 +385,9 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
         if dual_key in metrics_history[0]:
             # Get dual values and convert to approximate eigenvalues
             dual_values = np.array([m[dual_key] for m in metrics_history])
-            approx_eigenvalues = (gamma + dual_values) / (gamma * (1 + dual_values))
+            # Apply 0.5 factor before conversion (due to sampling scheme)
+            dual_values_scaled = 0.5 * dual_values
+            approx_eigenvalues = (gamma + dual_values_scaled) / (gamma * (1 + dual_values_scaled))
 
             gt_value = float(ground_truth_eigenvalues[i].real)
             errors = np.abs(approx_eigenvalues - gt_value)
