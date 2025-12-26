@@ -26,11 +26,11 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from src.envs.gridworld import GridWorldEnv
 from src.envs.env import create_environment_from_text, EXAMPLE_ENVIRONMENTS
-from src.data_collection import collect_transition_counts
-from exp_irreversible_doors.door_environment import (
-    create_irreversible_doors,
-    apply_doors_to_transition_matrix,
+from src.envs.door_gridworld import (
+    create_door_gridworld_from_base,
+    create_random_doors,
 )
+from src.data_collection import collect_transition_counts
 
 
 # Simple MLP network for (x,y) coordinates
@@ -383,24 +383,46 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     """
     Collect transition data and compute ground truth eigenvectors.
 
+    Args:
+        env: Base environment (possibly with doors already applied)
+
     Returns:
         transition_matrix: Symmetrized transition matrix
         eigendecomp: Dictionary with eigenvalues and eigenvectors
         state_coords: Array of (x,y) coordinates for each state
         canonical_states: Array of free state indices
         doors: Door configuration (if use_doors=True)
+        data_env: The environment used for data collection (with doors if applicable)
     """
     print("Collecting transition data...")
     num_states = env.width * env.height
 
-    # Get canonical (free) states
+    # Get canonical (free) states from base environment
     canonical_states = get_canonical_free_states(env)
     num_canonical = len(canonical_states)
     print(f"Number of free states: {num_canonical} (out of {num_states} total)")
 
-    # Collect transition counts (full state space)
+    # Create door environment if requested
+    door_config = None
+    data_env = env  # Default to base environment
+
+    if args.use_doors:
+        print(f"\nCreating {args.num_doors} irreversible doors...")
+        door_config = create_random_doors(
+            env,
+            canonical_states,
+            num_doors=args.num_doors,
+            seed=args.door_seed
+        )
+        print(f"  Created {door_config['num_doors']} doors (out of {door_config['total_reversible']} reversible transitions)")
+
+        # Create environment with doors in the dynamics
+        data_env = create_door_gridworld_from_base(env, door_config['doors'], canonical_states)
+        print("  Created DoorGridWorld environment with irreversible transitions")
+
+    # Collect transition counts from the environment (with doors if applicable)
     transition_counts_full, metrics = collect_transition_counts(
-        env=env,
+        env=data_env,
         num_envs=args.num_envs,
         num_steps=args.num_steps,
         num_states=num_states,
@@ -411,22 +433,6 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
 
     # Extract canonical state subspace
     transition_counts = transition_counts_full[jnp.ix_(canonical_states, jnp.arange(env.action_space), canonical_states)]
-
-    # Apply irreversible doors if requested
-    door_config = None
-    if args.use_doors:
-        print(f"\nCreating {args.num_doors} irreversible doors...")
-        door_config = create_irreversible_doors(
-            env,
-            canonical_states,
-            num_doors=args.num_doors,
-            seed=args.door_seed
-        )
-        print(f"  Created {door_config['num_doors']} doors (out of {door_config['total_reversible']} reversible transitions)")
-
-        # Apply doors to transition counts
-        transition_counts = apply_doors_to_transition_matrix(transition_counts, door_config['doors'])
-        print("  Applied doors to transition matrix (made transitions one-way)")
 
     # Build symmetrized transition matrix
     print("\nBuilding symmetrized transition matrix...")
@@ -455,7 +461,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         state_coords.append([x, y])
     state_coords = jnp.array(state_coords, dtype=jnp.float32)
 
-    return transition_matrix, eigendecomp, state_coords, canonical_states, door_config
+    return transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env
 
 
 def learn_eigenvectors(args):
@@ -490,7 +496,7 @@ def learn_eigenvectors(args):
 
     # Create environment and collect data
     env = create_gridworld_env(args)
-    transition_matrix, eigendecomp, state_coords, canonical_states, door_config = collect_data_and_compute_eigenvectors(env, args)
+    transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env = collect_data_and_compute_eigenvectors(env, args)
 
     gt_eigenvalues = eigendecomp['eigenvalues']
     gt_eigenvectors = eigendecomp['eigenvectors']
