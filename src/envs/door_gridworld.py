@@ -149,7 +149,10 @@ class DoorGridWorldEnv(GridWorldEnv):
         # Compute reward (1.0 for reaching goal, 0 otherwise)
         reward = jnp.where(at_goal, 1.0, 0.0)
 
-        return new_state, reward
+        # Done flag for buffer
+        done = new_terminal
+
+        return new_state, reward, done, {}
 
 
 def create_door_gridworld_from_base(
