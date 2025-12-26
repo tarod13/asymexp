@@ -328,6 +328,66 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
     print(f"Learning curves saved to {save_path}")
 
 
+def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, save_path, num_eigenvectors=11):
+    """
+    Plot the evolution of dual variables (eigenvalue estimates) vs ground truth eigenvalues.
+
+    Args:
+        metrics_history: List of metric dictionaries
+        ground_truth_eigenvalues: Array of ground truth eigenvalues
+        save_path: Path to save the plot
+        num_eigenvectors: Number of eigenvectors to plot
+    """
+    steps = [m['gradient_step'] for m in metrics_history]
+    num_plot = min(num_eigenvectors, len(ground_truth_eigenvalues))
+
+    # Create figure with two rows: dual evolution and errors
+    fig, axes = plt.subplots(2, 1, figsize=(12, 10))
+
+    # Plot 1: Dual variable evolution vs ground truth
+    ax1 = axes[0]
+    colors = plt.cm.tab10(np.linspace(0, 1, num_plot))
+
+    for i in range(num_plot):
+        dual_key = f'dual_{i}'
+        if dual_key in metrics_history[0]:
+            dual_values = [m[dual_key] for m in metrics_history]
+            ax1.plot(steps, dual_values, label=f'Dual {i}', color=colors[i], linewidth=1.5)
+
+            # Plot ground truth as horizontal dashed line
+            gt_value = float(ground_truth_eigenvalues[i].real)
+            ax1.axhline(y=gt_value, color=colors[i], linestyle='--', alpha=0.5, linewidth=1.5)
+
+    ax1.set_xlabel('Gradient Step', fontsize=12)
+    ax1.set_ylabel('Eigenvalue Estimate', fontsize=12)
+    ax1.set_title('Dual Variables (solid) vs Ground Truth Eigenvalues (dashed)', fontsize=14)
+    ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+    ax1.grid(True, alpha=0.3)
+
+    # Plot 2: Absolute errors
+    ax2 = axes[1]
+
+    for i in range(num_plot):
+        dual_key = f'dual_{i}'
+        if dual_key in metrics_history[0]:
+            dual_values = np.array([m[dual_key] for m in metrics_history])
+            gt_value = float(ground_truth_eigenvalues[i].real)
+            errors = np.abs(dual_values - gt_value)
+            ax2.plot(steps, errors, label=f'|Dual {i} - λ_{i}|', color=colors[i], linewidth=1.5)
+
+    ax2.set_xlabel('Gradient Step', fontsize=12)
+    ax2.set_ylabel('Absolute Error', fontsize=12)
+    ax2.set_title('Absolute Errors in Eigenvalue Estimates', fontsize=14)
+    ax2.set_yscale('log')
+    ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+    ax2.grid(True, alpha=0.3, which='both')
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Dual variable evolution plot saved to {save_path}")
+
+
 def state_idx_to_xy(state_idx: int, width: int) -> tuple:
     """Convert state index to (x,y) coordinates."""
     y = state_idx // width
@@ -891,6 +951,14 @@ def learn_eigenvectors(args):
 
             # Plot learning curves
             plot_learning_curves(metrics_history, str(plots_dir / "learning_curves.png"))
+
+            # Plot dual variable evolution vs ground truth eigenvalues
+            plot_dual_variable_evolution(
+                metrics_history,
+                gt_eigenvalues,
+                str(plots_dir / "dual_variable_evolution.png"),
+                num_eigenvectors=args.num_eigenvectors
+            )
 
     print("\nTraining complete!")
 
