@@ -442,7 +442,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         episode_obs = []
 
         # Only add if state is in canonical states
-        state_idx = data_env.get_state_representation(state)
+        state_idx = int(data_env.get_state_representation(state))
         if state_idx in full_to_canonical:
             episode_obs.append(full_to_canonical[state_idx])
 
@@ -456,7 +456,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
             next_state, reward, done, info = data_env.step(step_key, state, action)
 
             # Only add if next_state is in canonical states
-            next_state_idx = data_env.get_state_representation(next_state)
+            next_state_idx = int(data_env.get_state_representation(next_state))
             if next_state_idx in full_to_canonical:
                 episode_obs.append(full_to_canonical[next_state_idx])
 
