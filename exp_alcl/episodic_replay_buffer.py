@@ -155,14 +155,37 @@ class EpisodicReplayBuffer:
     def sample(self, batch_size, discount, env_info={}):   # TODO: Consider if necessary.
         # Sample episodes
         episode_idx = np.random.randint(len(self), size=batch_size)
-        
+
         # Sample transitions
         transition_ranges = self._get_episode_lengths(episode_idx)
         obs_idx = uniform_sampling(transition_ranges - 1)   # -1 to sample future observations. This assumes length of episode is at least 2.
-        transition_durations = discounted_sampling(
-            transition_ranges - obs_idx - 1, discount=discount) + 1   # +1 because the minimal transition length is 1
+
+        # Calculate remaining trajectory length using terminals if available
+        if 'terminals' in self._episodes:
+            # Find the next terminal for each sampled obs_idx
+            max_durations = np.zeros(batch_size, dtype=np.int32)
+            for i in range(batch_size):
+                ep_idx = episode_idx[i]
+                start_idx = obs_idx[i]
+                ep_length = transition_ranges[i]
+
+                # Find next terminal starting from obs_idx
+                terminals = self._episodes['terminals'][ep_idx, start_idx:ep_length]
+                terminal_indices = np.where(terminals == 1)[0]
+
+                if len(terminal_indices) > 0:
+                    # Distance to next terminal
+                    max_durations[i] = terminal_indices[0]
+                else:
+                    # No terminal found, use remaining episode length
+                    max_durations[i] = ep_length - start_idx - 1
+        else:
+            # No terminals available, use full episode length
+            max_durations = transition_ranges - obs_idx - 1
+
+        transition_durations = discounted_sampling(max_durations, discount=discount) + 1   # +1 because the minimal transition length is 1
         next_obs_idx = obs_idx + transition_durations
-        
+
         # Get the samples
         obs = self._episodes['obs'][episode_idx, obs_idx]
         next_obs = self._episodes['obs'][episode_idx, next_obs_idx]

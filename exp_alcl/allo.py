@@ -511,31 +511,37 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     )
 
     # Convert raw episodes (OGBench format) to canonical state space and add to buffer
+    # Each row may contain multiple trajectories separated by terminal flags
     for ep_idx in range(args.num_envs):
         episode_length = int(raw_episodes['lengths'][ep_idx])
 
-        # Get observations, valids, and terminals for this episode
+        # Get ALL observations and terminals up to write_idx
         episode_obs_full = raw_episodes['observations'][ep_idx, :episode_length + 1]
-        episode_valids = raw_episodes['valids'][ep_idx, :episode_length + 1]
         episode_terminals = raw_episodes['terminals'][ep_idx, :episode_length + 1]
 
-        # Convert to canonical state indices
-        # Only keep valid transitions (valids=1) and non-terminal states for observation storage
+        # Convert ALL observations to canonical state indices (don't filter by valids here)
         episode_obs_canonical = []
+        episode_terminals_canonical = []
         for i, state_idx in enumerate(episode_obs_full):
             state_idx = int(state_idx)
-            # Include state if it's valid and in canonical states
-            if episode_valids[i] == 1 and state_idx in full_to_canonical:
+            # Only convert states that exist in canonical mapping
+            if state_idx in full_to_canonical:
                 episode_obs_canonical.append(full_to_canonical[state_idx])
+                episode_terminals_canonical.append(int(episode_terminals[i]))
 
-        # Add episode to buffer if it has at least 2 states
+        # Add ALL data to buffer if it has at least 2 states
+        # The buffer will use terminals to determine trajectory boundaries during sampling
         if len(episode_obs_canonical) >= 2:
             # Reshape to (n, 1) as expected by replay buffer's transform function
             obs_array = np.array(episode_obs_canonical, dtype=np.int32).reshape(-1, 1)
-            episode_dict = {'obs': obs_array}
+            terminals_array = np.array(episode_terminals_canonical, dtype=np.int32)
+            episode_dict = {
+                'obs': obs_array,
+                'terminals': terminals_array,
+            }
             replay_buffer.add_episode(episode_dict)
 
-    print(f"Added {len(replay_buffer)} episodes to replay buffer (filtered to canonical states and valid transitions)")
+    print(f"Added {len(replay_buffer)} trajectory sequences to replay buffer (may contain multiple episodes)")
 
     # Extract canonical state subspace
     transition_counts = transition_counts_full[jnp.ix_(canonical_states, jnp.arange(env.action_space), canonical_states)]
