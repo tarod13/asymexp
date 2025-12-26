@@ -13,6 +13,7 @@ import json
 import pickle
 from typing import Dict
 from pathlib import Path
+from dataclasses import dataclass
 
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
@@ -148,6 +149,7 @@ def compute_symmetrized_eigendecomposition(
 
 
 # Training arguments
+@dataclass
 class Args:
     # Environment
     env_type: str = "room4"  # 'room4', 'maze', 'spiral', 'obstacles', 'empty', or 'file'
