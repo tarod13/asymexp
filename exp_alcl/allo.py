@@ -306,8 +306,18 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
 
 
 def plot_eigenvectors_grid(eigenvectors: np.ndarray, grid_width: int, grid_height: int,
-                           save_path: str, title_prefix: str = "Eigenvector"):
-    """Plot eigenvectors as heatmaps on the grid."""
+                           canonical_states: np.ndarray, save_path: str,
+                           title_prefix: str = "Eigenvector"):
+    """Plot eigenvectors as heatmaps on the grid.
+
+    Args:
+        eigenvectors: Shape (num_canonical_states, num_eigenvectors)
+        grid_width: Width of the full grid
+        grid_height: Height of the full grid
+        canonical_states: Array of free state indices
+        save_path: Where to save the plot
+        title_prefix: Prefix for subplot titles
+    """
     num_eigenvectors = eigenvectors.shape[1]
     n_cols = min(4, num_eigenvectors)
     n_rows = (num_eigenvectors + n_cols - 1) // n_cols
@@ -325,10 +335,17 @@ def plot_eigenvectors_grid(eigenvectors: np.ndarray, grid_width: int, grid_heigh
         col = idx % n_cols
         ax = axes[row, col]
 
-        # Reshape eigenvector to grid
-        eigvec_grid = eigenvectors[:, idx].reshape(grid_height, grid_width)
+        # Create full grid with NaN for obstacles
+        eigvec_grid = np.full((grid_height, grid_width), np.nan)
 
-        # Plot heatmap
+        # Fill in eigenvector values at canonical state positions
+        for i, state_idx in enumerate(canonical_states):
+            state_idx = int(state_idx)
+            y = state_idx // grid_width
+            x = state_idx % grid_width
+            eigvec_grid[y, x] = eigenvectors[i, idx]
+
+        # Plot heatmap (NaN values will be shown as white/masked)
         im = ax.imshow(eigvec_grid, cmap='RdBu_r', aspect='auto')
         ax.set_title(f'{title_prefix} {idx}')
         ax.set_xlabel('X')
@@ -764,6 +781,7 @@ def learn_eigenvectors(args):
         np.array(gt_eigenvectors),
         env.width,
         env.height,
+        np.array(canonical_states),
         str(plots_dir / "ground_truth_eigenvectors.png"),
         title_prefix="GT Eigenvector"
     )
@@ -834,6 +852,7 @@ def learn_eigenvectors(args):
                 np.array(learned_features),
                 env.width,
                 env.height,
+                np.array(canonical_states),
                 str(plots_dir / f"learned_eigenvectors_step_{gradient_step}.png"),
                 title_prefix="Learned Feature"
             )
@@ -868,7 +887,13 @@ def learn_eigenvectors(args):
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
     # Plot first ground truth eigenvector
-    gt_grid = gt_eigenvectors[:, 1].reshape(env.height, env.width)  # Skip constant eigenvector
+    # Create full grid with NaN for obstacles
+    gt_grid = np.full((env.height, env.width), np.nan)
+    for i, state_idx in enumerate(canonical_states):
+        state_idx = int(state_idx)
+        y = state_idx // env.width
+        x = state_idx % env.width
+        gt_grid[y, x] = gt_eigenvectors[i, 1]  # Skip constant eigenvector
     im1 = axes[0].imshow(gt_grid, cmap='RdBu_r', aspect='auto')
     axes[0].set_title('Ground Truth Eigenvector 1')
     axes[0].set_xlabel('X')
@@ -876,7 +901,12 @@ def learn_eigenvectors(args):
     plt.colorbar(im1, ax=axes[0])
 
     # Plot first learned feature
-    learned_grid = final_learned_features[:, 1].reshape(env.height, env.width)
+    learned_grid = np.full((env.height, env.width), np.nan)
+    for i, state_idx in enumerate(canonical_states):
+        state_idx = int(state_idx)
+        y = state_idx // env.width
+        x = state_idx % env.width
+        learned_grid[y, x] = final_learned_features[i, 1]
     im2 = axes[1].imshow(learned_grid, cmap='RdBu_r', aspect='auto')
     axes[1].set_title('Learned Feature 1')
     axes[1].set_xlabel('X')
