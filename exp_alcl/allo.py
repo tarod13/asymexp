@@ -40,6 +40,7 @@ from exp_complex_basis.eigenvector_visualization import (
     visualize_multiple_eigenvectors,
     visualize_eigenvector_on_grid,
 )
+from exp_alcl.episodic_replay_buffer import EpisodicReplayBuffer, collect_episodes
 
 
 # Simple MLP network for (x,y) coordinates
@@ -194,6 +195,10 @@ class Args:
     batch_size: int = 256
     num_gradient_steps: int = 10000
     gamma: float = 0.99
+
+    # Episodic replay buffer
+    geometric_gamma: float = 0.99  # Decay for truncated geometric distribution (higher = prefer shorter time gaps)
+    max_time_offset: int = None  # Maximum time offset for sampling (None = episode length)
 
     # Augmented Lagrangian parameters
     duals_initial_val: float = 0.1
@@ -413,6 +418,29 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
 
     print(f"Collected {metrics['total_transitions']} transitions")
 
+    # Collect episodes for replay buffer
+    print("\nCollecting episodes for replay buffer...")
+    episodes = collect_episodes(
+        env=data_env,
+        num_episodes=args.num_envs,
+        max_steps_per_episode=args.num_steps,
+        seed=args.seed + 1000  # Different seed from transition counts
+    )
+
+    # Map episodes from full state space to canonical state indices
+    full_to_canonical = {int(full_idx): canon_idx for canon_idx, full_idx in enumerate(canonical_states)}
+    canonical_episodes = []
+    for episode in episodes:
+        # Map each state in episode to canonical index
+        canonical_ep = []
+        for state_idx in episode:
+            if int(state_idx) in full_to_canonical:
+                canonical_ep.append(full_to_canonical[int(state_idx)])
+        if len(canonical_ep) > 0:  # Only keep non-empty episodes
+            canonical_episodes.append(np.array(canonical_ep, dtype=np.int32))
+
+    print(f"Collected {len(canonical_episodes)} episodes (mapped to canonical states)")
+
     # Extract canonical state subspace
     transition_counts = transition_counts_full[jnp.ix_(canonical_states, jnp.arange(env.action_space), canonical_states)]
 
@@ -443,7 +471,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         state_coords.append([x, y])
     state_coords = jnp.array(state_coords, dtype=jnp.float32)
 
-    return transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env
+    return transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env, canonical_episodes
 
 
 def learn_eigenvectors(args):
@@ -478,13 +506,21 @@ def learn_eigenvectors(args):
 
     # Create environment and collect data
     env = create_gridworld_env(args)
-    transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env = collect_data_and_compute_eigenvectors(env, args)
+    transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env, episodes = collect_data_and_compute_eigenvectors(env, args)
 
     gt_eigenvalues = eigendecomp['eigenvalues_real']
     gt_eigenvectors = eigendecomp['right_eigenvectors_real']
 
     print(f"\nState coordinates shape: {state_coords.shape}")
     print(f"Ground truth eigenvectors shape: {gt_eigenvectors.shape}")
+
+    # Create episodic replay buffer
+    print("\nCreating episodic replay buffer...")
+    replay_buffer = EpisodicReplayBuffer(
+        episodes=episodes,
+        gamma=args.geometric_gamma,
+        max_offset=args.max_time_offset
+    )
 
     # Save door configuration if doors were used
     if door_config is not None:
@@ -729,9 +765,6 @@ def learn_eigenvectors(args):
     start_time = time.time()
     num_states = state_coords.shape[0]
 
-    # Precompute transition probabilities for sampling
-    transition_probs = transition_matrix  # Already normalized
-
     # Track metrics history
     metrics_history = []
 
@@ -761,25 +794,17 @@ def learn_eigenvectors(args):
     plt.close()
 
     for gradient_step in tqdm(range(args.num_gradient_steps)):
-        # Sample random batches
-        rng_key, subkey1, subkey2, subkey3, subkey4 = jax.random.split(rng_key, 5)
+        # Sample batches from episodic replay buffer
+        rng_key, sample_key1, sample_key2 = jax.random.split(rng_key, 3)
 
-        # Sample initial states uniformly
-        state_indices = jax.random.randint(subkey1, (args.batch_size,), 0, num_states)
-
-        # Sample next states according to transition probabilities
-        # For each state, sample next state from its transition distribution
-        next_state_indices = []
-        for i in range(args.batch_size):
-            state_idx = int(state_indices[i])
-            # Sample next state from transition distribution
-            next_idx = jax.random.categorical(subkey2, jnp.log(transition_probs[state_idx] + 1e-10))
-            next_state_indices.append(next_idx)
-            subkey2, _ = jax.random.split(subkey2)
+        # Sample transitions (s_t, s_{t+k}) from episodes using truncated geometric
+        state_indices, next_state_indices = replay_buffer.sample_batch(args.batch_size, sample_key1)
+        state_indices = jnp.array(state_indices)
         next_state_indices = jnp.array(next_state_indices)
 
         # Sample another batch for the second orthogonality check
-        state_indices_2 = jax.random.randint(subkey3, (args.batch_size,), 0, num_states)
+        state_indices_2, _ = replay_buffer.sample_batch(args.batch_size, sample_key2)
+        state_indices_2 = jnp.array(state_indices_2)
 
         # Get coordinates
         coords_batch = state_coords[state_indices]
