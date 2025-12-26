@@ -36,6 +36,10 @@ from src.envs.door_gridworld import (
     create_random_doors,
 )
 from src.data_collection import collect_transition_counts
+from exp_complex_basis.eigenvector_visualization import (
+    visualize_multiple_eigenvectors,
+    visualize_eigenvector_on_grid,
+)
 
 
 # Simple MLP network for (x,y) coordinates
@@ -125,9 +129,14 @@ def compute_symmetrized_eigendecomposition(
         k: Number of top eigenvalues/vectors to keep (None = keep all)
 
     Returns:
-        Dictionary containing:
-            - eigenvalues: Shape [k] (real-valued, sorted descending)
-            - eigenvectors: Shape [num_states, k] (column vectors)
+        Dictionary containing (compatible with visualization code):
+            - eigenvalues: Shape [k] (complex, but with zero imaginary parts)
+            - eigenvalues_real: Shape [k]
+            - eigenvalues_imag: Shape [k] (all zeros)
+            - right_eigenvectors_real: Shape [num_states, k]
+            - right_eigenvectors_imag: Shape [num_states, k] (all zeros)
+            - left_eigenvectors_real: Shape [num_states, k] (same as right for symmetric)
+            - left_eigenvectors_imag: Shape [num_states, k] (all zeros)
     """
     # Compute eigendecomposition (for symmetric matrices, use eigh for better stability)
     eigenvalues, eigenvectors = jnp.linalg.eigh(transition_matrix)
@@ -142,9 +151,18 @@ def compute_symmetrized_eigendecomposition(
         eigenvalues = eigenvalues[:k]
         eigenvectors = eigenvectors[:, :k]
 
+    num_states = eigenvectors.shape[0]
+    num_eigs = eigenvalues.shape[0]
+
+    # Create format compatible with visualization code
     return {
-        "eigenvalues": eigenvalues,
-        "eigenvectors": eigenvectors,
+        "eigenvalues": eigenvalues.astype(jnp.complex64),
+        "eigenvalues_real": eigenvalues,
+        "eigenvalues_imag": jnp.zeros_like(eigenvalues),
+        "right_eigenvectors_real": eigenvectors,
+        "right_eigenvectors_imag": jnp.zeros((num_states, num_eigs)),
+        "left_eigenvectors_real": eigenvectors,  # Same as right for symmetric matrices
+        "left_eigenvectors_imag": jnp.zeros((num_states, num_eigs)),
     }
 
 
@@ -305,65 +323,6 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
     print(f"Learning curves saved to {save_path}")
 
 
-def plot_eigenvectors_grid(eigenvectors: np.ndarray, grid_width: int, grid_height: int,
-                           canonical_states: np.ndarray, save_path: str,
-                           title_prefix: str = "Eigenvector"):
-    """Plot eigenvectors as heatmaps on the grid.
-
-    Args:
-        eigenvectors: Shape (num_canonical_states, num_eigenvectors)
-        grid_width: Width of the full grid
-        grid_height: Height of the full grid
-        canonical_states: Array of free state indices
-        save_path: Where to save the plot
-        title_prefix: Prefix for subplot titles
-    """
-    num_eigenvectors = eigenvectors.shape[1]
-    n_cols = min(4, num_eigenvectors)
-    n_rows = (num_eigenvectors + n_cols - 1) // n_cols
-
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows))
-    if n_rows == 1 and n_cols == 1:
-        axes = np.array([[axes]])
-    elif n_rows == 1:
-        axes = axes.reshape(1, -1)
-    elif n_cols == 1:
-        axes = axes.reshape(-1, 1)
-
-    for idx in range(num_eigenvectors):
-        row = idx // n_cols
-        col = idx % n_cols
-        ax = axes[row, col]
-
-        # Create full grid with NaN for obstacles
-        eigvec_grid = np.full((grid_height, grid_width), np.nan)
-
-        # Fill in eigenvector values at canonical state positions
-        for i, state_idx in enumerate(canonical_states):
-            state_idx = int(state_idx)
-            y = state_idx // grid_width
-            x = state_idx % grid_width
-            eigvec_grid[y, x] = eigenvectors[i, idx]
-
-        # Plot heatmap (NaN values will be shown as white/masked)
-        im = ax.imshow(eigvec_grid, cmap='RdBu_r', aspect='auto')
-        ax.set_title(f'{title_prefix} {idx}')
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        plt.colorbar(im, ax=ax)
-
-    # Hide empty subplots
-    for idx in range(num_eigenvectors, n_rows * n_cols):
-        row = idx // n_cols
-        col = idx % n_cols
-        axes[row, col].axis('off')
-
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"Eigenvector plots saved to {save_path}")
-
-
 def state_idx_to_xy(state_idx: int, width: int) -> tuple:
     """Convert state index to (x,y) coordinates."""
     y = state_idx // width
@@ -521,8 +480,8 @@ def learn_eigenvectors(args):
     env = create_gridworld_env(args)
     transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env = collect_data_and_compute_eigenvectors(env, args)
 
-    gt_eigenvalues = eigendecomp['eigenvalues']
-    gt_eigenvectors = eigendecomp['eigenvectors']
+    gt_eigenvalues = eigendecomp['eigenvalues_real']
+    gt_eigenvectors = eigendecomp['right_eigenvectors_real']
 
     print(f"\nState coordinates shape: {state_coords.shape}")
     print(f"Ground truth eigenvectors shape: {gt_eigenvectors.shape}")
@@ -776,15 +735,30 @@ def learn_eigenvectors(args):
     # Track metrics history
     metrics_history = []
 
+    # Convert doors to portal markers for visualization
+    door_markers = {}
+    if door_config is not None and 'doors' in door_config:
+        for s_canonical, a_forward, s_prime_canonical, a_reverse in door_config['doors']:
+            s_full = int(canonical_states[s_canonical])
+            s_prime_full = int(canonical_states[s_prime_canonical])
+            door_markers[(s_full, a_forward)] = s_prime_full
+
     # Plot ground truth eigenvectors
-    plot_eigenvectors_grid(
-        np.array(gt_eigenvectors),
-        env.width,
-        env.height,
-        np.array(canonical_states),
-        str(plots_dir / "ground_truth_eigenvectors.png"),
-        title_prefix="GT Eigenvector"
+    visualize_multiple_eigenvectors(
+        eigenvector_indices=list(range(args.num_eigenvectors)),
+        eigendecomposition=eigendecomp,
+        canonical_states=canonical_states,
+        grid_width=env.width,
+        grid_height=env.height,
+        portals=door_markers if door_markers else None,
+        eigenvector_type='right',
+        component='real',
+        ncols=min(4, args.num_eigenvectors),
+        wall_color='gray',
+        save_path=str(plots_dir / "ground_truth_eigenvectors.png"),
+        shared_colorbar=True
     )
+    plt.close()
 
     for gradient_step in tqdm(range(args.num_gradient_steps)):
         # Sample random batches
@@ -848,14 +822,33 @@ def learn_eigenvectors(args):
         if is_plot_step:
             # Compute learned eigenvectors on all states
             learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
-            plot_eigenvectors_grid(
-                np.array(learned_features),
-                env.width,
-                env.height,
-                np.array(canonical_states),
-                str(plots_dir / f"learned_eigenvectors_step_{gradient_step}.png"),
-                title_prefix="Learned Feature"
+
+            # Create a temporary eigendecomposition dict for visualization
+            learned_eigendecomp = {
+                'eigenvalues': jnp.zeros(args.num_eigenvectors, dtype=jnp.complex64),
+                'eigenvalues_real': jnp.zeros(args.num_eigenvectors),
+                'eigenvalues_imag': jnp.zeros(args.num_eigenvectors),
+                'right_eigenvectors_real': learned_features,
+                'right_eigenvectors_imag': jnp.zeros_like(learned_features),
+                'left_eigenvectors_real': learned_features,
+                'left_eigenvectors_imag': jnp.zeros_like(learned_features),
+            }
+
+            visualize_multiple_eigenvectors(
+                eigenvector_indices=list(range(args.num_eigenvectors)),
+                eigendecomposition=learned_eigendecomp,
+                canonical_states=canonical_states,
+                grid_width=env.width,
+                grid_height=env.height,
+                portals=door_markers if door_markers else None,
+                eigenvector_type='right',
+                component='real',
+                ncols=min(4, args.num_eigenvectors),
+                wall_color='gray',
+                save_path=str(plots_dir / f"learned_eigenvectors_step_{gradient_step}.png"),
+                shared_colorbar=True
             )
+            plt.close()
 
             # Plot learning curves
             plot_learning_curves(metrics_history, str(plots_dir / "learning_curves.png"))
@@ -884,37 +877,40 @@ def learn_eigenvectors(args):
     np.save(results_dir / "final_learned_eigenvectors.npy", np.array(final_learned_features))
 
     # Create final comparison plot
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 8))
 
-    # Plot first ground truth eigenvector
-    # Create full grid with NaN for obstacles
-    gt_grid = np.full((env.height, env.width), np.nan)
-    for i, state_idx in enumerate(canonical_states):
-        state_idx = int(state_idx)
-        y = state_idx // env.width
-        x = state_idx % env.width
-        gt_grid[y, x] = gt_eigenvectors[i, 1]  # Skip constant eigenvector
-    im1 = axes[0].imshow(gt_grid, cmap='RdBu_r', aspect='auto')
-    axes[0].set_title('Ground Truth Eigenvector 1')
-    axes[0].set_xlabel('X')
-    axes[0].set_ylabel('Y')
-    plt.colorbar(im1, ax=axes[0])
+    # Plot first ground truth eigenvector (skip constant eigenvector 0)
+    visualize_eigenvector_on_grid(
+        eigenvector_idx=1,
+        eigenvector_values=np.array(gt_eigenvectors[:, 1]),
+        canonical_states=canonical_states,
+        grid_width=env.width,
+        grid_height=env.height,
+        portals=door_markers if door_markers else None,
+        title='Ground Truth Eigenvector 1',
+        ax=axes[0],
+        cmap='RdBu_r',
+        show_colorbar=True,
+        wall_color='gray'
+    )
 
     # Plot first learned feature
-    learned_grid = np.full((env.height, env.width), np.nan)
-    for i, state_idx in enumerate(canonical_states):
-        state_idx = int(state_idx)
-        y = state_idx // env.width
-        x = state_idx % env.width
-        learned_grid[y, x] = final_learned_features[i, 1]
-    im2 = axes[1].imshow(learned_grid, cmap='RdBu_r', aspect='auto')
-    axes[1].set_title('Learned Feature 1')
-    axes[1].set_xlabel('X')
-    axes[1].set_ylabel('Y')
-    plt.colorbar(im2, ax=axes[1])
+    visualize_eigenvector_on_grid(
+        eigenvector_idx=1,
+        eigenvector_values=np.array(final_learned_features[:, 1]),
+        canonical_states=canonical_states,
+        grid_width=env.width,
+        grid_height=env.height,
+        portals=door_markers if door_markers else None,
+        title='Learned Feature 1',
+        ax=axes[1],
+        cmap='RdBu_r',
+        show_colorbar=True,
+        wall_color='gray'
+    )
 
     plt.tight_layout()
-    plt.savefig(plots_dir / "final_comparison.png", dpi=150, bbox_inches='tight')
+    plt.savefig(plots_dir / "final_comparison.png", dpi=300, bbox_inches='tight')
     plt.close()
 
     print(f"\nAll results saved to: {results_dir}")
