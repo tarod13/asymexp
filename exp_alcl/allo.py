@@ -444,7 +444,9 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
 
         # Add episode to buffer if it has at least 2 states
         if len(episode_obs_canonical) >= 2:
-            episode_dict = {'obs': np.array(episode_obs_canonical, dtype=np.int32)}
+            # Reshape to (n, 1) as expected by replay buffer's transform function
+            obs_array = np.array(episode_obs_canonical, dtype=np.int32).reshape(-1, 1)
+            episode_dict = {'obs': obs_array}
             replay_buffer.add_episode(episode_dict)
 
     print(f"Added {len(replay_buffer)} episodes to replay buffer (filtered to canonical states)")

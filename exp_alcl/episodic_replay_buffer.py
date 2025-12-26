@@ -102,6 +102,10 @@ class EpisodicReplayBuffer:
         self._episodes_length = np.array([0] * self._max_episodes, dtype=np.int64)
     
     def _transform_observations(self, observations, env_info):
+        # If observation_type is 'canonical_state', return raw indices without transformation
+        if self._observation_type == 'canonical_state':
+            return observations.flatten()
+
         if observations.dtype == "uint8":
             observations = observations.astype(np.float32) / 255.0
         elif observations.dtype == "int32":
@@ -122,7 +126,7 @@ class EpisodicReplayBuffer:
                 observations[np.arange(observations.shape[0]), obs_t_idx] = 1.0
             else:
                 raise ValueError("Unknown observation type.")
-            
+
         return observations
 
     def add_episode(self, episode: Dict):
