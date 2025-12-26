@@ -481,6 +481,21 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         state_coords.append([x, y])
     state_coords = jnp.array(state_coords, dtype=jnp.float32)
 
+    # Center and scale coordinates to approximately [-1, 1] range
+    # Center around grid center
+    center = jnp.array([env.width / 2.0, env.height / 2.0], dtype=jnp.float32)
+    state_coords = state_coords - center
+
+    # Scale by half the maximum dimension (to get range approximately [-1, 1])
+    scale = max(env.width, env.height) / 2.0
+    state_coords = state_coords / scale
+
+    print(f"\nCoordinate normalization:")
+    print(f"  Center: ({center[0]:.2f}, {center[1]:.2f})")
+    print(f"  Scale: {scale:.2f}")
+    print(f"  Coordinate range: x=[{state_coords[:, 0].min():.3f}, {state_coords[:, 0].max():.3f}], "
+          f"y=[{state_coords[:, 1].min():.3f}, {state_coords[:, 1].max():.3f}]")
+
     return transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env, replay_buffer
 
 
