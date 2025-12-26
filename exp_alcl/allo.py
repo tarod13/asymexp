@@ -201,10 +201,10 @@ class Args:
     max_time_offset: int = None  # Maximum time offset for sampling (None = episode length)
 
     # Augmented Lagrangian parameters
-    duals_initial_val: float = 0.1
-    barrier_initial_val: float = 1.0
-    max_barrier_coefs: float = 100.0
-    step_size_duals: float = 0.01
+    duals_initial_val: float = -2.0
+    barrier_initial_val: float = 0.5
+    max_barrier_coefs: float = 0.5
+    step_size_duals: float = 1.0
     step_size_duals_I: float = 0.0
     integral_decay: float = 0.99
     init_dual_diag: bool = False
@@ -212,7 +212,7 @@ class Args:
     # Regularization
     graph_epsilon: float = 0.01
     graph_variance_scale: float = 0.1
-    perturbation_type: str = 'exponential'  # 'exponential', 'squared', 'squared-null-grad', 'none'
+    perturbation_type: str = 'none'  # 'exponential', 'squared', 'squared-null-grad', 'none'
     turn_off_above_threshold: bool = False
     cum_error_threshold: float = 0.1
 
@@ -536,8 +536,8 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print("\nBuilding symmetrized transition matrix...")
     transition_matrix = get_symmetrized_transition_matrix(
         transition_counts,
-        smoothing=1e-5,
-        normalize=True,
+        smoothing=0.0,
+        normalize=False,
     )
 
     # Compute eigendecomposition
@@ -974,7 +974,7 @@ def learn_eigenvectors(args):
             plot_dual_variable_evolution(
                 metrics_history,
                 gt_eigenvalues,
-                args.gamma,
+                args.geometric_gamma,
                 str(plots_dir / "dual_variable_evolution.png"),
                 num_eigenvectors=args.num_eigenvectors
             )
