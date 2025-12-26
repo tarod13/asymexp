@@ -6,12 +6,16 @@ the eigenvectors through an augmented Lagrangian optimization approach.
 """
 
 import os
+import sys
 import random
 import time
 import json
 import pickle
 from typing import Dict
 from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.append(str(Path(__file__).parent.parent))
 
 import numpy as np
 import jax
