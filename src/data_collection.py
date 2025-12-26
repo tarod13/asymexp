@@ -368,10 +368,11 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
             next_state_idx = next_state_indices[i]
             action = action_array[i]
             done = dones[i]
+            next_env_state = next_env_states[i]
 
-            # Store current state and action at write_idx
-            obs_updated = observations[i].at[write_idx].set(state_idx)
+            # Store action at write_idx
             act_updated = actions[i].at[write_idx].set(action)
+            obs_updated = observations[i]
             term_updated = terminals[i]
             valid_updated = valids[i]
 
@@ -384,7 +385,12 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
                 term = term.at[write_idx + 1].set(1)
                 # Mark write_idx + 1 as invalid (transition from terminal to reset)
                 valid = valid_updated.at[write_idx + 1].set(0)
-                # Increment write index by 2 (skip the invalid transition)
+
+                # Store reset state at write_idx + 2
+                reset_state_idx = env.get_state_representation(next_env_state)
+                obs = obs.at[write_idx + 2].set(reset_state_idx)
+
+                # Increment write index by 2 (to write_idx + 2, ready for next action)
                 new_write_idx = write_idx + 2
                 return obs, act_updated, term, valid, new_write_idx
 
