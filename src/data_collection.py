@@ -286,6 +286,132 @@ def collect_transition_counts(env, num_envs, num_steps, num_states, seed=42):
     return final_transition_counts, metrics
 
 
+def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states, seed=42):
+    """
+    Collect both transition counts and episode trajectories efficiently.
+
+    This function runs num_envs parallel environments for num_steps and accumulates
+    both transition counts and full episode trajectories in a single pass.
+
+    Args:
+        env: GridWorld environment
+        num_envs: Number of parallel environments (episodes)
+        num_steps: Number of steps to collect per environment
+        num_states: Total number of states in the environment
+        seed: Random seed
+
+    Returns:
+        transition_counts: Array of shape [num_states, num_actions, num_states]
+        episodes: Dictionary with:
+            - 'obs': Array of shape [num_envs, num_steps+1] with state indices
+            - 'actions': Array of shape [num_envs, num_steps] with actions
+            - 'lengths': Array of shape [num_envs] with episode lengths
+        metrics: Dictionary with collection metrics
+    """
+    # Get environment parameters
+    env_params = env.get_params()
+    num_actions = env.action_space
+
+    # Create vectorized functions
+    vmap_init_reset, vmap_reset, vmap_step = make_env_fns(env, env_params)
+
+    # Initialize random key
+    rng = jax.random.PRNGKey(seed)
+
+    # Initialize transition count matrix
+    transition_counts = jnp.zeros((num_states, num_actions, num_states), dtype=jnp.float32)
+
+    # Initialize storage for episodes (full trajectories)
+    # Store observations: [num_envs, num_steps+1] (+1 for initial state)
+    episode_obs = jnp.zeros((num_envs, num_steps + 1), dtype=jnp.int32)
+    episode_actions = jnp.zeros((num_envs, num_steps), dtype=jnp.int32)
+    episode_lengths = jnp.zeros((num_envs,), dtype=jnp.int32)
+
+    # Define the single update step
+    def _update_step(runner_state, step_idx):
+        transition_counts, env_states, episode_obs, episode_actions, episode_lengths, rng = runner_state
+
+        # Split RNG for action selection and environment step
+        rng, rng_act, rng_step = jax.random.split(rng, 3)
+
+        # Select random actions
+        actions = jax.random.randint(
+            rng_act,
+            shape=(num_envs,),
+            minval=0,
+            maxval=num_actions,
+        )
+
+        # Step environments
+        next_env_states, state_indices, next_state_indices, rewards, dones, _ = vmap_step(num_envs)(
+            rng_step, env_states, actions
+        )
+
+        # Accumulate transition counts for all parallel environments
+        transition_counts = transition_counts.at[state_indices, actions, next_state_indices].add(1.0)
+
+        # Store current state observations at step_idx
+        episode_obs = episode_obs.at[:, step_idx].set(state_indices)
+
+        # Store actions
+        episode_actions = episode_actions.at[:, step_idx].set(actions)
+
+        # Update episode lengths (increment for all non-done episodes)
+        # Note: We're using step_idx + 1 because we want to count states, not transitions
+        episode_lengths = jnp.where(
+            dones,
+            jnp.maximum(episode_lengths, step_idx + 1),  # Freeze length when done
+            step_idx + 1  # Keep incrementing
+        )
+
+        # Store next state observations (at step_idx + 1)
+        episode_obs = episode_obs.at[:, step_idx + 1].set(next_state_indices)
+
+        # Reset environments if done
+        reset_env_states = vmap_reset(num_envs)(rng, next_env_states, dones)
+
+        # Return updated state
+        runner_state = (transition_counts, reset_env_states, episode_obs, episode_actions, episode_lengths, rng)
+
+        return runner_state, None
+
+    # Initialize environments
+    rng, reset_rng = jax.random.split(rng)
+    env_states = vmap_init_reset(num_envs)(reset_rng)
+
+    # Get initial state indices for all environments
+    initial_state_indices = jax.vmap(lambda state: env.get_state_representation(state))(env_states)
+    episode_obs = episode_obs.at[:, 0].set(initial_state_indices)
+
+    # Initialize runner state
+    runner_state = (transition_counts, env_states, episode_obs, episode_actions, episode_lengths, rng)
+
+    # Run collection loop using scan
+    runner_state, _ = jax.lax.scan(
+        _update_step, runner_state, jnp.arange(num_steps)
+    )
+
+    # Extract final results
+    final_transition_counts, _, final_episode_obs, final_episode_actions, final_episode_lengths, _ = runner_state
+
+    # Package episodes
+    episodes = {
+        'obs': final_episode_obs,
+        'actions': final_episode_actions,
+        'lengths': final_episode_lengths,
+    }
+
+    # Metrics
+    metrics = {
+        "total_transitions": int(final_transition_counts.sum()),
+        "num_envs": num_envs,
+        "num_steps": num_steps,
+        "num_episodes": num_envs,
+    }
+
+    return final_transition_counts, episodes, metrics
+
+
 def collect_transition_counts_batched_portals(
     base_env,
     portal_configs,

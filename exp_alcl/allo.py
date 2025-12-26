@@ -35,7 +35,7 @@ from src.envs.door_gridworld import (
     create_door_gridworld_from_base,
     create_random_doors,
 )
-from src.data_collection import collect_transition_counts
+from src.data_collection import collect_transition_counts_and_episodes
 from exp_complex_basis.eigenvector_visualization import (
     visualize_multiple_eigenvectors,
     visualize_eigenvector_on_grid,
@@ -407,8 +407,9 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         data_env = create_door_gridworld_from_base(env, door_config['doors'], canonical_states)
         print("  Created DoorGridWorld environment with irreversible transitions")
 
-    # Collect transition counts from the environment (with doors if applicable)
-    transition_counts_full, metrics = collect_transition_counts(
+    # Collect transition counts and episodes in a single efficient pass
+    print("Collecting transition data and episodes...")
+    transition_counts_full, raw_episodes, metrics = collect_transition_counts_and_episodes(
         env=data_env,
         num_envs=args.num_envs,
         num_steps=args.num_steps,
@@ -416,10 +417,12 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         seed=args.seed,
     )
 
-    print(f"Collected {metrics['total_transitions']} transitions")
+    print(f"Collected {metrics['total_transitions']} transitions and {metrics['num_episodes']} episodes")
 
-    # Collect episodes for replay buffer
-    print("\nCollecting episodes for replay buffer...")
+    # Map full state indices to canonical indices
+    full_to_canonical = {int(full_idx): canon_idx for canon_idx, full_idx in enumerate(canonical_states)}
+
+    # Initialize replay buffer
     replay_buffer = EpisodicReplayBuffer(
         max_episodes=args.num_envs,
         max_episode_length=args.num_steps + 1,  # +1 for initial state
@@ -427,50 +430,24 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         seed=args.seed
     )
 
-    # Map full state indices to canonical indices
-    full_to_canonical = {int(full_idx): canon_idx for canon_idx, full_idx in enumerate(canonical_states)}
-
-    # Collect and add episodes to replay buffer
-    import jax.random as jr
-    rng_key_episodes = jr.PRNGKey(args.seed + 1000)
-
+    # Convert raw episodes (full state space) to canonical state space and add to buffer
     for ep_idx in range(args.num_envs):
-        rng_key_episodes, reset_key = jr.split(rng_key_episodes)
+        episode_length = int(raw_episodes['lengths'][ep_idx])
+        episode_obs_full = raw_episodes['obs'][ep_idx, :episode_length + 1]  # +1 for initial state
 
-        # Reset environment
-        state = data_env.reset(reset_key)
-        episode_obs = []
-
-        # Only add if state is in canonical states
-        state_idx = int(data_env.get_state_representation(state))
-        if state_idx in full_to_canonical:
-            episode_obs.append(full_to_canonical[state_idx])
-
-        for step in range(args.num_steps):
-            rng_key_episodes, action_key, step_key = jr.split(rng_key_episodes, 3)
-
-            # Random action
-            action = jr.randint(action_key, (), 0, data_env.action_space)
-
-            # Step
-            next_state, reward, done, info = data_env.step(step_key, state, action)
-
-            # Only add if next_state is in canonical states
-            next_state_idx = int(data_env.get_state_representation(next_state))
-            if next_state_idx in full_to_canonical:
-                episode_obs.append(full_to_canonical[next_state_idx])
-
-            state = next_state
-
-            if done:
-                break
+        # Convert to canonical state indices, filtering out non-canonical states
+        episode_obs_canonical = []
+        for state_idx in episode_obs_full:
+            state_idx = int(state_idx)
+            if state_idx in full_to_canonical:
+                episode_obs_canonical.append(full_to_canonical[state_idx])
 
         # Add episode to buffer if it has at least 2 states
-        if len(episode_obs) >= 2:
-            episode_dict = {'obs': np.array(episode_obs, dtype=np.int32)}
+        if len(episode_obs_canonical) >= 2:
+            episode_dict = {'obs': np.array(episode_obs_canonical, dtype=np.int32)}
             replay_buffer.add_episode(episode_dict)
 
-    print(f"Collected {len(replay_buffer)} episodes in replay buffer")
+    print(f"Added {len(replay_buffer)} episodes to replay buffer (filtered to canonical states)")
 
     # Extract canonical state subspace
     transition_counts = transition_counts_full[jnp.ix_(canonical_states, jnp.arange(env.action_space), canonical_states)]
