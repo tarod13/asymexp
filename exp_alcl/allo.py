@@ -27,6 +27,10 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from src.envs.gridworld import GridWorldEnv
 from src.envs.env import create_environment_from_text, EXAMPLE_ENVIRONMENTS
 from src.data_collection import collect_transition_counts
+from exp_irreversible_doors.door_environment import (
+    create_irreversible_doors,
+    apply_doors_to_transition_matrix,
+)
 
 
 # Simple MLP network for (x,y) coordinates
@@ -150,6 +154,11 @@ class Args:
     # Data collection
     num_envs: int = 1000
     num_steps: int = 100
+
+    # Irreversible doors
+    use_doors: bool = False
+    num_doors: int = 5  # Number of irreversible doors to create
+    door_seed: int = 42  # Seed for door placement
 
     # Model
     num_eigenvectors: int = 10
@@ -339,6 +348,37 @@ def state_idx_to_xy(state_idx: int, width: int) -> tuple:
     return x, y
 
 
+def get_canonical_free_states(env):
+    """
+    Get the canonical set of free (non-obstacle) states from the environment.
+
+    Args:
+        env: GridWorld environment
+
+    Returns:
+        canonical_states: Array of free state indices, sorted
+    """
+    width = env.width
+    height = env.height
+
+    # Get all state indices
+    all_states = set(range(width * height))
+
+    # Get obstacle state indices
+    obstacle_states = set()
+    if env.has_obstacles:
+        for obs in env.obstacles:
+            obs_x, obs_y = int(obs[0]), int(obs[1])
+            if 0 <= obs_x < width and 0 <= obs_y < height:
+                state_idx = obs_y * width + obs_x
+                obstacle_states.add(state_idx)
+
+    # Free states = all states - obstacles
+    free_states = sorted(all_states - obstacle_states)
+
+    return jnp.array(free_states, dtype=jnp.int32)
+
+
 def collect_data_and_compute_eigenvectors(env, args: Args):
     """
     Collect transition data and compute ground truth eigenvectors.
@@ -347,12 +387,19 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         transition_matrix: Symmetrized transition matrix
         eigendecomp: Dictionary with eigenvalues and eigenvectors
         state_coords: Array of (x,y) coordinates for each state
+        canonical_states: Array of free state indices
+        doors: Door configuration (if use_doors=True)
     """
     print("Collecting transition data...")
     num_states = env.width * env.height
 
-    # Collect transition counts
-    transition_counts, metrics = collect_transition_counts(
+    # Get canonical (free) states
+    canonical_states = get_canonical_free_states(env)
+    num_canonical = len(canonical_states)
+    print(f"Number of free states: {num_canonical} (out of {num_states} total)")
+
+    # Collect transition counts (full state space)
+    transition_counts_full, metrics = collect_transition_counts(
         env=env,
         num_envs=args.num_envs,
         num_steps=args.num_steps,
@@ -362,8 +409,27 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
 
     print(f"Collected {metrics['total_transitions']} transitions")
 
+    # Extract canonical state subspace
+    transition_counts = transition_counts_full[jnp.ix_(canonical_states, jnp.arange(env.action_space), canonical_states)]
+
+    # Apply irreversible doors if requested
+    door_config = None
+    if args.use_doors:
+        print(f"\nCreating {args.num_doors} irreversible doors...")
+        door_config = create_irreversible_doors(
+            env,
+            canonical_states,
+            num_doors=args.num_doors,
+            seed=args.door_seed
+        )
+        print(f"  Created {door_config['num_doors']} doors (out of {door_config['total_reversible']} reversible transitions)")
+
+        # Apply doors to transition counts
+        transition_counts = apply_doors_to_transition_matrix(transition_counts, door_config['doors'])
+        print("  Applied doors to transition matrix (made transitions one-way)")
+
     # Build symmetrized transition matrix
-    print("Building symmetrized transition matrix...")
+    print("\nBuilding symmetrized transition matrix...")
     transition_matrix = get_symmetrized_transition_matrix(
         transition_counts,
         smoothing=1e-5,
@@ -381,14 +447,15 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     for i in range(min(5, args.num_eigenvectors)):
         print(f"  λ_{i}: {eigendecomp['eigenvalues'][i]:.6f}")
 
-    # Create state coordinate mapping
+    # Create state coordinate mapping (only for canonical/free states)
     state_coords = []
-    for state_idx in range(num_states):
+    for state_idx in canonical_states:
+        state_idx = int(state_idx)
         x, y = state_idx_to_xy(state_idx, env.width)
         state_coords.append([x, y])
     state_coords = jnp.array(state_coords, dtype=jnp.float32)
 
-    return transition_matrix, eigendecomp, state_coords
+    return transition_matrix, eigendecomp, state_coords, canonical_states, door_config
 
 
 def learn_eigenvectors(args):
@@ -423,13 +490,25 @@ def learn_eigenvectors(args):
 
     # Create environment and collect data
     env = create_gridworld_env(args)
-    transition_matrix, eigendecomp, state_coords = collect_data_and_compute_eigenvectors(env, args)
+    transition_matrix, eigendecomp, state_coords, canonical_states, door_config = collect_data_and_compute_eigenvectors(env, args)
 
     gt_eigenvalues = eigendecomp['eigenvalues']
     gt_eigenvectors = eigendecomp['eigenvectors']
 
     print(f"\nState coordinates shape: {state_coords.shape}")
     print(f"Ground truth eigenvectors shape: {gt_eigenvectors.shape}")
+
+    # Save door configuration if doors were used
+    if door_config is not None:
+        door_save_path = results_dir / "door_config.pkl"
+        with open(door_save_path, 'wb') as f:
+            pickle.dump({
+                'doors': door_config['doors'],
+                'num_doors': door_config['num_doors'],
+                'total_reversible': door_config['total_reversible'],
+                'canonical_states': np.array(canonical_states),
+            }, f)
+        print(f"Door configuration saved to {door_save_path}")
 
     # Initialize the encoder
     encoder = CoordinateEncoder(
