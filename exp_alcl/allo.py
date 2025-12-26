@@ -40,7 +40,7 @@ from exp_complex_basis.eigenvector_visualization import (
     visualize_multiple_eigenvectors,
     visualize_eigenvector_on_grid,
 )
-from exp_alcl.episodic_replay_buffer import EpisodicReplayBuffer, collect_episodes
+from exp_alcl.episodic_replay_buffer import EpisodicReplayBuffer
 
 
 # Simple MLP network for (x,y) coordinates
@@ -420,26 +420,55 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
 
     # Collect episodes for replay buffer
     print("\nCollecting episodes for replay buffer...")
-    episodes = collect_episodes(
-        env=data_env,
-        num_episodes=args.num_envs,
-        max_steps_per_episode=args.num_steps,
-        seed=args.seed + 1000  # Different seed from transition counts
+    replay_buffer = EpisodicReplayBuffer(
+        max_episodes=args.num_envs,
+        max_episode_length=args.num_steps + 1,  # +1 for initial state
+        observation_type='canonical_state',
+        seed=args.seed
     )
 
-    # Map episodes from full state space to canonical state indices
+    # Map full state indices to canonical indices
     full_to_canonical = {int(full_idx): canon_idx for canon_idx, full_idx in enumerate(canonical_states)}
-    canonical_episodes = []
-    for episode in episodes:
-        # Map each state in episode to canonical index
-        canonical_ep = []
-        for state_idx in episode:
-            if int(state_idx) in full_to_canonical:
-                canonical_ep.append(full_to_canonical[int(state_idx)])
-        if len(canonical_ep) > 0:  # Only keep non-empty episodes
-            canonical_episodes.append(np.array(canonical_ep, dtype=np.int32))
 
-    print(f"Collected {len(canonical_episodes)} episodes (mapped to canonical states)")
+    # Collect and add episodes to replay buffer
+    import jax.random as jr
+    rng_key_episodes = jr.PRNGKey(args.seed + 1000)
+
+    for ep_idx in range(args.num_envs):
+        rng_key_episodes, reset_key = jr.split(rng_key_episodes)
+
+        # Reset environment
+        state = data_env.reset(reset_key)
+        episode_obs = []
+
+        # Only add if state is in canonical states
+        if int(state) in full_to_canonical:
+            episode_obs.append(full_to_canonical[int(state)])
+
+        for step in range(args.num_steps):
+            rng_key_episodes, action_key, step_key = jr.split(rng_key_episodes, 3)
+
+            # Random action
+            action = jr.randint(action_key, (), 0, data_env.action_space)
+
+            # Step
+            next_state, reward, done, info = data_env.step(step_key, state, action)
+
+            # Only add if next_state is in canonical states
+            if int(next_state) in full_to_canonical:
+                episode_obs.append(full_to_canonical[int(next_state)])
+
+            state = next_state
+
+            if done:
+                break
+
+        # Add episode to buffer if it has at least 2 states
+        if len(episode_obs) >= 2:
+            episode_dict = {'obs': np.array(episode_obs, dtype=np.int32)}
+            replay_buffer.add_episode(episode_dict)
+
+    print(f"Collected {len(replay_buffer)} episodes in replay buffer")
 
     # Extract canonical state subspace
     transition_counts = transition_counts_full[jnp.ix_(canonical_states, jnp.arange(env.action_space), canonical_states)]
@@ -471,7 +500,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         state_coords.append([x, y])
     state_coords = jnp.array(state_coords, dtype=jnp.float32)
 
-    return transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env, canonical_episodes
+    return transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env, replay_buffer
 
 
 def learn_eigenvectors(args):
@@ -506,21 +535,13 @@ def learn_eigenvectors(args):
 
     # Create environment and collect data
     env = create_gridworld_env(args)
-    transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env, episodes = collect_data_and_compute_eigenvectors(env, args)
+    transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
 
     gt_eigenvalues = eigendecomp['eigenvalues_real']
     gt_eigenvectors = eigendecomp['right_eigenvectors_real']
 
     print(f"\nState coordinates shape: {state_coords.shape}")
     print(f"Ground truth eigenvectors shape: {gt_eigenvectors.shape}")
-
-    # Create episodic replay buffer
-    print("\nCreating episodic replay buffer...")
-    replay_buffer = EpisodicReplayBuffer(
-        episodes=episodes,
-        gamma=args.geometric_gamma,
-        max_offset=args.max_time_offset
-    )
 
     # Save door configuration if doors were used
     if door_config is not None:
@@ -794,17 +815,14 @@ def learn_eigenvectors(args):
     plt.close()
 
     for gradient_step in tqdm(range(args.num_gradient_steps)):
-        # Sample batches from episodic replay buffer
-        rng_key, sample_key1, sample_key2 = jax.random.split(rng_key, 3)
+        # Sample batches from episodic replay buffer using truncated geometric distribution
+        batch1 = replay_buffer.sample(args.batch_size, discount=args.geometric_gamma)
+        batch2 = replay_buffer.sample(args.batch_size, discount=args.geometric_gamma)
 
-        # Sample transitions (s_t, s_{t+k}) from episodes using truncated geometric
-        state_indices, next_state_indices = replay_buffer.sample_batch(args.batch_size, sample_key1)
-        state_indices = jnp.array(state_indices)
-        next_state_indices = jnp.array(next_state_indices)
-
-        # Sample another batch for the second orthogonality check
-        state_indices_2, _ = replay_buffer.sample_batch(args.batch_size, sample_key2)
-        state_indices_2 = jnp.array(state_indices_2)
+        # Extract state indices (canonical state indices)
+        state_indices = jnp.array(batch1.obs)
+        next_state_indices = jnp.array(batch1.next_obs)
+        state_indices_2 = jnp.array(batch2.obs)
 
         # Get coordinates
         coords_batch = state_coords[state_indices]
