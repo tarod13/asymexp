@@ -293,19 +293,22 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
     This function runs num_envs parallel environments for num_steps and accumulates
     both transition counts and full episode trajectories in a single pass.
 
+    Returns data in OGBench-compatible format with proper handling of episode boundaries.
+
     Args:
         env: GridWorld environment
-        num_envs: Number of parallel environments (episodes)
+        num_envs: Number of parallel environments
         num_steps: Number of steps to collect per environment
         num_states: Total number of states in the environment
         seed: Random seed
 
     Returns:
         transition_counts: Array of shape [num_states, num_actions, num_states]
-        episodes: Dictionary with:
-            - 'obs': Array of shape [num_envs, num_steps+1] with state indices
-            - 'actions': Array of shape [num_envs, num_steps] with actions
-            - 'lengths': Array of shape [num_envs] with episode lengths
+        episodes: Dictionary with OGBench-compatible format:
+            - 'observations': Array of shape [num_envs, max_buffer_size] with state indices
+            - 'actions': Array of shape [num_envs, max_buffer_size] with actions
+            - 'terminals': Array of shape [num_envs, max_buffer_size] with terminal flags
+            - 'valids': Array of shape [num_envs, max_buffer_size] with validity flags
         metrics: Dictionary with collection metrics
     """
     # Get environment parameters
@@ -321,21 +324,26 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
     # Initialize transition count matrix
     transition_counts = jnp.zeros((num_states, num_actions, num_states), dtype=jnp.float32)
 
-    # Initialize storage for episodes (full trajectories)
-    # Store observations: [num_envs, num_steps+1] (+1 for initial state)
-    episode_obs = jnp.zeros((num_envs, num_steps + 1), dtype=jnp.int32)
-    episode_actions = jnp.zeros((num_envs, num_steps), dtype=jnp.int32)
-    episode_lengths = jnp.zeros((num_envs,), dtype=jnp.int32)
+    # Allocate larger buffer to account for extra slots when done signals occur
+    # Worst case: every step is a done, requiring 2 slots each
+    max_buffer_size = num_steps * 2 + 1
+
+    # Initialize storage for episodes in OGBench format
+    observations = jnp.empty((num_envs, max_buffer_size), dtype=jnp.int32)
+    actions = jnp.empty((num_envs, max_buffer_size), dtype=jnp.int32)
+    terminals = jnp.empty((num_envs, max_buffer_size), dtype=jnp.int32)
+    valids = jnp.empty((num_envs, max_buffer_size), dtype=jnp.int32)
 
     # Define the single update step
     def _update_step(runner_state, step_idx):
-        transition_counts, env_states, episode_obs, episode_actions, episode_lengths, rng = runner_state
+        (transition_counts, env_states, observations, actions, terminals,
+         valids, write_indices, last_written, rng) = runner_state
 
         # Split RNG for action selection and environment step
         rng, rng_act, rng_step = jax.random.split(rng, 3)
 
         # Select random actions
-        actions = jax.random.randint(
+        action_array = jax.random.randint(
             rng_act,
             shape=(num_envs,),
             minval=0,
@@ -344,34 +352,79 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
 
         # Step environments
         next_env_states, state_indices, next_state_indices, rewards, dones, _ = vmap_step(num_envs)(
-            rng_step, env_states, actions
+            rng_step, env_states, action_array
         )
 
         # Accumulate transition counts for all parallel environments
-        transition_counts = transition_counts.at[state_indices, actions, next_state_indices].add(1.0)
+        transition_counts = transition_counts.at[state_indices, action_array, next_state_indices].add(1.0)
 
-        # Store current state observations at step_idx
-        episode_obs = episode_obs.at[:, step_idx].set(state_indices)
+        # Vectorized update for each environment
+        def update_single_env(i):
+            write_idx = write_indices[i]   # Current write index for env i corresponds to the next free slot
+            state_idx = state_indices[i]
+            next_state_idx = next_state_indices[i]
+            action = action_array[i]
+            done = dones[i]
 
-        # Store actions
-        episode_actions = episode_actions.at[:, step_idx].set(actions)
+            # Store action and terminal at write_idx-1, since they 
+            # correspond to the current state at write_idx-1
+            act_updated = actions[i].at[write_idx-1].set(action) 
+            term_updated = terminals[i].at[write_idx-1].set(done.astype(jnp.int32)) 
+            valid_updated = valids[i].at[write_idx].set(1-done.astype(jnp.int32))
 
-        # Update episode lengths (increment for all non-done episodes)
-        # Note: We're using step_idx + 1 because we want to count states, not transitions
-        episode_lengths = jnp.where(
-            dones,
-            jnp.maximum(episode_lengths, step_idx + 1),  # Freeze length when done
-            step_idx + 1  # Keep incrementing
-        )
+            # Store next state
+            obs_updated = observations[i].at[write_idx].set(next_state_idx)
 
-        # Store next state observations (at step_idx + 1)
-        episode_obs = episode_obs.at[:, step_idx + 1].set(next_state_indices)
+            # Handle done vs non-done cases
+            def handle_done(_):
+                # Mark terminal
+                term = term_updated.at[write_idx].set(1)
+
+                # Increment write index by 2 (skip over terminal and invalid slot)
+                # Reset state will be stored in the next iteration
+                new_write_idx = write_idx + 2
+
+                return obs_updated, act_updated, term, valid_updated, new_write_idx, write_idx
+
+            def handle_normal(_):
+
+                def after_reset(_):
+                    # Store current observation and make it valid (reset state)
+                    obs = obs_updated.at[write_idx-1].set(state_idx)
+                    valid = valid_updated.at[write_idx-1].set(1)
+                    return obs, valid
+
+                def normal_step(_):
+                    # No special handling needed
+                    return obs_updated, valid_updated
+
+                # Check if we're just after a reset (valid[write_idx-1] == 0)
+                # This means the previous position was invalid (after terminal) 
+                after_terminal = valid_updated[write_idx-1] == 0
+                obs, valid = jax.lax.cond(
+                    after_terminal,
+                    after_reset,
+                    normal_step,
+                    operand=None
+                )
+
+                # Increment write index by 1
+                new_write_idx = write_idx + 1
+
+                return obs, act_updated, term_updated, valid, new_write_idx, write_idx
+
+            return jax.lax.cond(done, handle_done, handle_normal, operand=None)
+
+        # Update all environments
+        updates = jax.vmap(update_single_env)(jnp.arange(num_envs))
+        observations, actions, terminals, valids, write_indices, last_written = updates
 
         # Reset environments if done
         reset_env_states = vmap_reset(num_envs)(rng, next_env_states, dones)
 
         # Return updated state
-        runner_state = (transition_counts, reset_env_states, episode_obs, episode_actions, episode_lengths, rng)
+        runner_state = (transition_counts, reset_env_states, observations, actions,
+                       terminals, valids, write_indices, last_written, rng)
 
         return runner_state, None
 
@@ -379,26 +432,40 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
     rng, reset_rng = jax.random.split(rng)
     env_states = vmap_init_reset(num_envs)(reset_rng)
 
-    # Get initial state indices for all environments
+    # Get initial state indices and store at position 0
     initial_state_indices = jax.vmap(lambda state: env.get_state_representation(state))(env_states)
-    episode_obs = episode_obs.at[:, 0].set(initial_state_indices)
+    observations = observations.at[:, 0].set(initial_state_indices)
+    valids = valids.at[:, 0].set(1)   # Initial states are valid (vacuously)
+
+    # Start write_indices at 1 since we already wrote initial states at position 0
+    write_indices = jnp.ones((num_envs,), dtype=jnp.int32)
+    last_written = jnp.zeros((num_envs,), dtype=jnp.int32)
 
     # Initialize runner state
-    runner_state = (transition_counts, env_states, episode_obs, episode_actions, episode_lengths, rng)
-
+    runner_state = (transition_counts, env_states, observations, actions,
+                   terminals, valids, write_indices, last_written, rng)
+    
     # Run collection loop using scan
     runner_state, _ = jax.lax.scan(
         _update_step, runner_state, jnp.arange(num_steps)
     )
 
     # Extract final results
-    final_transition_counts, _, final_episode_obs, final_episode_actions, final_episode_lengths, _ = runner_state
+    (final_transition_counts, _, final_observations, final_actions,
+     final_terminals, final_valids, _, final_written_indices, _) = runner_state
+    
+    # Fill terminals at the last indices: returns 1 if it was 1, otherwise 0
+    final_terminals = final_terminals.at[jnp.arange(num_envs), final_written_indices].apply(
+        lambda x: jnp.where(x == 1, 1, 0)
+    )
 
-    # Package episodes
+    # Package episodes in OGBench format
     episodes = {
-        'obs': final_episode_obs,
-        'actions': final_episode_actions,
-        'lengths': final_episode_lengths,
+        'observations': final_observations,
+        'actions': final_actions,
+        'terminals': final_terminals,
+        'valids': final_valids,
+        'lengths': final_written_indices,  # Written indices represent final lengths
     }
 
     # Metrics
@@ -406,7 +473,6 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
         "total_transitions": int(final_transition_counts.sum()),
         "num_envs": num_envs,
         "num_steps": num_steps,
-        "num_episodes": num_envs,
     }
 
     return final_transition_counts, episodes, metrics

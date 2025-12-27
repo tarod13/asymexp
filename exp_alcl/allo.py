@@ -495,39 +495,53 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         seed=args.seed,
     )
 
-    print(f"Collected {metrics['total_transitions']} transitions and {metrics['num_episodes']} episodes")
+    print(f"Collected {metrics['total_transitions']} transitions.")
 
     # Map full state indices to canonical indices
     full_to_canonical = {int(full_idx): canon_idx for canon_idx, full_idx in enumerate(canonical_states)}
 
     # Initialize replay buffer
+    # Find max valid episode length for buffer sizing
+    max_valid_length = int(raw_episodes['lengths'].max()) + 1
     replay_buffer = EpisodicReplayBuffer(
         max_episodes=args.num_envs,
-        max_episode_length=args.num_steps + 1,  # +1 for initial state
+        max_episode_length=max_valid_length,
         observation_type='canonical_state',
         seed=args.seed
     )
 
-    # Convert raw episodes (full state space) to canonical state space and add to buffer
+    # Convert raw episodes (OGBench format) to canonical state space and add to buffer
+    # Each row may contain multiple trajectories separated by terminal flags
     for ep_idx in range(args.num_envs):
         episode_length = int(raw_episodes['lengths'][ep_idx])
-        episode_obs_full = raw_episodes['obs'][ep_idx, :episode_length + 1]  # +1 for initial state
 
-        # Convert to canonical state indices, filtering out non-canonical states
+        # Get ALL observations and terminals up to write_idx
+        episode_obs_full = raw_episodes['observations'][ep_idx, :episode_length + 1]
+        episode_terminals = raw_episodes['terminals'][ep_idx, :episode_length + 1]
+
+        # Convert ALL observations to canonical state indices (don't filter by valids here)
         episode_obs_canonical = []
-        for state_idx in episode_obs_full:
+        episode_terminals_canonical = []
+        for i, state_idx in enumerate(episode_obs_full):
             state_idx = int(state_idx)
+            # Only convert states that exist in canonical mapping
             if state_idx in full_to_canonical:
                 episode_obs_canonical.append(full_to_canonical[state_idx])
+                episode_terminals_canonical.append(int(episode_terminals[i]))
 
-        # Add episode to buffer if it has at least 2 states
+        # Add ALL data to buffer if it has at least 2 states
+        # The buffer will use terminals to determine trajectory boundaries during sampling
         if len(episode_obs_canonical) >= 2:
             # Reshape to (n, 1) as expected by replay buffer's transform function
             obs_array = np.array(episode_obs_canonical, dtype=np.int32).reshape(-1, 1)
-            episode_dict = {'obs': obs_array}
+            terminals_array = np.array(episode_terminals_canonical, dtype=np.int32)
+            episode_dict = {
+                'obs': obs_array,
+                'terminals': terminals_array,
+            }
             replay_buffer.add_episode(episode_dict)
 
-    print(f"Added {len(replay_buffer)} episodes to replay buffer (filtered to canonical states)")
+    print(f"Added {len(replay_buffer)} trajectory sequences to replay buffer (may contain multiple episodes)")
 
     # Extract canonical state subspace
     transition_counts = transition_counts_full[jnp.ix_(canonical_states, jnp.arange(env.action_space), canonical_states)]
