@@ -133,7 +133,7 @@ class EpisodicReplayBuffer:
         for step_component, component_list in episode.items():
             # Convert to numpy array
             component_array = np.array(component_list, dtype=component_list[0].dtype)
-            
+
             n = component_array.shape[0]
             if step_component not in self._episodes:
                 # The buffer is created with appropriate size
@@ -141,14 +141,74 @@ class EpisodicReplayBuffer:
                 if self._max_episode_length is not None:
                     _shape = (self._max_episode_length,) + _shape[1:]   # TODO: Check when max_episode_length is None
                 self._episodes[step_component] = np.empty((self._max_episodes,) + _shape, dtype=component_array.dtype)
-            
+
             # Add component to episode buffer in current index
             self._episodes[step_component][self._idx][:n] = component_array
-            
+
+            # PRE-COMPUTE TERMINAL INDICES (Optimization Approach 1)
+            if step_component == 'terminals':
+                # Find all terminal positions in this episode
+                terminal_positions = np.where(component_array == 1)[0]
+
+                # Create buffers for storing terminal indices if they don't exist
+                if 'terminal_indices' not in self._episodes:
+                    # Scan all episodes added so far to find the maximum number of terminals
+                    max_terminals_needed = len(terminal_positions)  # Start with current episode
+
+                    # Check previously added episodes
+                    num_episodes_to_check = self._idx if not self._full else self._max_episodes
+                    for ep_idx in range(num_episodes_to_check):
+                        if 'terminals' in self._episodes:
+                            ep_length = self._episodes_length[ep_idx]
+                            ep_terminals = self._episodes['terminals'][ep_idx, :ep_length]
+                            num_terms_in_ep = np.sum(ep_terminals == 1)
+                            max_terminals_needed = max(max_terminals_needed, num_terms_in_ep)
+
+                    # Add small buffer (10%) to handle potential future episodes with more terminals
+                    max_terminals = max(10, int(max_terminals_needed * 1.1))
+
+                    self._episodes['terminal_indices'] = np.full(
+                        (self._max_episodes, max_terminals), -1, dtype=np.int32
+                    )
+                    self._episodes['num_terminals'] = np.zeros(
+                        self._max_episodes, dtype=np.int32
+                    )
+
+                    # Backfill: Pre-compute terminal indices for all previously added episodes
+                    for ep_idx in range(num_episodes_to_check):
+                        if 'terminals' in self._episodes:
+                            ep_length = self._episodes_length[ep_idx]
+                            ep_terminals = self._episodes['terminals'][ep_idx, :ep_length]
+                            ep_term_positions = np.where(ep_terminals == 1)[0]
+                            num_terms = len(ep_term_positions)
+                            if num_terms > 0:
+                                num_to_store = min(num_terms, max_terminals)
+                                self._episodes['terminal_indices'][ep_idx, :num_to_store] = ep_term_positions[:num_to_store]
+                                self._episodes['num_terminals'][ep_idx] = num_to_store
+
+                # Store terminal positions for current episode
+                num_terms = len(terminal_positions)
+                max_terminals = self._episodes['terminal_indices'].shape[1]
+
+                if num_terms > max_terminals:
+                    # Warn if we're truncating (shouldn't happen with 10% buffer)
+                    import warnings
+                    warnings.warn(
+                        f"Episode has {num_terms} terminals but buffer only supports {max_terminals}. "
+                        f"Truncating to first {max_terminals} terminals."
+                    )
+
+                if num_terms > 0:
+                    num_terms_to_store = min(num_terms, max_terminals)
+                    self._episodes['terminal_indices'][self._idx, :num_terms_to_store] = terminal_positions[:num_terms_to_store]
+                    self._episodes['num_terminals'][self._idx] = num_terms_to_store
+                else:
+                    self._episodes['num_terminals'][self._idx] = 0
+
             # Save length of episode
             if step_component == 'obs':
                 self._episodes_length[self._idx] = n
-        
+
         self._idx = (self._idx + 1) % self._max_episodes
         self._full = self._full or self._idx == 0
 
@@ -160,28 +220,74 @@ class EpisodicReplayBuffer:
         transition_ranges = self._get_episode_lengths(episode_idx)
         obs_idx = uniform_sampling(transition_ranges - 1)   # -1 to sample future observations. This assumes length of episode is at least 2.
 
-        # Calculate remaining trajectory length using terminals if available
-        if 'terminals' in self._episodes:
-            # Find the next terminal for each sampled obs_idx
+        # Calculate remaining trajectory length using pre-computed terminal indices (VECTORIZED)
+        if 'terminal_indices' in self._episodes:
+            # APPROACH 1+2: Use pre-computed terminal indices with vectorized operations
+            #
+            # IMPORTANT: Terminals are marked TWICE when a done event occurs:
+            #   1. First terminal marks where done=True happened (the terminal state)
+            #   2. Second terminal marks the episode boundary (next obs after done)
+            # We prefer the second terminal to get the correct sampling boundary.
+            # Example: [..., s_t, s_{t+1}, ...] where done occurred at s_t
+            #          terminals: [..., 1, 1, ...]
+            #                          ^   ^
+            #                        done  boundary (use this one)
+
+            # Gather pre-computed terminal indices for all sampled episodes
+            # Shape: (batch_size, max_terminals_per_episode)
+            batch_term_indices = self._episodes['terminal_indices'][episode_idx]
+            batch_num_terms = self._episodes['num_terminals'][episode_idx]
+
+            # Create mask for valid terminals that are >= obs_idx
+            # Broadcasting: (batch_size, max_terminals) >= (batch_size, 1)
+            valid_mask = batch_term_indices >= obs_idx[:, None]
+
+            # Also mask out invalid terminal slots (marked with -1)
+            valid_mask &= (batch_term_indices >= 0)
+
+            # Compute relative indices (distance from obs_idx)
+            relative_term_indices = batch_term_indices - obs_idx[:, None]
+
+            # Set invalid positions to a large number so they sort to the end
+            relative_term_indices = np.where(valid_mask, relative_term_indices, 999999)
+
+            # Sort to get first and second terminals at indices 0 and 1
+            sorted_terms = np.sort(relative_term_indices, axis=1)
+
+            # Count how many valid terminals each sample has
+            num_valid_terms = np.sum(valid_mask, axis=1)
+
+            # Vectorized selection using np.where
+            # Prefer second terminal (boundary) if available, otherwise use first
+            max_durations = np.where(
+                num_valid_terms >= 2,
+                sorted_terms[:, 1],  # Second terminal (boundary) - preferred
+                np.where(
+                    num_valid_terms >= 1,
+                    sorted_terms[:, 0],  # First terminal (done state) - fallback
+                    transition_ranges - obs_idx - 1  # No terminals - use episode length
+                )
+            )
+        elif 'terminals' in self._episodes:
+            # FALLBACK: Old sequential implementation (if terminals exist but not pre-computed)
+            # This should not be reached if add_episode() is working correctly
+            #
+            # NOTE: Terminals come in pairs (done state + boundary), prefer second terminal
             max_durations = np.zeros(batch_size, dtype=np.int32)
             for i in range(batch_size):
                 ep_idx = episode_idx[i]
                 start_idx = obs_idx[i]
                 ep_length = transition_ranges[i]
 
-                # Find next terminal starting from obs_idx
                 terminals = self._episodes['terminals'][ep_idx, start_idx:ep_length]
                 terminal_indices = np.where(terminals == 1)[0]
 
                 if len(terminal_indices) > 0:
-                    # Terminals are marked for both obs and next_obs when done occurs
-                    # Use the second terminal (next_obs boundary) if available
                     if len(terminal_indices) > 1:
-                        max_durations[i] = terminal_indices[1]
+                        max_durations[i] = terminal_indices[1]  # Second terminal (boundary)
                     else:
-                        max_durations[i] = terminal_indices[0]
+                        max_durations[i] = terminal_indices[0]  # Only one terminal available
                 else:
-                    # No terminal found, use remaining episode length
                     max_durations[i] = ep_length - start_idx - 1
         else:
             # No terminals available, use full episode length

@@ -226,6 +226,7 @@ class Args:
     plot_freq: int = 1000
     save_freq: int = 1000
     save_model: bool = True
+    plot_during_training: bool = False  # If True, creates plots during training (slow). If False, only exports data.
     results_dir: str = "./results"
 
     # Misc
@@ -886,22 +887,39 @@ def learn_eigenvectors(args):
             s_prime_full = int(canonical_states[s_prime_canonical])
             door_markers[(s_full, a_forward)] = s_prime_full
 
-    # Plot ground truth eigenvectors
-    visualize_multiple_eigenvectors(
-        eigenvector_indices=list(range(args.num_eigenvectors)),
-        eigendecomposition=eigendecomp,
-        canonical_states=canonical_states,
-        grid_width=env.width,
-        grid_height=env.height,
-        portals=door_markers if door_markers else None,
-        eigenvector_type='right',
-        component='real',
-        ncols=min(4, args.num_eigenvectors),
-        wall_color='gray',
-        save_path=str(plots_dir / "ground_truth_eigenvectors.png"),
-        shared_colorbar=True
-    )
-    plt.close()
+    # Save visualization metadata for later plotting
+    viz_metadata = {
+        'canonical_states': np.array(canonical_states),
+        'grid_width': env.width,
+        'grid_height': env.height,
+        'door_markers': door_markers,
+        'num_eigenvectors': args.num_eigenvectors,
+        'geometric_gamma': args.geometric_gamma,
+    }
+    with open(results_dir / "viz_metadata.pkl", 'wb') as f:
+        pickle.dump(viz_metadata, f)
+
+    # Save ground truth eigendecomposition for plotting
+    np.save(results_dir / "gt_eigenvalues.npy", np.array(gt_eigenvalues))
+    np.save(results_dir / "gt_eigenvectors.npy", np.array(gt_eigenvectors))
+
+    # Optionally plot ground truth eigenvectors immediately
+    if args.plot_during_training:
+        visualize_multiple_eigenvectors(
+            eigenvector_indices=list(range(args.num_eigenvectors)),
+            eigendecomposition=eigendecomp,
+            canonical_states=canonical_states,
+            grid_width=env.width,
+            grid_height=env.height,
+            portals=door_markers if door_markers else None,
+            eigenvector_type='right',
+            component='real',
+            ncols=min(4, args.num_eigenvectors),
+            wall_color='gray',
+            save_path=str(plots_dir / "ground_truth_eigenvectors.png"),
+            shared_colorbar=True
+        )
+        plt.close()
 
     for gradient_step in tqdm(range(args.num_gradient_steps)):
         # Sample batches from episodic replay buffer using truncated geometric distribution
@@ -946,7 +964,7 @@ def learn_eigenvectors(args):
                 print(f"Step {gradient_step}: loss={allo.item():.4f}, "
                       f"total_error={metrics['total_error'].item():.4f}")
 
-        # Plot learned eigenvectors periodically
+        # Export learned eigenvectors periodically
         is_plot_step = (
             ((gradient_step % args.plot_freq) == 0 and gradient_step > 0)
             or (gradient_step == args.num_gradient_steps - 1)
@@ -955,44 +973,57 @@ def learn_eigenvectors(args):
             # Compute learned eigenvectors on all states
             learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
 
-            # Create a temporary eigendecomposition dict for visualization
-            learned_eigendecomp = {
-                'eigenvalues': jnp.zeros(args.num_eigenvectors, dtype=jnp.complex64),
-                'eigenvalues_real': jnp.zeros(args.num_eigenvectors),
-                'eigenvalues_imag': jnp.zeros(args.num_eigenvectors),
-                'right_eigenvectors_real': learned_features,
-                'right_eigenvectors_imag': jnp.zeros_like(learned_features),
-                'left_eigenvectors_real': learned_features,
-                'left_eigenvectors_imag': jnp.zeros_like(learned_features),
-            }
+            # Export learned eigenvectors for later plotting
+            np.save(results_dir / f"learned_eigenvectors_step_{gradient_step}.npy", np.array(learned_features))
 
-            visualize_multiple_eigenvectors(
-                eigenvector_indices=list(range(args.num_eigenvectors)),
-                eigendecomposition=learned_eigendecomp,
-                canonical_states=canonical_states,
-                grid_width=env.width,
-                grid_height=env.height,
-                portals=door_markers if door_markers else None,
-                eigenvector_type='right',
-                component='real',
-                ncols=min(4, args.num_eigenvectors),
-                wall_color='gray',
-                save_path=str(plots_dir / f"learned_eigenvectors_step_{gradient_step}.png"),
-                shared_colorbar=True
-            )
-            plt.close()
+            # Also save metrics history periodically (for live plotting)
+            with open(results_dir / "metrics_history.json", 'w') as f:
+                json.dump(metrics_history, f, indent=2)
 
-            # Plot learning curves
-            plot_learning_curves(metrics_history, str(plots_dir / "learning_curves.png"))
+            # Optionally create plots during training (slower)
+            if args.plot_during_training:
+                # Create a temporary eigendecomposition dict for visualization
+                learned_eigendecomp = {
+                    'eigenvalues': jnp.zeros(args.num_eigenvectors, dtype=jnp.complex64),
+                    'eigenvalues_real': jnp.zeros(args.num_eigenvectors),
+                    'eigenvalues_imag': jnp.zeros(args.num_eigenvectors),
+                    'right_eigenvectors_real': learned_features,
+                    'right_eigenvectors_imag': jnp.zeros_like(learned_features),
+                    'left_eigenvectors_real': learned_features,
+                    'left_eigenvectors_imag': jnp.zeros_like(learned_features),
+                }
 
-            # Plot dual variable evolution vs ground truth eigenvalues
-            plot_dual_variable_evolution(
-                metrics_history,
-                gt_eigenvalues,
-                args.geometric_gamma,
-                str(plots_dir / "dual_variable_evolution.png"),
-                num_eigenvectors=args.num_eigenvectors
-            )
+                visualize_multiple_eigenvectors(
+                    eigenvector_indices=list(range(args.num_eigenvectors)),
+                    eigendecomposition=learned_eigendecomp,
+                    canonical_states=canonical_states,
+                    grid_width=env.width,
+                    grid_height=env.height,
+                    portals=door_markers if door_markers else None,
+                    eigenvector_type='right',
+                    component='real',
+                    ncols=min(4, args.num_eigenvectors),
+                    wall_color='gray',
+                    save_path=str(plots_dir / f"learned_eigenvectors_step_{gradient_step}.png"),
+                    shared_colorbar=True
+                )
+                plt.close()
+
+                # Plot learning curves
+                plot_learning_curves(metrics_history, str(plots_dir / "learning_curves.png"))
+
+                # Plot dual variable evolution vs ground truth eigenvalues
+                plot_dual_variable_evolution(
+                    metrics_history,
+                    gt_eigenvalues,
+                    args.geometric_gamma,
+                    str(plots_dir / "dual_variable_evolution.png"),
+                    num_eigenvectors=args.num_eigenvectors
+                )
+            else:
+                # Just log progress
+                if gradient_step % (args.plot_freq * 5) == 0:
+                    print(f"Exported learned eigenvectors at step {gradient_step}")
 
     print("\nTraining complete!")
 
@@ -1017,42 +1048,45 @@ def learn_eigenvectors(args):
     final_learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
     np.save(results_dir / "final_learned_eigenvectors.npy", np.array(final_learned_features))
 
-    # Create final comparison plot
-    fig, axes = plt.subplots(1, 2, figsize=(12, 8))
+    # Optionally create final comparison plot
+    if args.plot_during_training:
+        fig, axes = plt.subplots(1, 2, figsize=(12, 8))
 
-    # Plot first ground truth eigenvector (skip constant eigenvector 0)
-    visualize_eigenvector_on_grid(
-        eigenvector_idx=1,
-        eigenvector_values=np.array(gt_eigenvectors[:, 1]),
-        canonical_states=canonical_states,
-        grid_width=env.width,
-        grid_height=env.height,
-        portals=door_markers if door_markers else None,
-        title='Ground Truth Eigenvector 1',
-        ax=axes[0],
-        cmap='RdBu_r',
-        show_colorbar=True,
-        wall_color='gray'
-    )
+        # Plot first ground truth eigenvector (skip constant eigenvector 0)
+        visualize_eigenvector_on_grid(
+            eigenvector_idx=1,
+            eigenvector_values=np.array(gt_eigenvectors[:, 1]),
+            canonical_states=canonical_states,
+            grid_width=env.width,
+            grid_height=env.height,
+            portals=door_markers if door_markers else None,
+            title='Ground Truth Eigenvector 1',
+            ax=axes[0],
+            cmap='RdBu_r',
+            show_colorbar=True,
+            wall_color='gray'
+        )
 
-    # Plot first learned feature
-    visualize_eigenvector_on_grid(
-        eigenvector_idx=1,
-        eigenvector_values=np.array(final_learned_features[:, 1]),
-        canonical_states=canonical_states,
-        grid_width=env.width,
-        grid_height=env.height,
-        portals=door_markers if door_markers else None,
-        title='Learned Feature 1',
-        ax=axes[1],
-        cmap='RdBu_r',
-        show_colorbar=True,
-        wall_color='gray'
-    )
+        # Plot first learned feature
+        visualize_eigenvector_on_grid(
+            eigenvector_idx=1,
+            eigenvector_values=np.array(final_learned_features[:, 1]),
+            canonical_states=canonical_states,
+            grid_width=env.width,
+            grid_height=env.height,
+            portals=door_markers if door_markers else None,
+            title='Learned Feature 1',
+            ax=axes[1],
+            cmap='RdBu_r',
+            show_colorbar=True,
+            wall_color='gray'
+        )
 
-    plt.tight_layout()
-    plt.savefig(plots_dir / "final_comparison.png", dpi=300, bbox_inches='tight')
-    plt.close()
+        plt.tight_layout()
+        plt.savefig(plots_dir / "final_comparison.png", dpi=300, bbox_inches='tight')
+        plt.close()
+
+    print(f"\nData exported. Use generate_plots.py to create visualizations.")
 
     print(f"\nAll results saved to: {results_dir}")
 
