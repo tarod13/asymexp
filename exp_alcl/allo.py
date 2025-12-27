@@ -100,7 +100,7 @@ def get_symmetrized_transition_matrix(
 
     if make_stochastic:
         row_sums = jnp.sum(transition_matrix.clip(1), axis=1, keepdims=True)
-        transition_matrix = transition_matrix.clip(1) / jnp.maximum(row_sums, 1e-10)
+        transition_matrix = transition_matrix.clip(1) / row_sums
 
     # Symmetrize
     transition_matrix = (transition_matrix + transition_matrix.T) / 2.0
