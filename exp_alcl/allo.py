@@ -1204,10 +1204,12 @@ def learn_eigenvectors(args):
             cosine_sims = compute_cosine_similarities(learned_features, gt_eigenvectors)
 
             # Store metrics
+            elapsed_time = time.time() - start_time
+            steps_completed = gradient_step - start_step
             metrics_dict = {
                 "gradient_step": gradient_step,
                 "allo": float(allo.item()),
-                "sps": int(gradient_step / (time.time() - start_time)),
+                "sps": int(steps_completed / max(elapsed_time, 1e-6)),  # Steps since start/resume
             }
             for k, v in metrics.items():
                 metrics_dict[k] = float(v.item())
@@ -1295,6 +1297,8 @@ def learn_eigenvectors(args):
         )
         if is_checkpoint_step:
             checkpoint_path = models_dir / "checkpoint.pkl"
+            # Note: As metrics_history grows, checkpoint saving may take longer
+            # Consider saving only recent metrics if this becomes a bottleneck
             save_checkpoint(
                 encoder_state=encoder_state,
                 metrics_history=metrics_history,
@@ -1303,6 +1307,7 @@ def learn_eigenvectors(args):
                 args=args,
                 rng_state=np.random.get_state()
             )
+            print(f"  Checkpoint size: {len(metrics_history)} metric entries")
 
     print("\nTraining complete!")
 
