@@ -367,7 +367,7 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
             # Get dual values and convert to approximate eigenvalues
             dual_values = np.array([m[dual_key] for m in metrics_history])
             # Apply 0.5 factor before conversion (due to sampling scheme)
-            dual_values_scaled = 0.5 * dual_values
+            dual_values_scaled = (0.5 * dual_values).clip(-0.99, None)
             approx_eigenvalues = (gamma + dual_values_scaled) / (gamma * (1 + dual_values_scaled))
 
             ax1.plot(steps, approx_eigenvalues, label=f'Approx λ_{i}', color=colors[i], linewidth=1.5)
