@@ -495,7 +495,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         seed=args.seed,
     )
 
-    print(f"Collected {metrics['total_transitions']} transitions, avg episode length: {metrics['avg_episode_length']:.1f}")
+    print(f"Collected {metrics['total_transitions']} transitions.")
 
     # Map full state indices to canonical indices
     full_to_canonical = {int(full_idx): canon_idx for canon_idx, full_idx in enumerate(canonical_states)}

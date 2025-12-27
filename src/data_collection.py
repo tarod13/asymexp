@@ -329,15 +329,15 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
     max_buffer_size = num_steps * 2 + 1
 
     # Initialize storage for episodes in OGBench format
-    observations = jnp.zeros((num_envs, max_buffer_size), dtype=jnp.int32)
-    actions = jnp.zeros((num_envs, max_buffer_size), dtype=jnp.int32)
-    terminals = jnp.zeros((num_envs, max_buffer_size), dtype=jnp.int32)
-    valids = jnp.ones((num_envs, max_buffer_size), dtype=jnp.int32)
+    observations = jnp.empty((num_envs, max_buffer_size), dtype=jnp.int32)
+    actions = jnp.empty((num_envs, max_buffer_size), dtype=jnp.int32)
+    terminals = jnp.empty((num_envs, max_buffer_size), dtype=jnp.int32)
+    valids = jnp.empty((num_envs, max_buffer_size), dtype=jnp.int32)
 
     # Define the single update step
     def _update_step(runner_state, step_idx):
         (transition_counts, env_states, observations, actions, terminals,
-         valids, write_indices, rng) = runner_state
+         valids, write_indices, last_written, rng) = runner_state
 
         # Split RNG for action selection and environment step
         rng, rng_act, rng_step = jax.random.split(rng, 3)
@@ -360,80 +360,71 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
 
         # Vectorized update for each environment
         def update_single_env(i):
-            write_idx = write_indices[i]
+            write_idx = write_indices[i]   # Current write index for env i corresponds to the next free slot
             state_idx = state_indices[i]
             next_state_idx = next_state_indices[i]
             action = action_array[i]
             done = dones[i]
-            next_env_state = next_env_states[i]
 
-            # Store action at write_idx
-            act_updated = actions[i].at[write_idx].set(action)
-            obs_updated = observations[i]
-            term_updated = terminals[i]
-            valid_updated = valids[i]
+            # Store action and terminal at write_idx-1, since they 
+            # correspond to the current state at write_idx-1
+            act_updated = actions[i].at[write_idx-1].set(action) 
+            term_updated = terminals[i].at[write_idx-1].set(done.astype(jnp.int32)) 
+            valid_updated = valids[i].at[write_idx].set(1-done.astype(jnp.int32))
+
+            # Store next state
+            obs_updated = observations[i].at[write_idx].set(next_state_idx)
 
             # Handle done vs non-done cases
             def handle_done(_):
-                # Store next state (terminal) at write_idx + 1
-                obs = obs_updated.at[write_idx + 1].set(next_state_idx)
-                # Mark both write_idx and write_idx + 1 as terminal
+                # Mark terminal
                 term = term_updated.at[write_idx].set(1)
-                term = term.at[write_idx + 1].set(1)
-                # Mark write_idx as valid (transition to terminal is valid)
-                # Mark write_idx + 1 as invalid (no transition from terminal)
-                valid = valid_updated.at[write_idx].set(1)
-                valid = valid.at[write_idx + 1].set(0)
 
                 # Increment write index by 2 (skip over terminal and invalid slot)
                 # Reset state will be stored in the next iteration
                 new_write_idx = write_idx + 2
-                return obs, act_updated, term, valid, new_write_idx
+
+                return obs_updated, act_updated, term, valid_updated, new_write_idx, write_idx
 
             def handle_normal(_):
-                # Check if we're just after a reset (valid[write_idx-1] == 0)
-                # This means the previous position was invalid (after terminal)
-                is_after_reset = jax.lax.cond(
-                    write_idx > 0,
-                    lambda _: valid_updated[write_idx - 1] == 0,
-                    lambda _: False,
-                    operand=None
-                )
 
                 def after_reset(_):
-                    # Store both current observation (reset state) and next observation
-                    obs = obs_updated.at[write_idx].set(state_idx)
-                    obs = obs.at[write_idx + 1].set(next_state_idx)
-                    new_write_idx = write_idx + 1
-                    return obs, new_write_idx
+                    # Store current observation and make it valid (reset state)
+                    obs = obs_updated.at[write_idx-1].set(state_idx)
+                    valid = valid_updated.at[write_idx-1].set(1)
+                    return obs, valid
 
                 def normal_step(_):
-                    # Store only next observation (current was already stored)
-                    obs = obs_updated.at[write_idx + 1].set(next_state_idx)
-                    new_write_idx = write_idx + 1
-                    return obs, new_write_idx
+                    # No special handling needed
+                    return obs_updated, valid_updated
 
-                obs, new_write_idx = jax.lax.cond(
-                    is_after_reset,
+                # Check if we're just after a reset (valid[write_idx-1] == 0)
+                # This means the previous position was invalid (after terminal) 
+                after_terminal = valid_updated[write_idx-1] == 0
+                obs, valid = jax.lax.cond(
+                    after_terminal,
                     after_reset,
                     normal_step,
                     operand=None
                 )
 
-                return obs, act_updated, term_updated, valid_updated, new_write_idx
+                # Increment write index by 1
+                new_write_idx = write_idx + 1
+
+                return obs, act_updated, term_updated, valid, new_write_idx, write_idx
 
             return jax.lax.cond(done, handle_done, handle_normal, operand=None)
 
         # Update all environments
         updates = jax.vmap(update_single_env)(jnp.arange(num_envs))
-        observations, actions, terminals, valids, write_indices = updates
+        observations, actions, terminals, valids, write_indices, last_written = updates
 
         # Reset environments if done
         reset_env_states = vmap_reset(num_envs)(rng, next_env_states, dones)
 
         # Return updated state
         runner_state = (transition_counts, reset_env_states, observations, actions,
-                       terminals, valids, write_indices, rng)
+                       terminals, valids, write_indices, last_written, rng)
 
         return runner_state, None
 
@@ -444,14 +435,16 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
     # Get initial state indices and store at position 0
     initial_state_indices = jax.vmap(lambda state: env.get_state_representation(state))(env_states)
     observations = observations.at[:, 0].set(initial_state_indices)
+    valids = valids.at[:, 0].set(1)   # Initial states are valid (vacuously)
 
     # Start write_indices at 1 since we already wrote initial states at position 0
     write_indices = jnp.ones((num_envs,), dtype=jnp.int32)
+    last_written = jnp.zeros((num_envs,), dtype=jnp.int32)
 
     # Initialize runner state
     runner_state = (transition_counts, env_states, observations, actions,
-                   terminals, valids, write_indices, rng)
-
+                   terminals, valids, write_indices, last_written, rng)
+    
     # Run collection loop using scan
     runner_state, _ = jax.lax.scan(
         _update_step, runner_state, jnp.arange(num_steps)
@@ -459,7 +452,12 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
 
     # Extract final results
     (final_transition_counts, _, final_observations, final_actions,
-     final_terminals, final_valids, final_write_indices, _) = runner_state
+     final_terminals, final_valids, _, final_written_indices, _) = runner_state
+    
+    # Fill terminals at the last indices: returns 1 if it was 1, otherwise 0
+    final_terminals = final_terminals.at[jnp.arange(num_envs), final_written_indices].apply(
+        lambda x: jnp.where(x == 1, 1, 0)
+    )
 
     # Package episodes in OGBench format
     episodes = {
@@ -467,7 +465,7 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
         'actions': final_actions,
         'terminals': final_terminals,
         'valids': final_valids,
-        'lengths': final_write_indices,  # Write indices represent final lengths
+        'lengths': final_written_indices,  # Written indices represent final lengths
     }
 
     # Metrics
@@ -475,7 +473,6 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
         "total_transitions": int(final_transition_counts.sum()),
         "num_envs": num_envs,
         "num_steps": num_steps,
-        "avg_episode_length": float(final_write_indices.mean()),
     }
 
     return final_transition_counts, episodes, metrics
