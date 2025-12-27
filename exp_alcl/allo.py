@@ -78,7 +78,8 @@ class CoordinateEncoder(nn.Module):
 def get_symmetrized_transition_matrix(
     transition_counts: jnp.ndarray,
     smoothing: float = 1e-5,
-    normalize: bool = True
+    make_stochastic: bool = True,
+    make_doubly_stochastic: bool = False,
 ) -> jnp.ndarray:
     """
     Build symmetrized transition matrix from counts.
@@ -86,8 +87,8 @@ def get_symmetrized_transition_matrix(
     Args:
         transition_counts: Shape [num_states, num_actions, num_states] or [num_states, num_states]
         smoothing: Small value to add for numerical stability
-        normalize: Whether to row-normalize to get proper transition probabilities
-
+        make_stochastic: Whether to row-normalize to get proper transition probabilities
+        make_doubly_stochastic: Whether to iteratively normalize rows and columns for doubly stochastic matrix
     Returns:
         Symmetrized transition matrix of shape [num_states, num_states]
     """
@@ -97,14 +98,18 @@ def get_symmetrized_transition_matrix(
     else:
         transition_matrix = transition_counts
 
+    if make_stochastic:
+        row_sums = jnp.sum(transition_matrix.clip(1), axis=1, keepdims=True)
+        transition_matrix = transition_matrix.clip(1) / jnp.maximum(row_sums, 1e-10)
+
     # Symmetrize
     transition_matrix = (transition_matrix + transition_matrix.T) / 2.0
 
-    # Add smoothing factor
-    transition_matrix = transition_matrix + smoothing
-
     # Normalize if requested (with iterations for better symmetry)
-    if normalize:
+    if make_doubly_stochastic:
+        # Add smoothing factor
+        transition_matrix = transition_matrix + smoothing
+
         for _ in range(2):
             row_sums = jnp.sum(transition_matrix, axis=1, keepdims=True)
             transition_matrix = transition_matrix / jnp.maximum(row_sums, 1e-10)
@@ -548,11 +553,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
 
     # Build symmetrized transition matrix
     print("\nBuilding symmetrized transition matrix...")
-    transition_matrix = get_symmetrized_transition_matrix(
-        transition_counts,
-        smoothing=0.0,
-        normalize=False,
-    )
+    transition_matrix = get_symmetrized_transition_matrix(transition_counts)
 
     # Compute eigendecomposition
     print(f"Computing eigendecomposition (top {args.num_eigenvectors} eigenvectors)...")
