@@ -600,6 +600,71 @@ def get_canonical_free_states(env):
     return jnp.array(free_states, dtype=jnp.int32)
 
 
+def create_replay_buffer_only(env, canonical_states, args: Args):
+    """
+    Create replay buffer by collecting episodes (without recomputing eigenvectors).
+    Used when resuming training to avoid redundant computation.
+
+    Args:
+        env: Environment to collect data from
+        canonical_states: Array of free state indices
+        args: Training arguments
+
+    Returns:
+        replay_buffer: EpisodicReplayBuffer filled with collected episodes
+    """
+    print("Collecting episodes for replay buffer...")
+    num_states = env.width * env.height
+
+    # Collect transition counts and episodes
+    transition_counts_full, raw_episodes, metrics = collect_transition_counts_and_episodes(
+        env=env,
+        num_envs=args.num_envs,
+        num_steps=args.num_steps,
+        num_states=num_states,
+        seed=args.seed,
+    )
+    print(f"Collected {metrics['total_transitions']} transitions.")
+
+    # Map full state indices to canonical indices
+    full_to_canonical = {int(full_idx): canon_idx for canon_idx, full_idx in enumerate(canonical_states)}
+
+    # Initialize replay buffer
+    max_valid_length = int(raw_episodes['lengths'].max()) + 1
+    replay_buffer = EpisodicReplayBuffer(
+        max_episodes=args.num_envs,
+        max_episode_length=max_valid_length,
+        observation_type='canonical_state',
+        seed=args.seed
+    )
+
+    # Convert and add episodes to buffer
+    for ep_idx in range(args.num_envs):
+        episode_length = int(raw_episodes['lengths'][ep_idx])
+        episode_obs_full = raw_episodes['observations'][ep_idx, :episode_length + 1]
+        episode_terminals = raw_episodes['terminals'][ep_idx, :episode_length + 1]
+
+        episode_obs_canonical = []
+        episode_terminals_canonical = []
+        for i, state_idx in enumerate(episode_obs_full):
+            state_idx = int(state_idx)
+            if state_idx in full_to_canonical:
+                episode_obs_canonical.append(full_to_canonical[state_idx])
+                episode_terminals_canonical.append(int(episode_terminals[i]))
+
+        if len(episode_obs_canonical) >= 2:
+            obs_array = np.array(episode_obs_canonical, dtype=np.int32).reshape(-1, 1)
+            terminals_array = np.array(episode_terminals_canonical, dtype=np.int32)
+            episode_dict = {
+                'obs': obs_array,
+                'terminals': terminals_array,
+            }
+            replay_buffer.add_episode(episode_dict)
+
+    print(f"Added {len(replay_buffer)} trajectory sequences to replay buffer")
+    return replay_buffer
+
+
 def collect_data_and_compute_eigenvectors(env, args: Args):
     """
     Collect transition data and compute ground truth eigenvectors.
@@ -834,10 +899,17 @@ def learn_eigenvectors(args):
             with open(door_config_path, 'rb') as f:
                 door_config = pickle.load(f)
 
-        # Recreate replay buffer (same as original)
+        # Recreate replay buffer (much faster than recomputing everything)
         # Note: We don't save/load the replay buffer; we recreate it
         # This is acceptable since sampling is random anyway
-        _, _, _, _, _, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
+        replay_buffer = create_replay_buffer_only(env, canonical_states, args)
+
+        # Recreate data_env if doors were used
+        if door_config is not None and 'doors' in door_config:
+            from src.envs.door_gridworld import create_door_gridworld_from_base
+            data_env = create_door_gridworld_from_base(env, door_config['doors'], canonical_states)
+        else:
+            data_env = env
 
         print("Loaded saved data successfully")
     else:
