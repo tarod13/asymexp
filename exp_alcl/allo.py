@@ -1277,8 +1277,14 @@ def learn_eigenvectors(args):
         print("Warmup complete - JIT compilation finished")
         # Note: We discard warmup_state and continue with the original encoder_state
 
+    # Timing diagnostics for performance debugging
+    timing_samples = {'sample': [], 'update': [], 'log': [], 'total': []}
+
     for gradient_step in tqdm(range(start_step, args.num_gradient_steps)):
+        step_start = time.time()
+
         # Sample batches from episodic replay buffer using truncated geometric distribution
+        sample_start = time.time()
         batch1 = replay_buffer.sample(args.batch_size, discount=args.geometric_gamma)
         batch2 = replay_buffer.sample(args.batch_size, discount=args.geometric_gamma)
 
@@ -1291,20 +1297,26 @@ def learn_eigenvectors(args):
         coords_batch = state_coords[state_indices]
         next_coords_batch = state_coords[next_state_indices]
         coords_batch_2 = state_coords[state_indices_2]
+        sample_time = time.time() - sample_start
 
         # Update
+        update_start = time.time()
         encoder_state, allo, metrics = update_encoder(
             encoder_state,
             coords_batch,
             next_coords_batch,
             coords_batch_2,
         )
+        # Block until GPU computation completes for accurate timing
+        jax.block_until_ready(encoder_state.params)
+        update_time = time.time() - update_start
 
         # Logging
         is_log_step = (
             ((gradient_step % args.log_freq) == 0)
             or (gradient_step == args.num_gradient_steps - 1)
         )
+        log_start = time.time()
         if is_log_step:
             # Compute learned eigenvectors on all states for cosine similarity
             learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
@@ -1332,6 +1344,27 @@ def learn_eigenvectors(args):
                 print(f"Step {gradient_step}: loss={allo.item():.4f}, "
                       f"total_error={metrics['total_error'].item():.4f}, "
                       f"cosine_sim_avg={cosine_sims['cosine_sim_avg']:.4f}")
+        log_time = time.time() - log_start
+
+        # Collect timing samples (last 1000 steps for statistics)
+        step_total_time = time.time() - step_start
+        timing_samples['sample'].append(sample_time)
+        timing_samples['update'].append(update_time)
+        timing_samples['log'].append(log_time)
+        timing_samples['total'].append(step_total_time)
+
+        # Keep only recent samples to avoid memory growth
+        for key in timing_samples:
+            if len(timing_samples[key]) > 1000:
+                timing_samples[key] = timing_samples[key][-1000:]
+
+        # Report timing statistics periodically
+        if gradient_step > 0 and gradient_step % (args.log_freq * 10) == 0:
+            avg_update = np.mean(timing_samples['update'][-100:]) * 1000  # ms
+            avg_sample = np.mean(timing_samples['sample'][-100:]) * 1000  # ms
+            avg_total = np.mean(timing_samples['total'][-100:]) * 1000  # ms
+            print(f"  Timing (avg last 100 steps): sample={avg_sample:.2f}ms, "
+                  f"update={avg_update:.2f}ms, total={avg_total:.2f}ms")
 
         # Save metrics history and optionally plot periodically
         is_plot_step = (
