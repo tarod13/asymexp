@@ -412,6 +412,94 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
     print(f"Dual variable evolution plot saved to {save_path}")
 
 
+def compute_cosine_similarities(learned_features: jnp.ndarray, gt_eigenvectors: jnp.ndarray) -> Dict[str, float]:
+    """
+    Compute absolute cosine similarity per component between learned and ground truth eigenvectors.
+
+    For each eigenvector component i, computes the absolute cosine similarity:
+        |cos(θ_i)| = |<learned_i, gt_i>| / (||learned_i|| * ||gt_i||)
+
+    Args:
+        learned_features: Learned eigenvector features [num_states, num_eigenvectors]
+        gt_eigenvectors: Ground truth eigenvectors [num_states, num_eigenvectors]
+
+    Returns:
+        Dictionary containing:
+            - cosine_sim_i: Absolute cosine similarity for each component i
+            - cosine_sim_avg: Average absolute cosine similarity across all components
+    """
+    num_components = learned_features.shape[1]
+
+    similarities = {}
+    cosine_sims = []
+
+    for i in range(num_components):
+        learned_vec = learned_features[:, i]
+        gt_vec = gt_eigenvectors[:, i]
+
+        # Compute cosine similarity
+        dot_product = jnp.dot(learned_vec, gt_vec)
+        learned_norm = jnp.linalg.norm(learned_vec)
+        gt_norm = jnp.linalg.norm(gt_vec)
+
+        # Absolute cosine similarity (handles sign ambiguity)
+        cosine_sim = jnp.abs(dot_product / (learned_norm * gt_norm + 1e-10))
+
+        similarities[f'cosine_sim_{i}'] = float(cosine_sim)
+        cosine_sims.append(float(cosine_sim))
+
+    # Average across all components
+    similarities['cosine_sim_avg'] = float(np.mean(cosine_sims))
+
+    return similarities
+
+
+def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_eigenvectors: int = None):
+    """
+    Plot the evolution of cosine similarities between learned and ground truth eigenvectors.
+
+    Args:
+        metrics_history: List of metric dictionaries containing cosine similarity values
+        save_path: Path to save the plot
+        num_eigenvectors: Number of eigenvectors to plot (None = plot all available)
+    """
+    steps = [m['gradient_step'] for m in metrics_history]
+
+    # Determine number of eigenvectors to plot
+    if num_eigenvectors is None:
+        # Count how many cosine_sim_i keys exist
+        num_eigenvectors = sum(1 for key in metrics_history[0].keys() if key.startswith('cosine_sim_') and key != 'cosine_sim_avg')
+
+    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+
+    # Use a colormap for different eigenvectors
+    colors = plt.cm.viridis(np.linspace(0, 1, num_eigenvectors + 1))
+
+    # Plot cosine similarity for each component
+    for i in range(num_eigenvectors):
+        key = f'cosine_sim_{i}'
+        if key in metrics_history[0]:
+            values = [m[key] for m in metrics_history]
+            ax.plot(steps, values, label=f'Component {i}', color=colors[i], linewidth=1.5, alpha=0.7)
+
+    # Plot average cosine similarity with thicker line
+    if 'cosine_sim_avg' in metrics_history[0]:
+        avg_values = [m['cosine_sim_avg'] for m in metrics_history]
+        ax.plot(steps, avg_values, label='Average', color='black', linewidth=2.5, linestyle='--')
+
+    ax.set_xlabel('Gradient Step', fontsize=12)
+    ax.set_ylabel('Absolute Cosine Similarity', fontsize=12)
+    ax.set_title('Evolution of Absolute Cosine Similarity between Learned and Ground Truth Eigenvectors', fontsize=14)
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim([0, 1.05])  # Cosine similarity is in [0, 1]
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Cosine similarity evolution plot saved to {save_path}")
+
+
 def state_idx_to_xy(state_idx: int, width: int) -> tuple:
     """Convert state index to (x,y) coordinates."""
     y = state_idx // width
@@ -950,6 +1038,12 @@ def learn_eigenvectors(args):
             or (gradient_step == args.num_gradient_steps - 1)
         )
         if is_log_step:
+            # Compute learned eigenvectors on all states for cosine similarity
+            learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
+
+            # Compute cosine similarities with ground truth
+            cosine_sims = compute_cosine_similarities(learned_features, gt_eigenvectors)
+
             # Store metrics
             metrics_dict = {
                 "gradient_step": gradient_step,
@@ -958,27 +1052,30 @@ def learn_eigenvectors(args):
             }
             for k, v in metrics.items():
                 metrics_dict[k] = float(v.item())
+
+            # Add cosine similarities to metrics
+            metrics_dict.update(cosine_sims)
+
             metrics_history.append(metrics_dict)
 
             if gradient_step % (args.log_freq * 10) == 0:
                 print(f"Step {gradient_step}: loss={allo.item():.4f}, "
-                      f"total_error={metrics['total_error'].item():.4f}")
+                      f"total_error={metrics['total_error'].item():.4f}, "
+                      f"cosine_sim_avg={cosine_sims['cosine_sim_avg']:.4f}")
 
-        # Export learned eigenvectors periodically
+        # Save metrics history and optionally plot periodically
         is_plot_step = (
             ((gradient_step % args.plot_freq) == 0 and gradient_step > 0)
             or (gradient_step == args.num_gradient_steps - 1)
         )
         if is_plot_step:
-            # Compute learned eigenvectors on all states
-            learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
-
-            # Export learned eigenvectors for later plotting
-            np.save(results_dir / f"learned_eigenvectors_step_{gradient_step}.npy", np.array(learned_features))
-
-            # Also save metrics history periodically (for live plotting)
+            # Save metrics history periodically (for live plotting)
             with open(results_dir / "metrics_history.json", 'w') as f:
                 json.dump(metrics_history, f, indent=2)
+
+            # Compute and save latest learned eigenvectors (overwrite each time)
+            learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
+            np.save(results_dir / "latest_learned_eigenvectors.npy", np.array(learned_features))
 
             # Optionally create plots during training (slower)
             if args.plot_during_training:
@@ -1004,7 +1101,7 @@ def learn_eigenvectors(args):
                     component='real',
                     ncols=min(4, args.num_eigenvectors),
                     wall_color='gray',
-                    save_path=str(plots_dir / f"learned_eigenvectors_step_{gradient_step}.png"),
+                    save_path=str(plots_dir / "learned_eigenvectors_latest.png"),
                     shared_colorbar=True
                 )
                 plt.close()
@@ -1020,10 +1117,17 @@ def learn_eigenvectors(args):
                     str(plots_dir / "dual_variable_evolution.png"),
                     num_eigenvectors=args.num_eigenvectors
                 )
+
+                # Plot cosine similarity evolution
+                plot_cosine_similarity_evolution(
+                    metrics_history,
+                    str(plots_dir / "cosine_similarity_evolution.png"),
+                    num_eigenvectors=args.num_eigenvectors
+                )
             else:
                 # Just log progress
                 if gradient_step % (args.plot_freq * 5) == 0:
-                    print(f"Exported learned eigenvectors at step {gradient_step}")
+                    print(f"Saved metrics at step {gradient_step}")
 
     print("\nTraining complete!")
 
