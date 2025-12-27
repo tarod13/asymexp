@@ -223,6 +223,16 @@ class EpisodicReplayBuffer:
         # Calculate remaining trajectory length using pre-computed terminal indices (VECTORIZED)
         if 'terminal_indices' in self._episodes:
             # APPROACH 1+2: Use pre-computed terminal indices with vectorized operations
+            #
+            # IMPORTANT: Terminals are marked TWICE when a done event occurs:
+            #   1. First terminal marks where done=True happened (the terminal state)
+            #   2. Second terminal marks the episode boundary (next obs after done)
+            # We prefer the second terminal to get the correct sampling boundary.
+            # Example: [..., s_t, s_{t+1}, ...] where done occurred at s_t
+            #          terminals: [..., 1, 1, ...]
+            #                          ^   ^
+            #                        done  boundary (use this one)
+
             # Gather pre-computed terminal indices for all sampled episodes
             # Shape: (batch_size, max_terminals_per_episode)
             batch_term_indices = self._episodes['terminal_indices'][episode_idx]
@@ -248,18 +258,21 @@ class EpisodicReplayBuffer:
             num_valid_terms = np.sum(valid_mask, axis=1)
 
             # Vectorized selection using np.where
+            # Prefer second terminal (boundary) if available, otherwise use first
             max_durations = np.where(
                 num_valid_terms >= 2,
-                sorted_terms[:, 1],  # Use second terminal if available
+                sorted_terms[:, 1],  # Second terminal (boundary) - preferred
                 np.where(
                     num_valid_terms >= 1,
-                    sorted_terms[:, 0],  # Use first terminal if available
-                    transition_ranges - obs_idx - 1  # Default: use remaining episode length
+                    sorted_terms[:, 0],  # First terminal (done state) - fallback
+                    transition_ranges - obs_idx - 1  # No terminals - use episode length
                 )
             )
         elif 'terminals' in self._episodes:
             # FALLBACK: Old sequential implementation (if terminals exist but not pre-computed)
             # This should not be reached if add_episode() is working correctly
+            #
+            # NOTE: Terminals come in pairs (done state + boundary), prefer second terminal
             max_durations = np.zeros(batch_size, dtype=np.int32)
             for i in range(batch_size):
                 ep_idx = episode_idx[i]
@@ -271,9 +284,9 @@ class EpisodicReplayBuffer:
 
                 if len(terminal_indices) > 0:
                     if len(terminal_indices) > 1:
-                        max_durations[i] = terminal_indices[1]
+                        max_durations[i] = terminal_indices[1]  # Second terminal (boundary)
                     else:
-                        max_durations[i] = terminal_indices[0]
+                        max_durations[i] = terminal_indices[0]  # Only one terminal available
                 else:
                     max_durations[i] = ep_length - start_idx - 1
         else:
