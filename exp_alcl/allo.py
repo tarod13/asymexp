@@ -975,14 +975,28 @@ def learn_eigenvectors(args):
     # Initialize or restore encoder state
     if checkpoint_data is not None:
         # Restore from checkpoint
+        # Convert loaded arrays to JAX device arrays for optimal performance
+        import jax.tree_util as tree_util
+
+        def to_device_array(x):
+            """Ensure array is a JAX device array (optimized for GPU/TPU)."""
+            if isinstance(x, (jnp.ndarray, np.ndarray)):
+                # Force conversion to JAX array and materialize on device
+                return jnp.array(x)
+            return x
+
+        # Optimize loaded parameters and optimizer state
+        params_optimized = tree_util.tree_map(to_device_array, checkpoint_data['params'])
+        opt_state_optimized = tree_util.tree_map(to_device_array, checkpoint_data['opt_state'])
+
         encoder_state = TrainState.create(
             apply_fn=encoder.apply,
-            params=checkpoint_data['params'],
+            params=params_optimized,
             tx=tx,
         )
         # Restore optimizer state
-        encoder_state = encoder_state.replace(opt_state=checkpoint_data['opt_state'])
-        print("Restored encoder state from checkpoint")
+        encoder_state = encoder_state.replace(opt_state=opt_state_optimized)
+        print("Restored encoder state from checkpoint (optimized for device)")
     else:
         # Initialize fresh
         # Initialize dual variables
@@ -1240,6 +1254,29 @@ def learn_eigenvectors(args):
             )
             plt.close()
 
+    # Warmup: trigger JIT compilation with loaded checkpoint state
+    if checkpoint_data is not None:
+        print("Running warmup step to trigger JIT compilation with loaded state...")
+        # Sample a small batch for warmup
+        warmup_batch = replay_buffer.sample(min(args.batch_size, 32), discount=args.geometric_gamma)
+        warmup_indices = jnp.array(warmup_batch.obs)
+        warmup_next_indices = jnp.array(warmup_batch.next_obs)
+        warmup_coords = state_coords[warmup_indices]
+        warmup_next_coords = state_coords[warmup_next_indices]
+
+        # Run one update to compile with the loaded state (discard result)
+        warmup_state, warmup_loss, _ = update_encoder(
+            encoder_state,
+            warmup_coords,
+            warmup_next_coords,
+            warmup_coords,  # Use same batch for second set
+        )
+
+        # Block until compilation is complete
+        jax.block_until_ready(warmup_state.params)
+        print("Warmup complete - JIT compilation finished")
+        # Note: We discard warmup_state and continue with the original encoder_state
+
     for gradient_step in tqdm(range(start_step, args.num_gradient_steps)):
         # Sample batches from episodic replay buffer using truncated geometric distribution
         batch1 = replay_buffer.sample(args.batch_size, discount=args.geometric_gamma)
@@ -1303,8 +1340,9 @@ def learn_eigenvectors(args):
         )
         if is_plot_step:
             # Save metrics history periodically (for live plotting)
+            # Note: Saving without indent is much faster for large histories
             with open(results_dir / "metrics_history.json", 'w') as f:
-                json.dump(metrics_history, f, indent=2)
+                json.dump(metrics_history, f)
 
             # Compute and save latest learned eigenvectors (overwrite each time)
             learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
