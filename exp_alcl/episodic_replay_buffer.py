@@ -152,8 +152,21 @@ class EpisodicReplayBuffer:
 
                 # Create buffers for storing terminal indices if they don't exist
                 if 'terminal_indices' not in self._episodes:
-                    # Maximum possible terminals per episode (conservative estimate)
-                    max_terminals = 100
+                    # Scan all episodes added so far to find the maximum number of terminals
+                    max_terminals_needed = len(terminal_positions)  # Start with current episode
+
+                    # Check previously added episodes
+                    num_episodes_to_check = self._idx if not self._full else self._max_episodes
+                    for ep_idx in range(num_episodes_to_check):
+                        if 'terminals' in self._episodes:
+                            ep_length = self._episodes_length[ep_idx]
+                            ep_terminals = self._episodes['terminals'][ep_idx, :ep_length]
+                            num_terms_in_ep = np.sum(ep_terminals == 1)
+                            max_terminals_needed = max(max_terminals_needed, num_terms_in_ep)
+
+                    # Add small buffer (10%) to handle potential future episodes with more terminals
+                    max_terminals = max(10, int(max_terminals_needed * 1.1))
+
                     self._episodes['terminal_indices'] = np.full(
                         (self._max_episodes, max_terminals), -1, dtype=np.int32
                     )
@@ -161,16 +174,35 @@ class EpisodicReplayBuffer:
                         self._max_episodes, dtype=np.int32
                     )
 
-                # Store terminal positions for this episode
+                    # Backfill: Pre-compute terminal indices for all previously added episodes
+                    for ep_idx in range(num_episodes_to_check):
+                        if 'terminals' in self._episodes:
+                            ep_length = self._episodes_length[ep_idx]
+                            ep_terminals = self._episodes['terminals'][ep_idx, :ep_length]
+                            ep_term_positions = np.where(ep_terminals == 1)[0]
+                            num_terms = len(ep_term_positions)
+                            if num_terms > 0:
+                                num_to_store = min(num_terms, max_terminals)
+                                self._episodes['terminal_indices'][ep_idx, :num_to_store] = ep_term_positions[:num_to_store]
+                                self._episodes['num_terminals'][ep_idx] = num_to_store
+
+                # Store terminal positions for current episode
                 num_terms = len(terminal_positions)
+                max_terminals = self._episodes['terminal_indices'].shape[1]
+
+                if num_terms > max_terminals:
+                    # Warn if we're truncating (shouldn't happen with 10% buffer)
+                    import warnings
+                    warnings.warn(
+                        f"Episode has {num_terms} terminals but buffer only supports {max_terminals}. "
+                        f"Truncating to first {max_terminals} terminals."
+                    )
+
                 if num_terms > 0:
-                    # Ensure we don't exceed buffer size
-                    max_terminals = self._episodes['terminal_indices'].shape[1]
                     num_terms_to_store = min(num_terms, max_terminals)
                     self._episodes['terminal_indices'][self._idx, :num_terms_to_store] = terminal_positions[:num_terms_to_store]
                     self._episodes['num_terminals'][self._idx] = num_terms_to_store
                 else:
-                    # No terminals in this episode
                     self._episodes['num_terminals'][self._idx] = 0
 
             # Save length of episode
