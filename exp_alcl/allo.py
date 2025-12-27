@@ -177,13 +177,13 @@ def compute_symmetrized_eigendecomposition(
 class Args:
     # Environment
     env_type: str = "room4"  # 'room4', 'maze', 'spiral', 'obstacles', 'empty', or 'file'
-    env_file: str = None  # Path to environment text file (if env_type='file')
-    env_file_name: str = None  # Name of environment file in src/envs/txt/ (e.g., 'GridRoom-4')
-    max_episode_length: int = 100
+    env_file: str | None = None  # Path to environment text file (if env_type='file')
+    env_file_name: str | None = None  # Name of environment file in src/envs/txt/ (e.g., 'GridRoom-4')
+    max_episode_length: int = 1000
 
     # Data collection
     num_envs: int = 1000
-    num_steps: int = 100
+    num_steps: int = 1000
 
     # Irreversible doors
     use_doors: bool = False
@@ -198,12 +198,12 @@ class Args:
     # Training
     learning_rate: float = 3e-4
     batch_size: int = 256
-    num_gradient_steps: int = 10000
+    num_gradient_steps: int = 20000
     gamma: float = 0.99
 
     # Episodic replay buffer
-    geometric_gamma: float = 0.99  # Decay for truncated geometric distribution (higher = prefer shorter time gaps)
-    max_time_offset: int = None  # Maximum time offset for sampling (None = episode length)
+    geometric_gamma: float = 0.2  # Decay for truncated geometric distribution (higher = prefer shorter time gaps)
+    max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
 
     # Augmented Lagrangian parameters
     duals_initial_val: float = -2.0
@@ -230,7 +230,7 @@ class Args:
 
     # Misc
     seed: int = 42
-    exp_name: str = None
+    exp_name: str | None = None
     exp_number: int = 0
 
 
@@ -391,7 +391,7 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
             # Get dual values and convert to approximate eigenvalues
             dual_values = np.array([m[dual_key] for m in metrics_history])
             # Apply 0.5 factor before conversion (due to sampling scheme)
-            dual_values_scaled = 0.5 * dual_values
+            dual_values_scaled = (0.5 * dual_values).clip(-0.99, None)
             approx_eigenvalues = (gamma + dual_values_scaled) / (gamma * (1 + dual_values_scaled))
 
             gt_value = float(ground_truth_eigenvalues[i].real)
