@@ -225,9 +225,13 @@ class Args:
     log_freq: int = 100
     plot_freq: int = 1000
     save_freq: int = 1000
+    checkpoint_freq: int = 5000  # How often to save checkpoints (in gradient steps)
     save_model: bool = True
     plot_during_training: bool = False  # If True, creates plots during training (slow). If False, only exports data.
     results_dir: str = "./results"
+
+    # Resuming training
+    resume_from: str | None = None  # Path to results directory to resume from (e.g., './results/room4/room4__allo__0__42__1234567890')
 
     # Misc
     seed: int = 42
@@ -410,6 +414,64 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"Dual variable evolution plot saved to {save_path}")
+
+
+def save_checkpoint(
+    encoder_state: TrainState,
+    metrics_history: list,
+    gradient_step: int,
+    save_path: Path,
+    args: Args,
+    rng_state: np.ndarray = None
+):
+    """
+    Save a training checkpoint.
+
+    Args:
+        encoder_state: Current training state
+        metrics_history: List of metrics dictionaries
+        gradient_step: Current gradient step
+        save_path: Path to save the checkpoint
+        args: Training arguments
+        rng_state: Current random state (optional)
+    """
+    checkpoint = {
+        'gradient_step': gradient_step,
+        'params': encoder_state.params,
+        'opt_state': encoder_state.opt_state,
+        'metrics_history': metrics_history,
+        'args': vars(args),
+    }
+
+    if rng_state is not None:
+        checkpoint['rng_state'] = rng_state
+
+    with open(save_path, 'wb') as f:
+        pickle.dump(checkpoint, f)
+
+    print(f"Checkpoint saved to {save_path}")
+
+
+def load_checkpoint(checkpoint_path: Path) -> Dict:
+    """
+    Load a training checkpoint.
+
+    Args:
+        checkpoint_path: Path to the checkpoint file
+
+    Returns:
+        Dictionary containing checkpoint data
+    """
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+    with open(checkpoint_path, 'rb') as f:
+        checkpoint = pickle.load(f)
+
+    print(f"Checkpoint loaded from {checkpoint_path}")
+    print(f"  Resuming from gradient step: {checkpoint['gradient_step']}")
+
+    return checkpoint
 
 
 def compute_cosine_similarities(learned_features: jnp.ndarray, gt_eigenvectors: jnp.ndarray) -> Dict[str, float]:
@@ -687,23 +749,57 @@ def learn_eigenvectors(args):
     if args.exp_name is None:
         args.exp_name = os.path.basename(__file__)[: -len(".py")]
 
-    # Set up run
-    run_name = f"{args.env_type}__{args.exp_name}__{args.exp_number}__{args.seed}__{int(time.time())}"
+    # Check if resuming from a previous run
+    checkpoint_data = None
+    start_step = 0
+    metrics_history = []
 
-    # Create results directories
-    results_dir = Path(args.results_dir) / args.env_type / run_name
-    results_dir.mkdir(parents=True, exist_ok=True)
+    if args.resume_from is not None:
+        # Load checkpoint from previous run
+        resume_dir = Path(args.resume_from)
+        if not resume_dir.exists():
+            raise ValueError(f"Resume directory does not exist: {resume_dir}")
 
+        checkpoint_path = resume_dir / "models" / "checkpoint.pkl"
+        checkpoint_data = load_checkpoint(checkpoint_path)
+
+        # Use the same results directory
+        results_dir = resume_dir
+        start_step = checkpoint_data['gradient_step'] + 1  # Start from next step
+        metrics_history = checkpoint_data['metrics_history']
+
+        # Load the original args but keep the new training parameters
+        original_args = checkpoint_data['args']
+        # Update only the new training parameters (allow changing learning rate, num_steps, etc.)
+        for key in ['learning_rate', 'num_gradient_steps', 'log_freq', 'plot_freq', 'checkpoint_freq']:
+            if hasattr(args, key):
+                original_args[key] = getattr(args, key)
+
+        print(f"\n{'='*60}")
+        print(f"RESUMING TRAINING FROM: {results_dir}")
+        print(f"  Starting from step: {start_step}")
+        print(f"  Loaded metrics history: {len(metrics_history)} entries")
+        print(f"{'='*60}\n")
+    else:
+        # Set up new run
+        run_name = f"{args.env_type}__{args.exp_name}__{args.exp_number}__{args.seed}__{int(time.time())}"
+
+        # Create results directories
+        results_dir = Path(args.results_dir) / args.env_type / run_name
+        results_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"Results will be saved to: {results_dir}")
+
+    # Create subdirectories
     plots_dir = results_dir / "plots"
     plots_dir.mkdir(exist_ok=True)
 
     models_dir = results_dir / "models"
     models_dir.mkdir(exist_ok=True)
 
-    # Save args
+    # Save args (overwrite if resuming to track parameter changes)
     with open(results_dir / "args.json", 'w') as f:
         json.dump(vars(args), f, indent=2)
-    print(f"Results will be saved to: {results_dir}")
 
     # Seeding
     random.seed(args.seed)
@@ -711,27 +807,68 @@ def learn_eigenvectors(args):
     rng_key = jax.random.PRNGKey(args.seed)
     rng_key, encoder_key = jax.random.split(rng_key, 2)
 
-    # Create environment and collect data
-    env = create_gridworld_env(args)
-    transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
+    # Restore RNG state if resuming
+    if checkpoint_data is not None and 'rng_state' in checkpoint_data:
+        np.random.set_state(checkpoint_data['rng_state'])
 
-    gt_eigenvalues = eigendecomp['eigenvalues_real']
-    gt_eigenvectors = eigendecomp['right_eigenvectors_real']
+    # Load or create environment and data
+    if checkpoint_data is not None:
+        # Load saved data from previous run
+        print("Loading saved environment data...")
+        env = create_gridworld_env(args)
+
+        # Load saved eigenvectors and state coordinates
+        gt_eigenvalues = jnp.array(np.load(results_dir / "gt_eigenvalues.npy"))
+        gt_eigenvectors = jnp.array(np.load(results_dir / "gt_eigenvectors.npy"))
+        state_coords = jnp.array(np.load(results_dir / "state_coords.npy"))
+
+        # Load visualization metadata
+        with open(results_dir / "viz_metadata.pkl", 'rb') as f:
+            viz_metadata = pickle.load(f)
+        canonical_states = viz_metadata['canonical_states']
+
+        # Reconstruct door_config if it exists
+        door_config = None
+        door_config_path = results_dir / "door_config.pkl"
+        if door_config_path.exists():
+            with open(door_config_path, 'rb') as f:
+                door_config = pickle.load(f)
+
+        # Recreate replay buffer (same as original)
+        # Note: We don't save/load the replay buffer; we recreate it
+        # This is acceptable since sampling is random anyway
+        _, _, _, _, _, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
+
+        print("Loaded saved data successfully")
+    else:
+        # Create environment and collect data (new run)
+        env = create_gridworld_env(args)
+        transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
+
+        gt_eigenvalues = eigendecomp['eigenvalues_real']
+        gt_eigenvectors = eigendecomp['right_eigenvectors_real']
 
     print(f"\nState coordinates shape: {state_coords.shape}")
     print(f"Ground truth eigenvectors shape: {gt_eigenvectors.shape}")
 
-    # Save door configuration if doors were used
-    if door_config is not None:
-        door_save_path = results_dir / "door_config.pkl"
-        with open(door_save_path, 'wb') as f:
-            pickle.dump({
-                'doors': door_config['doors'],
-                'num_doors': door_config['num_doors'],
-                'total_reversible': door_config['total_reversible'],
-                'canonical_states': np.array(canonical_states),
-            }, f)
-        print(f"Door configuration saved to {door_save_path}")
+    # Save data for new runs (skip if resuming)
+    if checkpoint_data is None:
+        # Save door configuration if doors were used
+        if door_config is not None:
+            door_save_path = results_dir / "door_config.pkl"
+            with open(door_save_path, 'wb') as f:
+                pickle.dump({
+                    'doors': door_config['doors'],
+                    'num_doors': door_config['num_doors'],
+                    'total_reversible': door_config['total_reversible'],
+                    'canonical_states': np.array(canonical_states),
+                }, f)
+            print(f"Door configuration saved to {door_save_path}")
+
+        # Save ground truth eigendecomposition and state coords
+        np.save(results_dir / "gt_eigenvalues.npy", np.array(gt_eigenvalues))
+        np.save(results_dir / "gt_eigenvectors.npy", np.array(gt_eigenvectors))
+        np.save(results_dir / "state_coords.npy", np.array(state_coords))
 
     # Initialize the encoder
     encoder = CoordinateEncoder(
@@ -739,22 +876,6 @@ def learn_eigenvectors(args):
         hidden_dim=args.hidden_dim,
         num_hidden_layers=args.num_hidden_layers,
     )
-
-    # Initialize dual variables
-    if args.init_dual_diag:
-        initial_dual_mask = jnp.eye(args.num_eigenvectors)
-    else:
-        initial_dual_mask = jnp.tril(jnp.ones((args.num_eigenvectors, args.num_eigenvectors)))
-
-    # Create dummy input for initialization
-    dummy_input = state_coords[:1]  # (1, 2)
-
-    initial_params = {
-        'encoder': encoder.init(encoder_key, dummy_input),
-        'duals': args.duals_initial_val * initial_dual_mask,
-        'barrier_coefs': args.barrier_initial_val * jnp.ones((1, 1)),
-        'error_integral': jnp.zeros((args.num_eigenvectors, args.num_eigenvectors)),
-    }
 
     # Create optimizer
     encoder_tx = optax.adam(learning_rate=args.learning_rate)
@@ -779,11 +900,41 @@ def learn_eigenvectors(args):
         optax.masked(sgd_tx, other_mask)
     )
 
-    encoder_state = TrainState.create(
-        apply_fn=encoder.apply,
-        params=initial_params,
-        tx=tx,
-    )
+    # Initialize or restore encoder state
+    if checkpoint_data is not None:
+        # Restore from checkpoint
+        encoder_state = TrainState.create(
+            apply_fn=encoder.apply,
+            params=checkpoint_data['params'],
+            tx=tx,
+        )
+        # Restore optimizer state
+        encoder_state = encoder_state.replace(opt_state=checkpoint_data['opt_state'])
+        print("Restored encoder state from checkpoint")
+    else:
+        # Initialize fresh
+        # Initialize dual variables
+        if args.init_dual_diag:
+            initial_dual_mask = jnp.eye(args.num_eigenvectors)
+        else:
+            initial_dual_mask = jnp.tril(jnp.ones((args.num_eigenvectors, args.num_eigenvectors)))
+
+        # Create dummy input for initialization
+        dummy_input = state_coords[:1]  # (1, 2)
+
+        initial_params = {
+            'encoder': encoder.init(encoder_key, dummy_input),
+            'duals': args.duals_initial_val * initial_dual_mask,
+            'barrier_coefs': args.barrier_initial_val * jnp.ones((1, 1)),
+            'error_integral': jnp.zeros((args.num_eigenvectors, args.num_eigenvectors)),
+        }
+
+        encoder_state = TrainState.create(
+            apply_fn=encoder.apply,
+            params=initial_params,
+            tx=tx,
+        )
+
     encoder.apply = jax.jit(encoder.apply)
 
     # Define the update function
@@ -960,12 +1111,13 @@ def learn_eigenvectors(args):
         return new_encoder_state, allo, aux
 
     # Start the training process
-    print("\nStarting training...")
+    if checkpoint_data is None:
+        print("\nStarting training...")
+    else:
+        print(f"\nResuming training from step {start_step}...")
+
     start_time = time.time()
     num_states = state_coords.shape[0]
-
-    # Track metrics history
-    metrics_history = []
 
     # Convert doors to portal markers for visualization
     door_markers = {}
@@ -975,41 +1127,48 @@ def learn_eigenvectors(args):
             s_prime_full = int(canonical_states[s_prime_canonical])
             door_markers[(s_full, a_forward)] = s_prime_full
 
-    # Save visualization metadata for later plotting
-    viz_metadata = {
-        'canonical_states': np.array(canonical_states),
-        'grid_width': env.width,
-        'grid_height': env.height,
-        'door_markers': door_markers,
-        'num_eigenvectors': args.num_eigenvectors,
-        'geometric_gamma': args.geometric_gamma,
-    }
-    with open(results_dir / "viz_metadata.pkl", 'wb') as f:
-        pickle.dump(viz_metadata, f)
+    # Save visualization metadata for new runs (skip if resuming)
+    if checkpoint_data is None:
+        viz_metadata = {
+            'canonical_states': np.array(canonical_states),
+            'grid_width': env.width,
+            'grid_height': env.height,
+            'door_markers': door_markers,
+            'num_eigenvectors': args.num_eigenvectors,
+            'geometric_gamma': args.geometric_gamma,
+        }
+        with open(results_dir / "viz_metadata.pkl", 'wb') as f:
+            pickle.dump(viz_metadata, f)
 
-    # Save ground truth eigendecomposition for plotting
-    np.save(results_dir / "gt_eigenvalues.npy", np.array(gt_eigenvalues))
-    np.save(results_dir / "gt_eigenvectors.npy", np.array(gt_eigenvectors))
+        # Optionally plot ground truth eigenvectors immediately
+        if args.plot_during_training:
+            # Need to create eigendecomp for visualization
+            eigendecomp_viz = {
+                'eigenvalues': gt_eigenvalues.astype(jnp.complex64),
+                'eigenvalues_real': gt_eigenvalues,
+                'eigenvalues_imag': jnp.zeros_like(gt_eigenvalues),
+                'right_eigenvectors_real': gt_eigenvectors,
+                'right_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors),
+                'left_eigenvectors_real': gt_eigenvectors,
+                'left_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors),
+            }
+            visualize_multiple_eigenvectors(
+                eigenvector_indices=list(range(args.num_eigenvectors)),
+                eigendecomposition=eigendecomp_viz,
+                canonical_states=canonical_states,
+                grid_width=env.width,
+                grid_height=env.height,
+                portals=door_markers if door_markers else None,
+                eigenvector_type='right',
+                component='real',
+                ncols=min(4, args.num_eigenvectors),
+                wall_color='gray',
+                save_path=str(plots_dir / "ground_truth_eigenvectors.png"),
+                shared_colorbar=True
+            )
+            plt.close()
 
-    # Optionally plot ground truth eigenvectors immediately
-    if args.plot_during_training:
-        visualize_multiple_eigenvectors(
-            eigenvector_indices=list(range(args.num_eigenvectors)),
-            eigendecomposition=eigendecomp,
-            canonical_states=canonical_states,
-            grid_width=env.width,
-            grid_height=env.height,
-            portals=door_markers if door_markers else None,
-            eigenvector_type='right',
-            component='real',
-            ncols=min(4, args.num_eigenvectors),
-            wall_color='gray',
-            save_path=str(plots_dir / "ground_truth_eigenvectors.png"),
-            shared_colorbar=True
-        )
-        plt.close()
-
-    for gradient_step in tqdm(range(args.num_gradient_steps)):
+    for gradient_step in tqdm(range(start_step, args.num_gradient_steps)):
         # Sample batches from episodic replay buffer using truncated geometric distribution
         batch1 = replay_buffer.sample(args.batch_size, discount=args.geometric_gamma)
         batch2 = replay_buffer.sample(args.batch_size, discount=args.geometric_gamma)
@@ -1128,6 +1287,22 @@ def learn_eigenvectors(args):
                 # Just log progress
                 if gradient_step % (args.plot_freq * 5) == 0:
                     print(f"Saved metrics at step {gradient_step}")
+
+        # Save checkpoint periodically
+        is_checkpoint_step = (
+            ((gradient_step % args.checkpoint_freq) == 0 and gradient_step > 0)
+            or (gradient_step == args.num_gradient_steps - 1)
+        )
+        if is_checkpoint_step:
+            checkpoint_path = models_dir / "checkpoint.pkl"
+            save_checkpoint(
+                encoder_state=encoder_state,
+                metrics_history=metrics_history,
+                gradient_step=gradient_step,
+                save_path=checkpoint_path,
+                args=args,
+                rng_state=np.random.get_state()
+            )
 
     print("\nTraining complete!")
 
