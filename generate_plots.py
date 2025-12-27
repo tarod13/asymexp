@@ -48,9 +48,14 @@ def load_data(results_dir):
     gt_eigenvalues = np.load(results_dir / "gt_eigenvalues.npy")
     gt_eigenvectors = np.load(results_dir / "gt_eigenvectors.npy")
 
-    # Load metrics history
-    with open(results_dir / "metrics_history.json", 'r') as f:
-        metrics_history = json.load(f)
+    # Load metrics history (may not exist if training is still running)
+    metrics_file = results_dir / "metrics_history.json"
+    if metrics_file.exists():
+        with open(metrics_file, 'r') as f:
+            metrics_history = json.load(f)
+    else:
+        metrics_history = None
+        print("Warning: metrics_history.json not found (training may still be running)")
 
     # Find all learned eigenvector checkpoints
     learned_checkpoints = sorted(results_dir.glob("learned_eigenvectors_step_*.npy"))
@@ -142,6 +147,11 @@ def plot_learned_checkpoints(data, plots_dir):
 
 def plot_learning_metrics(data, plots_dir):
     """Generate learning curves and dual evolution plots."""
+    if data['metrics_history'] is None:
+        print("Skipping metrics plots (metrics_history.json not available)")
+        print("  This file is created when training completes.")
+        return
+
     print("Plotting learning curves...")
     plot_learning_curves(
         data['metrics_history'],

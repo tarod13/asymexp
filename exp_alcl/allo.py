@@ -976,6 +976,10 @@ def learn_eigenvectors(args):
             # Export learned eigenvectors for later plotting
             np.save(results_dir / f"learned_eigenvectors_step_{gradient_step}.npy", np.array(learned_features))
 
+            # Also save metrics history periodically (for live plotting)
+            with open(results_dir / "metrics_history.json", 'w') as f:
+                json.dump(metrics_history, f, indent=2)
+
             # Optionally create plots during training (slower)
             if args.plot_during_training:
                 # Create a temporary eigendecomposition dict for visualization
