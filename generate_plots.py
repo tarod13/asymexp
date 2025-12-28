@@ -13,7 +13,8 @@ The script generates:
 - Ground truth eigenvectors
 - Learned eigenvectors at each checkpoint
 - Learning curves
-- Dual variable evolution
+- Dual variable evolution (with comparison to simple Laplacian if available)
+- Sampling distribution visualization
 - Final comparison plot
 """
 
@@ -29,7 +30,7 @@ import matplotlib.pyplot as plt
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent))
 
-from exp_alcl.allo import plot_learning_curves, plot_dual_variable_evolution, plot_cosine_similarity_evolution
+from exp_alcl.allo import plot_learning_curves, plot_dual_variable_evolution, plot_cosine_similarity_evolution, plot_sampling_distribution
 from exp_complex_basis.eigenvector_visualization import (
     visualize_multiple_eigenvectors,
     visualize_eigenvector_on_grid,
@@ -47,6 +48,20 @@ def load_data(results_dir):
     # Load ground truth
     gt_eigenvalues = np.load(results_dir / "gt_eigenvalues.npy")
     gt_eigenvectors = np.load(results_dir / "gt_eigenvectors.npy")
+
+    # Load simple Laplacian eigenvalues if available
+    simple_eigenvalues_file = results_dir / "gt_eigenvalues_simple.npy"
+    if simple_eigenvalues_file.exists():
+        gt_eigenvalues_simple = np.load(simple_eigenvalues_file)
+    else:
+        gt_eigenvalues_simple = None
+
+    # Load sampling distribution if available
+    sampling_dist_file = results_dir / "sampling_distribution.npy"
+    if sampling_dist_file.exists():
+        sampling_probs = np.load(sampling_dist_file)
+    else:
+        sampling_probs = None
 
     # Load metrics history (may not exist if training is still running)
     metrics_file = results_dir / "metrics_history.json"
@@ -69,6 +84,8 @@ def load_data(results_dir):
         'viz_metadata': viz_metadata,
         'gt_eigenvalues': gt_eigenvalues,
         'gt_eigenvectors': gt_eigenvectors,
+        'gt_eigenvalues_simple': gt_eigenvalues_simple,
+        'sampling_probs': sampling_probs,
         'metrics_history': metrics_history,
         'latest_eigenvectors': latest_eigenvectors,
         'results_dir': results_dir,
@@ -165,12 +182,15 @@ def plot_learning_metrics(data, plots_dir):
     )
 
     print("Plotting dual variable evolution...")
+    # Use 'gamma' if 'geometric_gamma' is not present (for newer runs)
+    gamma = data['viz_metadata'].get('gamma', data['viz_metadata'].get('geometric_gamma', 0.99))
     plot_dual_variable_evolution(
         data['metrics_history'],
         data['gt_eigenvalues'],
-        data['viz_metadata']['geometric_gamma'],
+        gamma,
         str(plots_dir / "dual_variable_evolution.png"),
-        num_eigenvectors=data['viz_metadata']['num_eigenvectors']
+        num_eigenvectors=data['viz_metadata']['num_eigenvectors'],
+        ground_truth_eigenvalues_simple=data.get('gt_eigenvalues_simple')
     )
 
     print("Plotting cosine similarity evolution...")
@@ -178,6 +198,26 @@ def plot_learning_metrics(data, plots_dir):
         data['metrics_history'],
         str(plots_dir / "cosine_similarity_evolution.png"),
         num_eigenvectors=data['viz_metadata']['num_eigenvectors']
+    )
+
+
+def plot_sampling_dist(data, plots_dir):
+    """Generate sampling distribution visualization."""
+    if data['sampling_probs'] is None:
+        print("Skipping sampling distribution plot (data not available)")
+        return
+
+    print("Plotting sampling distribution...")
+
+    viz_meta = data['viz_metadata']
+
+    plot_sampling_distribution(
+        sampling_probs=data['sampling_probs'],
+        canonical_states=viz_meta['canonical_states'],
+        grid_width=viz_meta['grid_width'],
+        grid_height=viz_meta['grid_height'],
+        save_path=str(plots_dir / "sampling_distribution.png"),
+        portals=viz_meta['door_markers'] if viz_meta.get('door_markers') else None
     )
 
 
@@ -264,6 +304,11 @@ def main():
         action='store_true',
         help='Skip plotting final comparison'
     )
+    parser.add_argument(
+        '--skip-sampling-dist',
+        action='store_true',
+        help='Skip plotting sampling distribution'
+    )
 
     args = parser.parse_args()
 
@@ -293,6 +338,9 @@ def main():
 
     if not args.skip_metrics:
         plot_learning_metrics(data, plots_dir)
+
+    if not args.skip_sampling_dist:
+        plot_sampling_dist(data, plots_dir)
 
     if not args.skip_comparison:
         plot_final_comparison(data, plots_dir)
