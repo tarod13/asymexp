@@ -218,8 +218,6 @@ class Args:
     graph_epsilon: float = 0.01
     graph_variance_scale: float = 0.1
     perturbation_type: str = 'none'  # 'exponential', 'squared', 'squared-null-grad', 'none'
-    turn_off_above_threshold: bool = False
-    cum_error_threshold: float = 0.1
 
     # Logging and saving
     log_freq: int = 100
@@ -374,6 +372,7 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
             # Apply 0.5 factor before conversion (due to sampling scheme)
             dual_values_scaled = (0.5 * dual_values).clip(-0.99, None)
             approx_eigenvalues = (gamma + dual_values_scaled) / (gamma * (1 + dual_values_scaled))
+            approx_eigenvalues = approx_eigenvalues.clip(-2.0, 2.0)
 
             ax1.plot(steps, approx_eigenvalues, label=f'Approx λ_{i}', color=colors[i], linewidth=1.5)
 
@@ -398,6 +397,7 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
             # Apply 0.5 factor before conversion (due to sampling scheme)
             dual_values_scaled = (0.5 * dual_values).clip(-0.99, None)
             approx_eigenvalues = (gamma + dual_values_scaled) / (gamma * (1 + dual_values_scaled))
+            approx_eigenvalues = approx_eigenvalues.clip(-2.0, 2.0)
 
             gt_value = float(ground_truth_eigenvalues[i].real)
             errors = np.abs(approx_eigenvalues - gt_value)
@@ -1073,28 +1073,19 @@ def learn_eigenvectors(args):
             error_matrix_1 = jnp.tril(inner_product_matrix_1 - jnp.eye(d))
             error_matrix_2 = jnp.tril(inner_product_matrix_2 - jnp.eye(d))
 
-            # Compute error matrices below threshold
-            cum_error_matrix_1_below_threshold = jax.lax.cond(
-                args.turn_off_above_threshold,
-                lambda x: check_previous_entries_below_threshold(x, args.cum_error_threshold),
-                lambda x: jnp.ones([x.shape[0], 1]),
-                error_matrix_1,
-            )
-            cum_error_matrix_1_below_threshold = jax.lax.stop_gradient(cum_error_matrix_1_below_threshold)
-
             # Compute dual loss
             error_integral = params['error_integral']
             dual_loss_pos = (
                 jax.lax.stop_gradient(dual_variables)
-                * cum_error_matrix_1_below_threshold * error_matrix_1
+                * error_matrix_1
             ).sum()
 
             dual_loss_P = jax.lax.stop_gradient(args.step_size_duals * error_matrix_1)
             dual_loss_I = args.step_size_duals_I * jax.lax.stop_gradient(error_integral)
-            dual_loss_neg = -(dual_variables * cum_error_matrix_1_below_threshold * (dual_loss_P + dual_loss_I)).sum()
+            dual_loss_neg = -(dual_variables * (dual_loss_P + dual_loss_I)).sum()
 
             # Compute barrier loss
-            quadratic_error_matrix = 2 * cum_error_matrix_1_below_threshold * error_matrix_1 * jax.lax.stop_gradient(error_matrix_2)
+            quadratic_error_matrix = 2 * error_matrix_1 * jax.lax.stop_gradient(error_matrix_2)
             quadratic_error = quadratic_error_matrix.sum()
             barrier_loss_pos = jax.lax.stop_gradient(barrier_coefficients[0, 0]) * quadratic_error
             barrier_loss_neg = -barrier_coefficients[0, 0] * jax.lax.stop_gradient(jnp.absolute(quadratic_error))
@@ -1123,7 +1114,7 @@ def learn_eigenvectors(args):
             graph_perturbation = graph_perturbation.at[0, 0].set(0.0)
 
             # Compute graph drawing losses
-            diff = (phi - next_phi) * cum_error_matrix_1_below_threshold.reshape(1, -1)
+            diff = phi - next_phi
             graph_losses = 0.5 * ((diff) ** 2).mean(0, keepdims=True)
             graph_loss = (graph_losses + graph_perturbation).sum()
 
