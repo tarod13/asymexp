@@ -221,6 +221,45 @@ def compute_weighted_symmetrized_laplacian(
     return laplacian
 
 
+def compute_inverse_weighted_laplacian(
+    transition_matrix: jnp.ndarray,
+    sampling_distribution: jnp.ndarray,
+    gamma: float,
+) -> jnp.ndarray:
+    """
+    Compute the inverse-weighted Laplacian L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2.
+
+    This version accounts for the cancellation of D on the left and introduction of D^{-1} on the transpose.
+
+    Args:
+        transition_matrix: Shape [num_states, num_states], stochastic transition matrix P
+        sampling_distribution: Shape [num_states, num_states], diagonal matrix D with sampling probabilities
+        gamma: Discount factor used in successor representation
+
+    Returns:
+        Inverse-weighted Laplacian of shape [num_states, num_states]
+    """
+    num_states = transition_matrix.shape[0]
+    identity = jnp.eye(num_states)
+
+    # Compute successor representation SR_γ = (I - γP)^(-1)
+    sr_matrix = compute_successor_representation(transition_matrix, gamma)
+
+    # Compute D^{-1} (inverse of diagonal matrix)
+    D_inv = jnp.linalg.inv(sampling_distribution)
+
+    # Compute SR_γ and D^{-1}SR_γ^TD
+    Dinv_SRT_D = D_inv @ sr_matrix.T @ sampling_distribution
+
+    # Symmetrize: (SR_γ + D^{-1}SR_γ^TD)/2
+    inverse_weighted_sr_symmetrized = (sr_matrix + Dinv_SRT_D) / 2.0
+
+    # Compute Laplacian: L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
+    laplacian = identity - (1 - gamma) * inverse_weighted_sr_symmetrized
+
+    return laplacian
+
+
 def compute_symmetrized_eigendecomposition(
     transition_matrix: jnp.ndarray,
     k: int = None
@@ -436,11 +475,12 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
 
 
 def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamma, save_path,
-                                  num_eigenvectors=11, ground_truth_eigenvalues_simple=None):
+                                  num_eigenvectors=11, ground_truth_eigenvalues_simple=None,
+                                  ground_truth_eigenvalues_weighted=None):
     """
     Plot the evolution of dual variables (Laplacian eigenvalue estimates) vs ground truth eigenvalues.
 
-    The duals are eigenvalues of the weighted Laplacian L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2,
+    The duals are eigenvalues of the inverse-weighted Laplacian L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2,
     where SR_γ is the successor representation with discount gamma and D is the sampling distribution.
 
     The 0.5 factor arises from the sampling scheme with the episodic replay buffer,
@@ -449,11 +489,12 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
 
     Args:
         metrics_history: List of metric dictionaries
-        ground_truth_eigenvalues: Array of ground truth eigenvalues of the weighted Laplacian
+        ground_truth_eigenvalues: Array of ground truth eigenvalues of the inverse-weighted Laplacian
         gamma: Discount factor used in the successor representation (not used in this version)
         save_path: Path to save the plot
         num_eigenvectors: Number of eigenvectors to plot
         ground_truth_eigenvalues_simple: Optional array of simple Laplacian eigenvalues for comparison
+        ground_truth_eigenvalues_weighted: Optional array of weighted Laplacian eigenvalues for comparison
     """
     steps = [m['gradient_step'] for m in metrics_history]
     num_plot = min(num_eigenvectors, len(ground_truth_eigenvalues))
@@ -475,10 +516,16 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
 
             ax1.plot(steps, dual_values_scaled, label=f'Learned λ_{i}', color=colors[i], linewidth=1.5)
 
-            # Plot weighted Laplacian ground truth as solid horizontal line
+            # Plot inverse-weighted Laplacian ground truth as solid horizontal line (main baseline)
             gt_value = float(ground_truth_eigenvalues[i].real)
             ax1.axhline(y=gt_value, color=colors[i], linestyle='-', alpha=0.3, linewidth=2.5,
-                       label=f'GT Weighted λ_{i}' if i == 0 else '')
+                       label=f'GT Inv-Weighted λ_{i}' if i == 0 else '')
+
+            # Plot weighted Laplacian ground truth as dash-dot line if provided
+            if ground_truth_eigenvalues_weighted is not None:
+                gt_weighted_value = float(ground_truth_eigenvalues_weighted[i].real)
+                ax1.axhline(y=gt_weighted_value, color=colors[i], linestyle='-.', alpha=0.3, linewidth=1.5,
+                           label=f'GT Weighted λ_{i}' if i == 0 else '')
 
             # Plot simple Laplacian ground truth as dashed line if provided
             if ground_truth_eigenvalues_simple is not None:
@@ -488,11 +535,21 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
 
     ax1.set_xlabel('Gradient Step', fontsize=12)
     ax1.set_ylabel('Laplacian Eigenvalue', fontsize=12)
-    ax1.set_title('Learned Eigenvalues vs Ground Truth (solid=weighted, dashed=simple)', fontsize=14)
+
+    # Build title based on what baselines are available
+    title_parts = []
+    if ground_truth_eigenvalues is not None:
+        title_parts.append('solid=inv-weighted')
+    if ground_truth_eigenvalues_weighted is not None:
+        title_parts.append('dash-dot=weighted')
+    if ground_truth_eigenvalues_simple is not None:
+        title_parts.append('dashed=simple')
+    title = 'Learned Eigenvalues vs Ground Truth (' + ', '.join(title_parts) + ')'
+    ax1.set_title(title, fontsize=14)
     ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
     ax1.grid(True, alpha=0.3)
 
-    # Plot 2: Absolute errors for both versions
+    # Plot 2: Absolute errors for all versions
     ax2 = axes[1]
 
     for i in range(num_plot):
@@ -503,10 +560,17 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
             # Apply 0.5 factor due to sampling scheme
             dual_values_scaled = 0.5 * dual_values
 
-            # Error vs weighted Laplacian
+            # Error vs inverse-weighted Laplacian (main baseline)
             gt_value = float(ground_truth_eigenvalues[i].real)
             errors = np.abs(dual_values_scaled - gt_value)
-            ax2.plot(steps, errors, label=f'vs Weighted λ_{i}', color=colors[i], linewidth=1.5, linestyle='-')
+            ax2.plot(steps, errors, label=f'vs Inv-Weighted λ_{i}', color=colors[i], linewidth=1.5, linestyle='-')
+
+            # Error vs weighted Laplacian if provided
+            if ground_truth_eigenvalues_weighted is not None:
+                gt_weighted_value = float(ground_truth_eigenvalues_weighted[i].real)
+                errors_weighted = np.abs(dual_values_scaled - gt_weighted_value)
+                ax2.plot(steps, errors_weighted, label=f'vs Weighted λ_{i}', color=colors[i],
+                        linewidth=1.5, linestyle='-.', alpha=0.5)
 
             # Error vs simple Laplacian if provided
             if ground_truth_eigenvalues_simple is not None:
@@ -517,7 +581,17 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
 
     ax2.set_xlabel('Gradient Step', fontsize=12)
     ax2.set_ylabel('Absolute Error', fontsize=12)
-    ax2.set_title('Absolute Errors (solid=weighted, dashed=simple)', fontsize=14)
+
+    # Build title based on what baselines are available
+    error_title_parts = []
+    if ground_truth_eigenvalues is not None:
+        error_title_parts.append('solid=inv-weighted')
+    if ground_truth_eigenvalues_weighted is not None:
+        error_title_parts.append('dash-dot=weighted')
+    if ground_truth_eigenvalues_simple is not None:
+        error_title_parts.append('dashed=simple')
+    error_title = 'Absolute Errors (' + ', '.join(error_title_parts) + ')'
+    ax2.set_title(error_title, fontsize=14)
     ax2.set_yscale('log')
     ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
     ax2.grid(True, alpha=0.3, which='both')
@@ -710,7 +784,10 @@ def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_
     """
     Plot the evolution of cosine similarities between learned and ground truth eigenvectors.
 
-    Plots comparisons against both weighted and simple Laplacian baselines if available.
+    Plots comparisons against all three Laplacian baselines if available:
+    - Simple: L = I - (1-γ)(SR_γ + SR_γ^T)/2
+    - Weighted: L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
+    - Inverse-weighted: L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
 
     Args:
         metrics_history: List of metric dictionaries containing cosine similarity values
@@ -719,15 +796,20 @@ def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_
     """
     steps = [m['gradient_step'] for m in metrics_history]
 
-    # Check if we have both weighted and simple comparisons
+    # Check which baseline comparisons are available
+    has_invweighted = 'cosine_sim_avg_invweighted' in metrics_history[0]
     has_weighted = 'cosine_sim_avg_weighted' in metrics_history[0]
     has_simple = 'cosine_sim_avg_simple' in metrics_history[0]
-    has_legacy = 'cosine_sim_avg' in metrics_history[0]  # Old format without _weighted suffix
+    has_legacy = 'cosine_sim_avg' in metrics_history[0]  # Old format without suffix
 
     # Determine number of eigenvectors to plot
     if num_eigenvectors is None:
         # Count how many cosine_sim_i keys exist (check all variants)
-        if has_weighted:
+        if has_invweighted:
+            num_eigenvectors = sum(1 for key in metrics_history[0].keys()
+                                 if key.startswith('cosine_sim_') and key.endswith('_invweighted')
+                                 and 'avg' not in key)
+        elif has_weighted:
             num_eigenvectors = sum(1 for key in metrics_history[0].keys()
                                  if key.startswith('cosine_sim_') and key.endswith('_weighted')
                                  and 'avg' not in key)
@@ -739,18 +821,23 @@ def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_
 
     fig, ax = plt.subplots(1, 1, figsize=(12, 8))
 
-    # Plot average cosine similarities
+    # Plot average cosine similarities for each baseline
+    if has_invweighted:
+        avg_values_invweighted = [m['cosine_sim_avg_invweighted'] for m in metrics_history]
+        ax.plot(steps, avg_values_invweighted, label='Avg vs Inverse-Weighted Laplacian',
+                color='green', linewidth=2.5, linestyle='-')
+
     if has_weighted:
         avg_values_weighted = [m['cosine_sim_avg_weighted'] for m in metrics_history]
         ax.plot(steps, avg_values_weighted, label='Avg vs Weighted Laplacian',
-                color='blue', linewidth=2.5, linestyle='-')
+                color='blue', linewidth=2.5, linestyle='-.')
 
     if has_simple:
         avg_values_simple = [m['cosine_sim_avg_simple'] for m in metrics_history]
         ax.plot(steps, avg_values_simple, label='Avg vs Simple Laplacian',
                 color='red', linewidth=2.5, linestyle='--')
 
-    if has_legacy and not has_weighted:
+    if has_legacy and not (has_invweighted or has_weighted):
         # Old format compatibility
         avg_values = [m['cosine_sim_avg'] for m in metrics_history]
         ax.plot(steps, avg_values, label='Average', color='black', linewidth=2.5, linestyle='-')
@@ -758,8 +845,10 @@ def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_
     ax.set_xlabel('Gradient Step', fontsize=12)
     ax.set_ylabel('Absolute Cosine Similarity', fontsize=12)
 
-    if has_weighted and has_simple:
-        ax.set_title('Cosine Similarity: Learned vs Both Laplacian Baselines', fontsize=14)
+    # Set title based on what baselines are available
+    num_baselines = sum([has_invweighted, has_weighted, has_simple])
+    if num_baselines > 1:
+        ax.set_title('Cosine Similarity: Learned vs All Laplacian Baselines', fontsize=14)
     else:
         ax.set_title('Evolution of Absolute Cosine Similarity between Learned and Ground Truth Eigenvectors', fontsize=14)
 
@@ -880,17 +969,19 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     """
     Collect transition data and compute ground truth eigenvectors.
 
-    Computes eigenvalues for both:
-    - Simple Laplacian: L = I - (1-γ)(SR_γ + SR_γ^T)/2
-    - Weighted Laplacian: L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
+    Computes eigenvalues for three Laplacian versions:
+    - Simple: L = I - (1-γ)(SR_γ + SR_γ^T)/2
+    - Weighted: L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
+    - Inverse-Weighted: L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
 
     Args:
         env: Base environment (possibly with doors already applied)
 
     Returns:
-        laplacian_matrix: Weighted Laplacian L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
-        eigendecomp: Dictionary with eigenvalues and eigenvectors of the weighted Laplacian
+        laplacian_matrix: Inverse-weighted Laplacian L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
+        eigendecomp: Dictionary with eigenvalues and eigenvectors of the inverse-weighted Laplacian
         eigendecomp_simple: Dictionary with eigenvalues and eigenvectors of the simple Laplacian
+        eigendecomp_weighted: Dictionary with eigenvalues and eigenvectors of the weighted Laplacian
         state_coords: Array of (x,y) coordinates for each state
         canonical_states: Array of free state indices
         sampling_probs: 1D array of empirical sampling probabilities for each canonical state
@@ -996,7 +1087,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print(f"  Sampling prob range: [{sampling_probs.min():.6f}, {sampling_probs.max():.6f}]")
     print(f"  Sampling prob std: {sampling_probs.std():.6f}")
 
-    # Compute BOTH Laplacian versions for comparison
+    # Compute ALL three Laplacian versions for comparison
     print(f"\nComputing Laplacians with gamma={args.gamma}...")
 
     # Version 1: Simple Laplacian L = I - (1-γ)(SR_γ + SR_γ^T)/2
@@ -1017,16 +1108,27 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         k=args.num_eigenvectors,
     )
 
-    # Use the weighted version as the main baseline (what the algorithm actually learns)
-    laplacian_matrix = laplacian_weighted
-    eigendecomp = eigendecomp_weighted
+    # Version 3: Inverse-weighted Laplacian L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
+    print("  Computing inverse-weighted Laplacian L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2...")
+    laplacian_invweighted = compute_inverse_weighted_laplacian(
+        transition_matrix, sampling_distribution, args.gamma
+    )
+    eigendecomp_invweighted = compute_symmetrized_eigendecomposition(
+        laplacian_invweighted,
+        k=args.num_eigenvectors,
+    )
+
+    # Use the inverse-weighted version as the main baseline (most likely what the algorithm learns)
+    laplacian_matrix = laplacian_invweighted
+    eigendecomp = eigendecomp_invweighted
 
     print(f"\nTop {min(5, args.num_eigenvectors)} eigenvalues comparison:")
-    print("  Simple Laplacian | Weighted Laplacian")
+    print("  Simple | Weighted | Inverse-Weighted")
     for i in range(min(5, args.num_eigenvectors)):
         simple_ev = eigendecomp_simple['eigenvalues'][i]
         weighted_ev = eigendecomp_weighted['eigenvalues'][i]
-        print(f"  λ_{i}: {simple_ev:.6f} | {weighted_ev:.6f}")
+        invweighted_ev = eigendecomp_invweighted['eigenvalues'][i]
+        print(f"  λ_{i}: {simple_ev:.6f} | {weighted_ev:.6f} | {invweighted_ev:.6f}")
 
     # Create state coordinate mapping (only for canonical/free states)
     state_coords = []
@@ -1051,7 +1153,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print(f"  Coordinate range: x=[{state_coords[:, 0].min():.3f}, {state_coords[:, 0].max():.3f}], "
           f"y=[{state_coords[:, 1].min():.3f}, {state_coords[:, 1].max():.3f}]")
 
-    return laplacian_matrix, eigendecomp, eigendecomp_simple, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer
+    return laplacian_matrix, eigendecomp, eigendecomp_simple, eigendecomp_weighted, eigendecomp_invweighted, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer
 
 
 def learn_eigenvectors(args):
@@ -1131,13 +1233,39 @@ def learn_eigenvectors(args):
         # Load saved eigenvectors and state coordinates
         gt_eigenvalues = jnp.array(np.load(results_dir / "gt_eigenvalues.npy"))
         gt_eigenvectors = jnp.array(np.load(results_dir / "gt_eigenvectors.npy"))
+
         # Try to load simple eigenvalues if they exist
         simple_eigenvalues_path = results_dir / "gt_eigenvalues_simple.npy"
-        if simple_eigenvalues_path.exists():
+        simple_eigenvectors_path = results_dir / "gt_eigenvectors_simple.npy"
+        if simple_eigenvalues_path.exists() and simple_eigenvectors_path.exists():
             gt_eigenvalues_simple = jnp.array(np.load(simple_eigenvalues_path))
+            gt_eigenvectors_simple = jnp.array(np.load(simple_eigenvectors_path))
         else:
             gt_eigenvalues_simple = None
+            gt_eigenvectors_simple = None
+
+        # Try to load weighted eigenvalues if they exist
+        weighted_eigenvalues_path = results_dir / "gt_eigenvalues_weighted.npy"
+        weighted_eigenvectors_path = results_dir / "gt_eigenvectors_weighted.npy"
+        if weighted_eigenvalues_path.exists() and weighted_eigenvectors_path.exists():
+            gt_eigenvalues_weighted = jnp.array(np.load(weighted_eigenvalues_path))
+            gt_eigenvectors_weighted = jnp.array(np.load(weighted_eigenvectors_path))
+        else:
+            gt_eigenvalues_weighted = None
+            gt_eigenvectors_weighted = None
+
+        # Try to load inverse-weighted eigenvalues if they exist
+        invweighted_eigenvalues_path = results_dir / "gt_eigenvalues_invweighted.npy"
+        invweighted_eigenvectors_path = results_dir / "gt_eigenvectors_invweighted.npy"
+        if invweighted_eigenvalues_path.exists() and invweighted_eigenvectors_path.exists():
+            gt_eigenvalues_invweighted = jnp.array(np.load(invweighted_eigenvalues_path))
+            gt_eigenvectors_invweighted = jnp.array(np.load(invweighted_eigenvectors_path))
+        else:
+            gt_eigenvalues_invweighted = None
+            gt_eigenvectors_invweighted = None
+
         state_coords = jnp.array(np.load(results_dir / "state_coords.npy"))
+
         # Try to load sampling distribution if it exists
         sampling_dist_path = results_dir / "sampling_distribution.npy"
         if sampling_dist_path.exists():
@@ -1173,12 +1301,16 @@ def learn_eigenvectors(args):
     else:
         # Create environment and collect data (new run)
         env = create_gridworld_env(args)
-        laplacian_matrix, eigendecomp, eigendecomp_simple, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
+        laplacian_matrix, eigendecomp, eigendecomp_simple, eigendecomp_weighted, eigendecomp_invweighted, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
 
         gt_eigenvalues = eigendecomp['eigenvalues_real']
         gt_eigenvectors = eigendecomp['right_eigenvectors_real']
         gt_eigenvalues_simple = eigendecomp_simple['eigenvalues_real']
         gt_eigenvectors_simple = eigendecomp_simple['right_eigenvectors_real']
+        gt_eigenvalues_weighted = eigendecomp_weighted['eigenvalues_real']
+        gt_eigenvectors_weighted = eigendecomp_weighted['right_eigenvectors_real']
+        gt_eigenvalues_invweighted = eigendecomp_invweighted['eigenvalues_real']
+        gt_eigenvectors_invweighted = eigendecomp_invweighted['right_eigenvectors_real']
 
     print(f"\nState coordinates shape: {state_coords.shape}")
     print(f"Ground truth eigenvectors shape: {gt_eigenvectors.shape}")
@@ -1198,12 +1330,18 @@ def learn_eigenvectors(args):
             print(f"Door configuration saved to {door_save_path}")
 
         # Save ground truth eigendecomposition and state coords
-        # Weighted Laplacian (main baseline)
+        # Inverse-weighted Laplacian (main baseline): L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
         np.save(results_dir / "gt_eigenvalues.npy", np.array(gt_eigenvalues))
         np.save(results_dir / "gt_eigenvectors.npy", np.array(gt_eigenvectors))
-        # Simple Laplacian (for comparison)
+        # Simple Laplacian (for comparison): L = I - (1-γ)(SR_γ + SR_γ^T)/2
         np.save(results_dir / "gt_eigenvalues_simple.npy", np.array(gt_eigenvalues_simple))
         np.save(results_dir / "gt_eigenvectors_simple.npy", np.array(gt_eigenvectors_simple))
+        # Weighted Laplacian (for comparison): L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
+        np.save(results_dir / "gt_eigenvalues_weighted.npy", np.array(gt_eigenvalues_weighted))
+        np.save(results_dir / "gt_eigenvectors_weighted.npy", np.array(gt_eigenvectors_weighted))
+        # Inverse-weighted Laplacian (for comparison): L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
+        np.save(results_dir / "gt_eigenvalues_invweighted.npy", np.array(gt_eigenvalues_invweighted))
+        np.save(results_dir / "gt_eigenvectors_invweighted.npy", np.array(gt_eigenvectors_invweighted))
         # State coordinates
         np.save(results_dir / "state_coords.npy", np.array(state_coords))
         # Sampling distribution
@@ -1598,14 +1736,20 @@ def learn_eigenvectors(args):
             # Compute learned eigenvectors on all states for cosine similarity
             learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
 
-            # Compute cosine similarities with ground truth (weighted Laplacian)
-            cosine_sims_weighted = compute_cosine_similarities(learned_features, gt_eigenvectors)
+            # Compute cosine similarities with ground truth (inverse-weighted Laplacian - main baseline)
+            cosine_sims_invweighted = compute_cosine_similarities(learned_features, gt_eigenvectors)
 
             # Compute cosine similarities with simple Laplacian if available
             if 'gt_eigenvectors_simple' in locals() and gt_eigenvectors_simple is not None:
                 cosine_sims_simple = compute_cosine_similarities(learned_features, gt_eigenvectors_simple)
             else:
                 cosine_sims_simple = None
+
+            # Compute cosine similarities with weighted Laplacian if available
+            if 'gt_eigenvectors_weighted' in locals() and gt_eigenvectors_weighted is not None:
+                cosine_sims_weighted = compute_cosine_similarities(learned_features, gt_eigenvectors_weighted)
+            else:
+                cosine_sims_weighted = None
 
             # Store metrics
             elapsed_time = time.time() - start_time
@@ -1618,24 +1762,31 @@ def learn_eigenvectors(args):
             for k, v in metrics.items():
                 metrics_dict[k] = float(v.item())
 
-            # Add cosine similarities to metrics (weighted Laplacian)
-            for k, v in cosine_sims_weighted.items():
-                metrics_dict[f'{k}_weighted'] = v
+            # Add cosine similarities to metrics (inverse-weighted Laplacian - main baseline)
+            for k, v in cosine_sims_invweighted.items():
+                metrics_dict[f'{k}_invweighted'] = v
 
             # Add cosine similarities for simple Laplacian if available
             if cosine_sims_simple is not None:
                 for k, v in cosine_sims_simple.items():
                     metrics_dict[f'{k}_simple'] = v
 
+            # Add cosine similarities for weighted Laplacian if available
+            if cosine_sims_weighted is not None:
+                for k, v in cosine_sims_weighted.items():
+                    metrics_dict[f'{k}_weighted'] = v
+
             metrics_history.append(metrics_dict)
 
             if gradient_step % (args.log_freq * 10) == 0:
-                weighted_sim = cosine_sims_weighted['cosine_sim_avg']
+                invweighted_sim = cosine_sims_invweighted['cosine_sim_avg']
                 simple_sim = cosine_sims_simple['cosine_sim_avg'] if cosine_sims_simple else 'N/A'
+                weighted_sim = cosine_sims_weighted['cosine_sim_avg'] if cosine_sims_weighted else 'N/A'
                 print(f"Step {gradient_step}: loss={allo.item():.4f}, "
                       f"total_error={metrics['total_error'].item():.4f}, "
-                      f"cosine_sim_weighted={weighted_sim:.4f}, "
-                      f"cosine_sim_simple={simple_sim}")
+                      f"cosine_sim_invweighted={invweighted_sim:.4f}, "
+                      f"cosine_sim_simple={simple_sim}, "
+                      f"cosine_sim_weighted={weighted_sim}")
         log_time = time.time() - log_start
 
         # Collect timing samples (last 1000 steps for statistics)
@@ -1712,7 +1863,8 @@ def learn_eigenvectors(args):
                     args.gamma,
                     str(plots_dir / "dual_variable_evolution.png"),
                     num_eigenvectors=args.num_eigenvectors,
-                    ground_truth_eigenvalues_simple=gt_eigenvalues_simple if 'gt_eigenvalues_simple' in locals() else None
+                    ground_truth_eigenvalues_simple=gt_eigenvalues_simple if 'gt_eigenvalues_simple' in locals() else None,
+                    ground_truth_eigenvalues_weighted=gt_eigenvalues_weighted if 'gt_eigenvalues_weighted' in locals() else None
                 )
 
                 # Plot cosine similarity evolution

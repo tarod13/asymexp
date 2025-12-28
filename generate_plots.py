@@ -56,6 +56,20 @@ def load_data(results_dir):
     else:
         gt_eigenvalues_simple = None
 
+    # Load weighted Laplacian eigenvalues if available
+    weighted_eigenvalues_file = results_dir / "gt_eigenvalues_weighted.npy"
+    if weighted_eigenvalues_file.exists():
+        gt_eigenvalues_weighted = np.load(weighted_eigenvalues_file)
+    else:
+        gt_eigenvalues_weighted = None
+
+    # Load inverse-weighted Laplacian eigenvalues if available
+    invweighted_eigenvalues_file = results_dir / "gt_eigenvalues_invweighted.npy"
+    if invweighted_eigenvalues_file.exists():
+        gt_eigenvalues_invweighted = np.load(invweighted_eigenvalues_file)
+    else:
+        gt_eigenvalues_invweighted = None
+
     # Load sampling distribution if available
     sampling_dist_file = results_dir / "sampling_distribution.npy"
     if sampling_dist_file.exists():
@@ -85,6 +99,8 @@ def load_data(results_dir):
         'gt_eigenvalues': gt_eigenvalues,
         'gt_eigenvectors': gt_eigenvectors,
         'gt_eigenvalues_simple': gt_eigenvalues_simple,
+        'gt_eigenvalues_weighted': gt_eigenvalues_weighted,
+        'gt_eigenvalues_invweighted': gt_eigenvalues_invweighted,
         'sampling_probs': sampling_probs,
         'metrics_history': metrics_history,
         'latest_eigenvectors': latest_eigenvectors,
@@ -190,7 +206,8 @@ def plot_learning_metrics(data, plots_dir):
         gamma,
         str(plots_dir / "dual_variable_evolution.png"),
         num_eigenvectors=data['viz_metadata']['num_eigenvectors'],
-        ground_truth_eigenvalues_simple=data.get('gt_eigenvalues_simple')
+        ground_truth_eigenvalues_simple=data.get('gt_eigenvalues_simple'),
+        ground_truth_eigenvalues_weighted=data.get('gt_eigenvalues_weighted')
     )
 
     print("Plotting cosine similarity evolution...")
