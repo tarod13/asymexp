@@ -218,16 +218,18 @@ class Args:
     graph_epsilon: float = 0.01
     graph_variance_scale: float = 0.1
     perturbation_type: str = 'none'  # 'exponential', 'squared', 'squared-null-grad', 'none'
-    turn_off_above_threshold: bool = False
-    cum_error_threshold: float = 0.1
 
     # Logging and saving
     log_freq: int = 100
     plot_freq: int = 1000
     save_freq: int = 1000
+    checkpoint_freq: int = 5000  # How often to save checkpoints (in gradient steps)
     save_model: bool = True
     plot_during_training: bool = False  # If True, creates plots during training (slow). If False, only exports data.
     results_dir: str = "./results"
+
+    # Resuming training
+    resume_from: str | None = None  # Path to results directory to resume from (e.g., './results/room4/room4__allo__0__42__1234567890')
 
     # Misc
     seed: int = 42
@@ -370,6 +372,7 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
             # Apply 0.5 factor before conversion (due to sampling scheme)
             dual_values_scaled = (0.5 * dual_values).clip(-0.99, None)
             approx_eigenvalues = (gamma + dual_values_scaled) / (gamma * (1 + dual_values_scaled))
+            approx_eigenvalues = approx_eigenvalues.clip(-2.0, 2.0)
 
             ax1.plot(steps, approx_eigenvalues, label=f'Approx λ_{i}', color=colors[i], linewidth=1.5)
 
@@ -394,6 +397,7 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
             # Apply 0.5 factor before conversion (due to sampling scheme)
             dual_values_scaled = (0.5 * dual_values).clip(-0.99, None)
             approx_eigenvalues = (gamma + dual_values_scaled) / (gamma * (1 + dual_values_scaled))
+            approx_eigenvalues = approx_eigenvalues.clip(-2.0, 2.0)
 
             gt_value = float(ground_truth_eigenvalues[i].real)
             errors = np.abs(approx_eigenvalues - gt_value)
@@ -410,6 +414,152 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"Dual variable evolution plot saved to {save_path}")
+
+
+def save_checkpoint(
+    encoder_state: TrainState,
+    metrics_history: list,
+    gradient_step: int,
+    save_path: Path,
+    args: Args,
+    rng_state: np.ndarray = None
+):
+    """
+    Save a training checkpoint.
+
+    Args:
+        encoder_state: Current training state
+        metrics_history: List of metrics dictionaries
+        gradient_step: Current gradient step
+        save_path: Path to save the checkpoint
+        args: Training arguments
+        rng_state: Current random state (optional)
+    """
+    checkpoint = {
+        'gradient_step': gradient_step,
+        'params': encoder_state.params,
+        'opt_state': encoder_state.opt_state,
+        'metrics_history': metrics_history,
+        'args': vars(args),
+    }
+
+    if rng_state is not None:
+        checkpoint['rng_state'] = rng_state
+
+    with open(save_path, 'wb') as f:
+        pickle.dump(checkpoint, f)
+
+    print(f"Checkpoint saved to {save_path}")
+
+
+def load_checkpoint(checkpoint_path: Path) -> Dict:
+    """
+    Load a training checkpoint.
+
+    Args:
+        checkpoint_path: Path to the checkpoint file
+
+    Returns:
+        Dictionary containing checkpoint data
+    """
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+    with open(checkpoint_path, 'rb') as f:
+        checkpoint = pickle.load(f)
+
+    print(f"Checkpoint loaded from {checkpoint_path}")
+    print(f"  Resuming from gradient step: {checkpoint['gradient_step']}")
+
+    return checkpoint
+
+
+def compute_cosine_similarities(learned_features: jnp.ndarray, gt_eigenvectors: jnp.ndarray) -> Dict[str, float]:
+    """
+    Compute absolute cosine similarity per component between learned and ground truth eigenvectors.
+
+    For each eigenvector component i, computes the absolute cosine similarity:
+        |cos(θ_i)| = |<learned_i, gt_i>| / (||learned_i|| * ||gt_i||)
+
+    Args:
+        learned_features: Learned eigenvector features [num_states, num_eigenvectors]
+        gt_eigenvectors: Ground truth eigenvectors [num_states, num_eigenvectors]
+
+    Returns:
+        Dictionary containing:
+            - cosine_sim_i: Absolute cosine similarity for each component i
+            - cosine_sim_avg: Average absolute cosine similarity across all components
+    """
+    num_components = learned_features.shape[1]
+
+    similarities = {}
+    cosine_sims = []
+
+    for i in range(num_components):
+        learned_vec = learned_features[:, i]
+        gt_vec = gt_eigenvectors[:, i]
+
+        # Compute cosine similarity
+        dot_product = jnp.dot(learned_vec, gt_vec)
+        learned_norm = jnp.linalg.norm(learned_vec)
+        gt_norm = jnp.linalg.norm(gt_vec)
+
+        # Absolute cosine similarity (handles sign ambiguity)
+        cosine_sim = jnp.abs(dot_product / (learned_norm * gt_norm + 1e-10))
+
+        similarities[f'cosine_sim_{i}'] = float(cosine_sim)
+        cosine_sims.append(float(cosine_sim))
+
+    # Average across all components
+    similarities['cosine_sim_avg'] = float(np.mean(cosine_sims))
+
+    return similarities
+
+
+def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_eigenvectors: int = None):
+    """
+    Plot the evolution of cosine similarities between learned and ground truth eigenvectors.
+
+    Args:
+        metrics_history: List of metric dictionaries containing cosine similarity values
+        save_path: Path to save the plot
+        num_eigenvectors: Number of eigenvectors to plot (None = plot all available)
+    """
+    steps = [m['gradient_step'] for m in metrics_history]
+
+    # Determine number of eigenvectors to plot
+    if num_eigenvectors is None:
+        # Count how many cosine_sim_i keys exist
+        num_eigenvectors = sum(1 for key in metrics_history[0].keys() if key.startswith('cosine_sim_') and key != 'cosine_sim_avg')
+
+    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+
+    # Use a colormap for different eigenvectors
+    colors = plt.cm.viridis(np.linspace(0, 1, num_eigenvectors + 1))
+
+    # Plot cosine similarity for each component
+    for i in range(num_eigenvectors):
+        key = f'cosine_sim_{i}'
+        if key in metrics_history[0]:
+            values = [m[key] for m in metrics_history]
+            ax.plot(steps, values, label=f'Component {i}', color=colors[i], linewidth=1.5, alpha=0.7)
+
+    # Plot average cosine similarity with thicker line
+    if 'cosine_sim_avg' in metrics_history[0]:
+        avg_values = [m['cosine_sim_avg'] for m in metrics_history]
+        ax.plot(steps, avg_values, label='Average', color='black', linewidth=2.5, linestyle='--')
+
+    ax.set_xlabel('Gradient Step', fontsize=12)
+    ax.set_ylabel('Absolute Cosine Similarity', fontsize=12)
+    ax.set_title('Evolution of Absolute Cosine Similarity between Learned and Ground Truth Eigenvectors', fontsize=14)
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim([0, 1.05])  # Cosine similarity is in [0, 1]
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Cosine similarity evolution plot saved to {save_path}")
 
 
 def state_idx_to_xy(state_idx: int, width: int) -> tuple:
@@ -448,6 +598,71 @@ def get_canonical_free_states(env):
     free_states = sorted(all_states - obstacle_states)
 
     return jnp.array(free_states, dtype=jnp.int32)
+
+
+def create_replay_buffer_only(env, canonical_states, args: Args):
+    """
+    Create replay buffer by collecting episodes (without recomputing eigenvectors).
+    Used when resuming training to avoid redundant computation.
+
+    Args:
+        env: Environment to collect data from
+        canonical_states: Array of free state indices
+        args: Training arguments
+
+    Returns:
+        replay_buffer: EpisodicReplayBuffer filled with collected episodes
+    """
+    print("Collecting episodes for replay buffer...")
+    num_states = env.width * env.height
+
+    # Collect transition counts and episodes
+    transition_counts_full, raw_episodes, metrics = collect_transition_counts_and_episodes(
+        env=env,
+        num_envs=args.num_envs,
+        num_steps=args.num_steps,
+        num_states=num_states,
+        seed=args.seed,
+    )
+    print(f"Collected {metrics['total_transitions']} transitions.")
+
+    # Map full state indices to canonical indices
+    full_to_canonical = {int(full_idx): canon_idx for canon_idx, full_idx in enumerate(canonical_states)}
+
+    # Initialize replay buffer
+    max_valid_length = int(raw_episodes['lengths'].max()) + 1
+    replay_buffer = EpisodicReplayBuffer(
+        max_episodes=args.num_envs,
+        max_episode_length=max_valid_length,
+        observation_type='canonical_state',
+        seed=args.seed
+    )
+
+    # Convert and add episodes to buffer
+    for ep_idx in range(args.num_envs):
+        episode_length = int(raw_episodes['lengths'][ep_idx])
+        episode_obs_full = raw_episodes['observations'][ep_idx, :episode_length + 1]
+        episode_terminals = raw_episodes['terminals'][ep_idx, :episode_length + 1]
+
+        episode_obs_canonical = []
+        episode_terminals_canonical = []
+        for i, state_idx in enumerate(episode_obs_full):
+            state_idx = int(state_idx)
+            if state_idx in full_to_canonical:
+                episode_obs_canonical.append(full_to_canonical[state_idx])
+                episode_terminals_canonical.append(int(episode_terminals[i]))
+
+        if len(episode_obs_canonical) >= 2:
+            obs_array = np.array(episode_obs_canonical, dtype=np.int32).reshape(-1, 1)
+            terminals_array = np.array(episode_terminals_canonical, dtype=np.int32)
+            episode_dict = {
+                'obs': obs_array,
+                'terminals': terminals_array,
+            }
+            replay_buffer.add_episode(episode_dict)
+
+    print(f"Added {len(replay_buffer)} trajectory sequences to replay buffer")
+    return replay_buffer
 
 
 def collect_data_and_compute_eigenvectors(env, args: Args):
@@ -599,23 +814,57 @@ def learn_eigenvectors(args):
     if args.exp_name is None:
         args.exp_name = os.path.basename(__file__)[: -len(".py")]
 
-    # Set up run
-    run_name = f"{args.env_type}__{args.exp_name}__{args.exp_number}__{args.seed}__{int(time.time())}"
+    # Check if resuming from a previous run
+    checkpoint_data = None
+    start_step = 0
+    metrics_history = []
 
-    # Create results directories
-    results_dir = Path(args.results_dir) / args.env_type / run_name
-    results_dir.mkdir(parents=True, exist_ok=True)
+    if args.resume_from is not None:
+        # Load checkpoint from previous run
+        resume_dir = Path(args.resume_from)
+        if not resume_dir.exists():
+            raise ValueError(f"Resume directory does not exist: {resume_dir}")
 
+        checkpoint_path = resume_dir / "models" / "checkpoint.pkl"
+        checkpoint_data = load_checkpoint(checkpoint_path)
+
+        # Use the same results directory
+        results_dir = resume_dir
+        start_step = checkpoint_data['gradient_step'] + 1  # Start from next step
+        metrics_history = checkpoint_data['metrics_history']
+
+        # Load the original args but keep the new training parameters
+        original_args = checkpoint_data['args']
+        # Update only the new training parameters (allow changing learning rate, num_steps, etc.)
+        for key in ['learning_rate', 'num_gradient_steps', 'log_freq', 'plot_freq', 'checkpoint_freq']:
+            if hasattr(args, key):
+                original_args[key] = getattr(args, key)
+
+        print(f"\n{'='*60}")
+        print(f"RESUMING TRAINING FROM: {results_dir}")
+        print(f"  Starting from step: {start_step}")
+        print(f"  Loaded metrics history: {len(metrics_history)} entries")
+        print(f"{'='*60}\n")
+    else:
+        # Set up new run
+        run_name = f"{args.env_type}__{args.exp_name}__{args.exp_number}__{args.seed}__{int(time.time())}"
+
+        # Create results directories
+        results_dir = Path(args.results_dir) / args.env_type / run_name
+        results_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"Results will be saved to: {results_dir}")
+
+    # Create subdirectories
     plots_dir = results_dir / "plots"
     plots_dir.mkdir(exist_ok=True)
 
     models_dir = results_dir / "models"
     models_dir.mkdir(exist_ok=True)
 
-    # Save args
+    # Save args (overwrite if resuming to track parameter changes)
     with open(results_dir / "args.json", 'w') as f:
         json.dump(vars(args), f, indent=2)
-    print(f"Results will be saved to: {results_dir}")
 
     # Seeding
     random.seed(args.seed)
@@ -623,27 +872,75 @@ def learn_eigenvectors(args):
     rng_key = jax.random.PRNGKey(args.seed)
     rng_key, encoder_key = jax.random.split(rng_key, 2)
 
-    # Create environment and collect data
-    env = create_gridworld_env(args)
-    transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
+    # Restore RNG state if resuming
+    if checkpoint_data is not None and 'rng_state' in checkpoint_data:
+        np.random.set_state(checkpoint_data['rng_state'])
 
-    gt_eigenvalues = eigendecomp['eigenvalues_real']
-    gt_eigenvectors = eigendecomp['right_eigenvectors_real']
+    # Load or create environment and data
+    if checkpoint_data is not None:
+        # Load saved data from previous run
+        print("Loading saved environment data...")
+        env = create_gridworld_env(args)
+
+        # Load saved eigenvectors and state coordinates
+        gt_eigenvalues = jnp.array(np.load(results_dir / "gt_eigenvalues.npy"))
+        gt_eigenvectors = jnp.array(np.load(results_dir / "gt_eigenvectors.npy"))
+        state_coords = jnp.array(np.load(results_dir / "state_coords.npy"))
+
+        # Load visualization metadata
+        with open(results_dir / "viz_metadata.pkl", 'rb') as f:
+            viz_metadata = pickle.load(f)
+        canonical_states = viz_metadata['canonical_states']
+
+        # Reconstruct door_config if it exists
+        door_config = None
+        door_config_path = results_dir / "door_config.pkl"
+        if door_config_path.exists():
+            with open(door_config_path, 'rb') as f:
+                door_config = pickle.load(f)
+
+        # Recreate replay buffer (much faster than recomputing everything)
+        # Note: We don't save/load the replay buffer; we recreate it
+        # This is acceptable since sampling is random anyway
+        replay_buffer = create_replay_buffer_only(env, canonical_states, args)
+
+        # Recreate data_env if doors were used
+        if door_config is not None and 'doors' in door_config:
+            from src.envs.door_gridworld import create_door_gridworld_from_base
+            data_env = create_door_gridworld_from_base(env, door_config['doors'], canonical_states)
+        else:
+            data_env = env
+
+        print("Loaded saved data successfully")
+    else:
+        # Create environment and collect data (new run)
+        env = create_gridworld_env(args)
+        transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
+
+        gt_eigenvalues = eigendecomp['eigenvalues_real']
+        gt_eigenvectors = eigendecomp['right_eigenvectors_real']
 
     print(f"\nState coordinates shape: {state_coords.shape}")
     print(f"Ground truth eigenvectors shape: {gt_eigenvectors.shape}")
 
-    # Save door configuration if doors were used
-    if door_config is not None:
-        door_save_path = results_dir / "door_config.pkl"
-        with open(door_save_path, 'wb') as f:
-            pickle.dump({
-                'doors': door_config['doors'],
-                'num_doors': door_config['num_doors'],
-                'total_reversible': door_config['total_reversible'],
-                'canonical_states': np.array(canonical_states),
-            }, f)
-        print(f"Door configuration saved to {door_save_path}")
+    # Save data for new runs (skip if resuming)
+    if checkpoint_data is None:
+        # Save door configuration if doors were used
+        if door_config is not None:
+            door_save_path = results_dir / "door_config.pkl"
+            with open(door_save_path, 'wb') as f:
+                pickle.dump({
+                    'doors': door_config['doors'],
+                    'num_doors': door_config['num_doors'],
+                    'total_reversible': door_config['total_reversible'],
+                    'canonical_states': np.array(canonical_states),
+                }, f)
+            print(f"Door configuration saved to {door_save_path}")
+
+        # Save ground truth eigendecomposition and state coords
+        np.save(results_dir / "gt_eigenvalues.npy", np.array(gt_eigenvalues))
+        np.save(results_dir / "gt_eigenvectors.npy", np.array(gt_eigenvectors))
+        np.save(results_dir / "state_coords.npy", np.array(state_coords))
 
     # Initialize the encoder
     encoder = CoordinateEncoder(
@@ -651,22 +948,6 @@ def learn_eigenvectors(args):
         hidden_dim=args.hidden_dim,
         num_hidden_layers=args.num_hidden_layers,
     )
-
-    # Initialize dual variables
-    if args.init_dual_diag:
-        initial_dual_mask = jnp.eye(args.num_eigenvectors)
-    else:
-        initial_dual_mask = jnp.tril(jnp.ones((args.num_eigenvectors, args.num_eigenvectors)))
-
-    # Create dummy input for initialization
-    dummy_input = state_coords[:1]  # (1, 2)
-
-    initial_params = {
-        'encoder': encoder.init(encoder_key, dummy_input),
-        'duals': args.duals_initial_val * initial_dual_mask,
-        'barrier_coefs': args.barrier_initial_val * jnp.ones((1, 1)),
-        'error_integral': jnp.zeros((args.num_eigenvectors, args.num_eigenvectors)),
-    }
 
     # Create optimizer
     encoder_tx = optax.adam(learning_rate=args.learning_rate)
@@ -691,11 +972,55 @@ def learn_eigenvectors(args):
         optax.masked(sgd_tx, other_mask)
     )
 
-    encoder_state = TrainState.create(
-        apply_fn=encoder.apply,
-        params=initial_params,
-        tx=tx,
-    )
+    # Initialize or restore encoder state
+    if checkpoint_data is not None:
+        # Restore from checkpoint
+        # Convert loaded arrays to JAX device arrays for optimal performance
+        import jax.tree_util as tree_util
+
+        def to_device_array(x):
+            """Ensure array is a JAX device array (optimized for GPU/TPU)."""
+            if isinstance(x, (jnp.ndarray, np.ndarray)):
+                # Force conversion to JAX array and materialize on device
+                return jnp.array(x)
+            return x
+
+        # Optimize loaded parameters and optimizer state
+        params_optimized = tree_util.tree_map(to_device_array, checkpoint_data['params'])
+        opt_state_optimized = tree_util.tree_map(to_device_array, checkpoint_data['opt_state'])
+
+        encoder_state = TrainState.create(
+            apply_fn=encoder.apply,
+            params=params_optimized,
+            tx=tx,
+        )
+        # Restore optimizer state
+        encoder_state = encoder_state.replace(opt_state=opt_state_optimized)
+        print("Restored encoder state from checkpoint (optimized for device)")
+    else:
+        # Initialize fresh
+        # Initialize dual variables
+        if args.init_dual_diag:
+            initial_dual_mask = jnp.eye(args.num_eigenvectors)
+        else:
+            initial_dual_mask = jnp.tril(jnp.ones((args.num_eigenvectors, args.num_eigenvectors)))
+
+        # Create dummy input for initialization
+        dummy_input = state_coords[:1]  # (1, 2)
+
+        initial_params = {
+            'encoder': encoder.init(encoder_key, dummy_input),
+            'duals': args.duals_initial_val * initial_dual_mask,
+            'barrier_coefs': args.barrier_initial_val * jnp.ones((1, 1)),
+            'error_integral': jnp.zeros((args.num_eigenvectors, args.num_eigenvectors)),
+        }
+
+        encoder_state = TrainState.create(
+            apply_fn=encoder.apply,
+            params=initial_params,
+            tx=tx,
+        )
+
     encoder.apply = jax.jit(encoder.apply)
 
     # Define the update function
@@ -748,28 +1073,19 @@ def learn_eigenvectors(args):
             error_matrix_1 = jnp.tril(inner_product_matrix_1 - jnp.eye(d))
             error_matrix_2 = jnp.tril(inner_product_matrix_2 - jnp.eye(d))
 
-            # Compute error matrices below threshold
-            cum_error_matrix_1_below_threshold = jax.lax.cond(
-                args.turn_off_above_threshold,
-                lambda x: check_previous_entries_below_threshold(x, args.cum_error_threshold),
-                lambda x: jnp.ones([x.shape[0], 1]),
-                error_matrix_1,
-            )
-            cum_error_matrix_1_below_threshold = jax.lax.stop_gradient(cum_error_matrix_1_below_threshold)
-
             # Compute dual loss
             error_integral = params['error_integral']
             dual_loss_pos = (
                 jax.lax.stop_gradient(dual_variables)
-                * cum_error_matrix_1_below_threshold * error_matrix_1
+                * error_matrix_1
             ).sum()
 
             dual_loss_P = jax.lax.stop_gradient(args.step_size_duals * error_matrix_1)
             dual_loss_I = args.step_size_duals_I * jax.lax.stop_gradient(error_integral)
-            dual_loss_neg = -(dual_variables * cum_error_matrix_1_below_threshold * (dual_loss_P + dual_loss_I)).sum()
+            dual_loss_neg = -(dual_variables * (dual_loss_P + dual_loss_I)).sum()
 
             # Compute barrier loss
-            quadratic_error_matrix = 2 * cum_error_matrix_1_below_threshold * error_matrix_1 * jax.lax.stop_gradient(error_matrix_2)
+            quadratic_error_matrix = 2 * error_matrix_1 * jax.lax.stop_gradient(error_matrix_2)
             quadratic_error = quadratic_error_matrix.sum()
             barrier_loss_pos = jax.lax.stop_gradient(barrier_coefficients[0, 0]) * quadratic_error
             barrier_loss_neg = -barrier_coefficients[0, 0] * jax.lax.stop_gradient(jnp.absolute(quadratic_error))
@@ -798,7 +1114,7 @@ def learn_eigenvectors(args):
             graph_perturbation = graph_perturbation.at[0, 0].set(0.0)
 
             # Compute graph drawing losses
-            diff = (phi - next_phi) * cum_error_matrix_1_below_threshold.reshape(1, -1)
+            diff = phi - next_phi
             graph_losses = 0.5 * ((diff) ** 2).mean(0, keepdims=True)
             graph_loss = (graph_losses + graph_perturbation).sum()
 
@@ -872,12 +1188,13 @@ def learn_eigenvectors(args):
         return new_encoder_state, allo, aux
 
     # Start the training process
-    print("\nStarting training...")
+    if checkpoint_data is None:
+        print("\nStarting training...")
+    else:
+        print(f"\nResuming training from step {start_step}...")
+
     start_time = time.time()
     num_states = state_coords.shape[0]
-
-    # Track metrics history
-    metrics_history = []
 
     # Convert doors to portal markers for visualization
     door_markers = {}
@@ -887,42 +1204,78 @@ def learn_eigenvectors(args):
             s_prime_full = int(canonical_states[s_prime_canonical])
             door_markers[(s_full, a_forward)] = s_prime_full
 
-    # Save visualization metadata for later plotting
-    viz_metadata = {
-        'canonical_states': np.array(canonical_states),
-        'grid_width': env.width,
-        'grid_height': env.height,
-        'door_markers': door_markers,
-        'num_eigenvectors': args.num_eigenvectors,
-        'geometric_gamma': args.geometric_gamma,
-    }
-    with open(results_dir / "viz_metadata.pkl", 'wb') as f:
-        pickle.dump(viz_metadata, f)
+    # Save visualization metadata for new runs (skip if resuming)
+    if checkpoint_data is None:
+        viz_metadata = {
+            'canonical_states': np.array(canonical_states),
+            'grid_width': env.width,
+            'grid_height': env.height,
+            'door_markers': door_markers,
+            'num_eigenvectors': args.num_eigenvectors,
+            'geometric_gamma': args.geometric_gamma,
+        }
+        with open(results_dir / "viz_metadata.pkl", 'wb') as f:
+            pickle.dump(viz_metadata, f)
 
-    # Save ground truth eigendecomposition for plotting
-    np.save(results_dir / "gt_eigenvalues.npy", np.array(gt_eigenvalues))
-    np.save(results_dir / "gt_eigenvectors.npy", np.array(gt_eigenvectors))
+        # Optionally plot ground truth eigenvectors immediately
+        if args.plot_during_training:
+            # Need to create eigendecomp for visualization
+            eigendecomp_viz = {
+                'eigenvalues': gt_eigenvalues.astype(jnp.complex64),
+                'eigenvalues_real': gt_eigenvalues,
+                'eigenvalues_imag': jnp.zeros_like(gt_eigenvalues),
+                'right_eigenvectors_real': gt_eigenvectors,
+                'right_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors),
+                'left_eigenvectors_real': gt_eigenvectors,
+                'left_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors),
+            }
+            visualize_multiple_eigenvectors(
+                eigenvector_indices=list(range(args.num_eigenvectors)),
+                eigendecomposition=eigendecomp_viz,
+                canonical_states=canonical_states,
+                grid_width=env.width,
+                grid_height=env.height,
+                portals=door_markers if door_markers else None,
+                eigenvector_type='right',
+                component='real',
+                ncols=min(4, args.num_eigenvectors),
+                wall_color='gray',
+                save_path=str(plots_dir / "ground_truth_eigenvectors.png"),
+                shared_colorbar=True
+            )
+            plt.close()
 
-    # Optionally plot ground truth eigenvectors immediately
-    if args.plot_during_training:
-        visualize_multiple_eigenvectors(
-            eigenvector_indices=list(range(args.num_eigenvectors)),
-            eigendecomposition=eigendecomp,
-            canonical_states=canonical_states,
-            grid_width=env.width,
-            grid_height=env.height,
-            portals=door_markers if door_markers else None,
-            eigenvector_type='right',
-            component='real',
-            ncols=min(4, args.num_eigenvectors),
-            wall_color='gray',
-            save_path=str(plots_dir / "ground_truth_eigenvectors.png"),
-            shared_colorbar=True
+    # Warmup: trigger JIT compilation with loaded checkpoint state
+    if checkpoint_data is not None:
+        print("Running warmup step to trigger JIT compilation with loaded state...")
+        # Sample a small batch for warmup
+        warmup_batch = replay_buffer.sample(min(args.batch_size, 32), discount=args.geometric_gamma)
+        warmup_indices = jnp.array(warmup_batch.obs)
+        warmup_next_indices = jnp.array(warmup_batch.next_obs)
+        warmup_coords = state_coords[warmup_indices]
+        warmup_next_coords = state_coords[warmup_next_indices]
+
+        # Run one update to compile with the loaded state (discard result)
+        warmup_state, warmup_loss, _ = update_encoder(
+            encoder_state,
+            warmup_coords,
+            warmup_next_coords,
+            warmup_coords,  # Use same batch for second set
         )
-        plt.close()
 
-    for gradient_step in tqdm(range(args.num_gradient_steps)):
+        # Block until compilation is complete
+        jax.block_until_ready(warmup_state.params)
+        print("Warmup complete - JIT compilation finished")
+        # Note: We discard warmup_state and continue with the original encoder_state
+
+    # Timing diagnostics for performance debugging
+    timing_samples = {'sample': [], 'update': [], 'log': [], 'total': []}
+
+    for gradient_step in tqdm(range(start_step, args.num_gradient_steps)):
+        step_start = time.time()
+
         # Sample batches from episodic replay buffer using truncated geometric distribution
+        sample_start = time.time()
         batch1 = replay_buffer.sample(args.batch_size, discount=args.geometric_gamma)
         batch2 = replay_buffer.sample(args.batch_size, discount=args.geometric_gamma)
 
@@ -935,50 +1288,89 @@ def learn_eigenvectors(args):
         coords_batch = state_coords[state_indices]
         next_coords_batch = state_coords[next_state_indices]
         coords_batch_2 = state_coords[state_indices_2]
+        sample_time = time.time() - sample_start
 
         # Update
+        update_start = time.time()
         encoder_state, allo, metrics = update_encoder(
             encoder_state,
             coords_batch,
             next_coords_batch,
             coords_batch_2,
         )
+        # Block until GPU computation completes for accurate timing
+        jax.block_until_ready(encoder_state.params)
+        update_time = time.time() - update_start
 
         # Logging
         is_log_step = (
             ((gradient_step % args.log_freq) == 0)
             or (gradient_step == args.num_gradient_steps - 1)
         )
+        log_start = time.time()
         if is_log_step:
+            # Compute learned eigenvectors on all states for cosine similarity
+            learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
+
+            # Compute cosine similarities with ground truth
+            cosine_sims = compute_cosine_similarities(learned_features, gt_eigenvectors)
+
             # Store metrics
+            elapsed_time = time.time() - start_time
+            steps_completed = gradient_step - start_step
             metrics_dict = {
                 "gradient_step": gradient_step,
                 "allo": float(allo.item()),
-                "sps": int(gradient_step / (time.time() - start_time)),
+                "sps": int(steps_completed / max(elapsed_time, 1e-6)),  # Steps since start/resume
             }
             for k, v in metrics.items():
                 metrics_dict[k] = float(v.item())
+
+            # Add cosine similarities to metrics
+            metrics_dict.update(cosine_sims)
+
             metrics_history.append(metrics_dict)
 
             if gradient_step % (args.log_freq * 10) == 0:
                 print(f"Step {gradient_step}: loss={allo.item():.4f}, "
-                      f"total_error={metrics['total_error'].item():.4f}")
+                      f"total_error={metrics['total_error'].item():.4f}, "
+                      f"cosine_sim_avg={cosine_sims['cosine_sim_avg']:.4f}")
+        log_time = time.time() - log_start
 
-        # Export learned eigenvectors periodically
+        # Collect timing samples (last 1000 steps for statistics)
+        step_total_time = time.time() - step_start
+        timing_samples['sample'].append(sample_time)
+        timing_samples['update'].append(update_time)
+        timing_samples['log'].append(log_time)
+        timing_samples['total'].append(step_total_time)
+
+        # Keep only recent samples to avoid memory growth
+        for key in timing_samples:
+            if len(timing_samples[key]) > 1000:
+                timing_samples[key] = timing_samples[key][-1000:]
+
+        # Report timing statistics periodically
+        if gradient_step > 0 and gradient_step % (args.log_freq * 10) == 0:
+            avg_update = np.mean(timing_samples['update'][-100:]) * 1000  # ms
+            avg_sample = np.mean(timing_samples['sample'][-100:]) * 1000  # ms
+            avg_total = np.mean(timing_samples['total'][-100:]) * 1000  # ms
+            print(f"  Timing (avg last 100 steps): sample={avg_sample:.2f}ms, "
+                  f"update={avg_update:.2f}ms, total={avg_total:.2f}ms")
+
+        # Save metrics history and optionally plot periodically
         is_plot_step = (
             ((gradient_step % args.plot_freq) == 0 and gradient_step > 0)
             or (gradient_step == args.num_gradient_steps - 1)
         )
         if is_plot_step:
-            # Compute learned eigenvectors on all states
-            learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
-
-            # Export learned eigenvectors for later plotting
-            np.save(results_dir / f"learned_eigenvectors_step_{gradient_step}.npy", np.array(learned_features))
-
-            # Also save metrics history periodically (for live plotting)
+            # Save metrics history periodically (for live plotting)
+            # Note: Saving without indent is much faster for large histories
             with open(results_dir / "metrics_history.json", 'w') as f:
-                json.dump(metrics_history, f, indent=2)
+                json.dump(metrics_history, f)
+
+            # Compute and save latest learned eigenvectors (overwrite each time)
+            learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
+            np.save(results_dir / "latest_learned_eigenvectors.npy", np.array(learned_features))
 
             # Optionally create plots during training (slower)
             if args.plot_during_training:
@@ -1004,7 +1396,7 @@ def learn_eigenvectors(args):
                     component='real',
                     ncols=min(4, args.num_eigenvectors),
                     wall_color='gray',
-                    save_path=str(plots_dir / f"learned_eigenvectors_step_{gradient_step}.png"),
+                    save_path=str(plots_dir / "learned_eigenvectors_latest.png"),
                     shared_colorbar=True
                 )
                 plt.close()
@@ -1020,10 +1412,36 @@ def learn_eigenvectors(args):
                     str(plots_dir / "dual_variable_evolution.png"),
                     num_eigenvectors=args.num_eigenvectors
                 )
+
+                # Plot cosine similarity evolution
+                plot_cosine_similarity_evolution(
+                    metrics_history,
+                    str(plots_dir / "cosine_similarity_evolution.png"),
+                    num_eigenvectors=args.num_eigenvectors
+                )
             else:
                 # Just log progress
                 if gradient_step % (args.plot_freq * 5) == 0:
-                    print(f"Exported learned eigenvectors at step {gradient_step}")
+                    print(f"Saved metrics at step {gradient_step}")
+
+        # Save checkpoint periodically
+        is_checkpoint_step = (
+            ((gradient_step % args.checkpoint_freq) == 0 and gradient_step > 0)
+            or (gradient_step == args.num_gradient_steps - 1)
+        )
+        if is_checkpoint_step:
+            checkpoint_path = models_dir / "checkpoint.pkl"
+            # Note: As metrics_history grows, checkpoint saving may take longer
+            # Consider saving only recent metrics if this becomes a bottleneck
+            save_checkpoint(
+                encoder_state=encoder_state,
+                metrics_history=metrics_history,
+                gradient_step=gradient_step,
+                save_path=checkpoint_path,
+                args=args,
+                rng_state=np.random.get_state()
+            )
+            print(f"  Checkpoint size: {len(metrics_history)} metric entries")
 
     print("\nTraining complete!")
 
