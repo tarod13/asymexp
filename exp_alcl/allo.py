@@ -126,6 +126,36 @@ def compute_successor_representation(
     return sr_matrix
 
 
+def compute_sampling_distribution(
+    transition_counts: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Compute the empirical sampling distribution from transition counts.
+
+    Args:
+        transition_counts: Shape [num_states, num_actions, num_states] or [num_states, num_states]
+
+    Returns:
+        Diagonal matrix D where D_{ii} is the empirical sampling probability of state i
+    """
+    # Sum over actions and next states to get visit counts per state
+    if len(transition_counts.shape) == 3:
+        # Sum over actions and next states
+        state_visit_counts = jnp.sum(transition_counts, axis=(1, 2))
+    else:
+        # Sum over next states
+        state_visit_counts = jnp.sum(transition_counts, axis=1)
+
+    # Normalize to get probabilities
+    total_visits = jnp.sum(state_visit_counts)
+    sampling_probs = state_visit_counts / total_visits
+
+    # Create diagonal matrix
+    D = jnp.diag(sampling_probs)
+
+    return D
+
+
 def compute_symmetrized_laplacian(
     transition_matrix: jnp.ndarray,
     gamma: float,
@@ -133,7 +163,7 @@ def compute_symmetrized_laplacian(
     """
     Compute the symmetrized Laplacian L = I - (1-γ)(SR_γ + SR_γ^T)/2.
 
-    This is the actual matrix whose eigenvectors the algorithm learns.
+    This is a simplified version that assumes uniform sampling distribution.
 
     Args:
         transition_matrix: Shape [num_states, num_states], stochastic transition matrix P
@@ -153,6 +183,40 @@ def compute_symmetrized_laplacian(
 
     # Compute Laplacian: L = I - (1-γ)(SR_γ + SR_γ^T)/2
     laplacian = identity - (1 - gamma) * sr_symmetrized
+
+    return laplacian
+
+
+def compute_weighted_symmetrized_laplacian(
+    transition_matrix: jnp.ndarray,
+    sampling_distribution: jnp.ndarray,
+    gamma: float,
+) -> jnp.ndarray:
+    """
+    Compute the weighted symmetrized Laplacian L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2.
+
+    This version accounts for non-uniform sampling distribution D.
+
+    Args:
+        transition_matrix: Shape [num_states, num_states], stochastic transition matrix P
+        sampling_distribution: Shape [num_states, num_states], diagonal matrix D with sampling probabilities
+        gamma: Discount factor used in successor representation
+
+    Returns:
+        Weighted symmetrized Laplacian of shape [num_states, num_states]
+    """
+    # Compute successor representation SR_γ = (I - γP)^(-1)
+    sr_matrix = compute_successor_representation(transition_matrix, gamma)
+
+    # Compute DSR_γ and SR_γ^TD^T
+    D_SR = sampling_distribution @ sr_matrix
+    SR_D_T = sr_matrix.T @ sampling_distribution.T
+
+    # Symmetrize: (DSR_γ + SR_γ^TD^T)/2
+    weighted_sr_symmetrized = (D_SR + SR_D_T) / 2.0
+
+    # Compute Laplacian: L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
+    laplacian = sampling_distribution - (1 - gamma) * weighted_sr_symmetrized
 
     return laplacian
 
@@ -371,12 +435,13 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
     print(f"Learning curves saved to {save_path}")
 
 
-def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamma, save_path, num_eigenvectors=11):
+def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamma, save_path,
+                                  num_eigenvectors=11, ground_truth_eigenvalues_simple=None):
     """
     Plot the evolution of dual variables (Laplacian eigenvalue estimates) vs ground truth eigenvalues.
 
-    The duals are eigenvalues of the symmetrized Laplacian L = I - (SR_γ + SR_γ^T)/2,
-    where SR_γ is the successor representation with discount gamma.
+    The duals are eigenvalues of the weighted Laplacian L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2,
+    where SR_γ is the successor representation with discount gamma and D is the sampling distribution.
 
     The 0.5 factor arises from the sampling scheme with the episodic replay buffer,
     which samples (s_t, s_{t+k}) pairs where k is geometrically distributed. This
@@ -384,10 +449,11 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
 
     Args:
         metrics_history: List of metric dictionaries
-        ground_truth_eigenvalues: Array of ground truth eigenvalues of the Laplacian L
+        ground_truth_eigenvalues: Array of ground truth eigenvalues of the weighted Laplacian
         gamma: Discount factor used in the successor representation (not used in this version)
         save_path: Path to save the plot
         num_eigenvectors: Number of eigenvectors to plot
+        ground_truth_eigenvalues_simple: Optional array of simple Laplacian eigenvalues for comparison
     """
     steps = [m['gradient_step'] for m in metrics_history]
     num_plot = min(num_eigenvectors, len(ground_truth_eigenvalues))
@@ -409,17 +475,24 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
 
             ax1.plot(steps, dual_values_scaled, label=f'Learned λ_{i}', color=colors[i], linewidth=1.5)
 
-            # Plot ground truth as horizontal dashed line
+            # Plot weighted Laplacian ground truth as solid horizontal line
             gt_value = float(ground_truth_eigenvalues[i].real)
-            ax1.axhline(y=gt_value, color=colors[i], linestyle='--', alpha=0.5, linewidth=1.5)
+            ax1.axhline(y=gt_value, color=colors[i], linestyle='-', alpha=0.3, linewidth=2.5,
+                       label=f'GT Weighted λ_{i}' if i == 0 else '')
+
+            # Plot simple Laplacian ground truth as dashed line if provided
+            if ground_truth_eigenvalues_simple is not None:
+                gt_simple_value = float(ground_truth_eigenvalues_simple[i].real)
+                ax1.axhline(y=gt_simple_value, color=colors[i], linestyle='--', alpha=0.3, linewidth=1.5,
+                           label=f'GT Simple λ_{i}' if i == 0 else '')
 
     ax1.set_xlabel('Gradient Step', fontsize=12)
     ax1.set_ylabel('Laplacian Eigenvalue', fontsize=12)
-    ax1.set_title('Learned Laplacian Eigenvalues (solid) vs Ground Truth (dashed)', fontsize=14)
+    ax1.set_title('Learned Eigenvalues vs Ground Truth (solid=weighted, dashed=simple)', fontsize=14)
     ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
     ax1.grid(True, alpha=0.3)
 
-    # Plot 2: Absolute errors
+    # Plot 2: Absolute errors for both versions
     ax2 = axes[1]
 
     for i in range(num_plot):
@@ -430,13 +503,21 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
             # Apply 0.5 factor due to sampling scheme
             dual_values_scaled = 0.5 * dual_values
 
+            # Error vs weighted Laplacian
             gt_value = float(ground_truth_eigenvalues[i].real)
             errors = np.abs(dual_values_scaled - gt_value)
-            ax2.plot(steps, errors, label=f'|Learned λ_{i} - GT λ_{i}|', color=colors[i], linewidth=1.5)
+            ax2.plot(steps, errors, label=f'vs Weighted λ_{i}', color=colors[i], linewidth=1.5, linestyle='-')
+
+            # Error vs simple Laplacian if provided
+            if ground_truth_eigenvalues_simple is not None:
+                gt_simple_value = float(ground_truth_eigenvalues_simple[i].real)
+                errors_simple = np.abs(dual_values_scaled - gt_simple_value)
+                ax2.plot(steps, errors_simple, label=f'vs Simple λ_{i}', color=colors[i],
+                        linewidth=1.5, linestyle='--', alpha=0.5)
 
     ax2.set_xlabel('Gradient Step', fontsize=12)
     ax2.set_ylabel('Absolute Error', fontsize=12)
-    ax2.set_title('Absolute Errors in Laplacian Eigenvalue Estimates', fontsize=14)
+    ax2.set_title('Absolute Errors (solid=weighted, dashed=simple)', fontsize=14)
     ax2.set_yscale('log')
     ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
     ax2.grid(True, alpha=0.3, which='both')
@@ -700,12 +781,17 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     """
     Collect transition data and compute ground truth eigenvectors.
 
+    Computes eigenvalues for both:
+    - Simple Laplacian: L = I - (1-γ)(SR_γ + SR_γ^T)/2
+    - Weighted Laplacian: L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
+
     Args:
         env: Base environment (possibly with doors already applied)
 
     Returns:
-        laplacian_matrix: Symmetrized Laplacian L = I - (SR_γ + SR_γ^T)/2
-        eigendecomp: Dictionary with eigenvalues and eigenvectors of the Laplacian
+        laplacian_matrix: Weighted Laplacian L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
+        eigendecomp: Dictionary with eigenvalues and eigenvectors of the weighted Laplacian
+        eigendecomp_simple: Dictionary with eigenvalues and eigenvectors of the simple Laplacian
         state_coords: Array of (x,y) coordinates for each state
         canonical_states: Array of free state indices
         doors: Door configuration (if use_doors=True)
@@ -803,21 +889,44 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print("\nBuilding transition matrix...")
     transition_matrix = get_transition_matrix(transition_counts)
 
-    # Compute the symmetrized Laplacian L = I - (1-γ)(SR_γ + SR_γ^T)/2
-    # This is the actual matrix whose eigenvectors the algorithm learns
-    print(f"Computing symmetrized Laplacian with gamma={args.gamma}...")
-    laplacian_matrix = compute_symmetrized_laplacian(transition_matrix, args.gamma)
+    # Compute sampling distribution D
+    print("Computing empirical sampling distribution...")
+    sampling_distribution = compute_sampling_distribution(transition_counts)
+    sampling_probs = jnp.diag(sampling_distribution)
+    print(f"  Sampling prob range: [{sampling_probs.min():.6f}, {sampling_probs.max():.6f}]")
+    print(f"  Sampling prob std: {sampling_probs.std():.6f}")
 
-    # Compute eigendecomposition of the Laplacian
-    print(f"Computing eigendecomposition of Laplacian (top {args.num_eigenvectors} eigenvectors)...")
-    eigendecomp = compute_symmetrized_eigendecomposition(
-        laplacian_matrix,
+    # Compute BOTH Laplacian versions for comparison
+    print(f"\nComputing Laplacians with gamma={args.gamma}...")
+
+    # Version 1: Simple Laplacian L = I - (1-γ)(SR_γ + SR_γ^T)/2
+    print("  Computing simple Laplacian L = I - (1-γ)(SR_γ + SR_γ^T)/2...")
+    laplacian_simple = compute_symmetrized_laplacian(transition_matrix, args.gamma)
+    eigendecomp_simple = compute_symmetrized_eigendecomposition(
+        laplacian_simple,
         k=args.num_eigenvectors,
     )
 
-    print(f"Top {min(5, args.num_eigenvectors)} eigenvalues:")
+    # Version 2: Weighted Laplacian L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
+    print("  Computing weighted Laplacian L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2...")
+    laplacian_weighted = compute_weighted_symmetrized_laplacian(
+        transition_matrix, sampling_distribution, args.gamma
+    )
+    eigendecomp_weighted = compute_symmetrized_eigendecomposition(
+        laplacian_weighted,
+        k=args.num_eigenvectors,
+    )
+
+    # Use the weighted version as the main baseline (what the algorithm actually learns)
+    laplacian_matrix = laplacian_weighted
+    eigendecomp = eigendecomp_weighted
+
+    print(f"\nTop {min(5, args.num_eigenvectors)} eigenvalues comparison:")
+    print("  Simple Laplacian | Weighted Laplacian")
     for i in range(min(5, args.num_eigenvectors)):
-        print(f"  λ_{i}: {eigendecomp['eigenvalues'][i]:.6f}")
+        simple_ev = eigendecomp_simple['eigenvalues'][i]
+        weighted_ev = eigendecomp_weighted['eigenvalues'][i]
+        print(f"  λ_{i}: {simple_ev:.6f} | {weighted_ev:.6f}")
 
     # Create state coordinate mapping (only for canonical/free states)
     state_coords = []
@@ -842,7 +951,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print(f"  Coordinate range: x=[{state_coords[:, 0].min():.3f}, {state_coords[:, 0].max():.3f}], "
           f"y=[{state_coords[:, 1].min():.3f}, {state_coords[:, 1].max():.3f}]")
 
-    return laplacian_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env, replay_buffer
+    return laplacian_matrix, eigendecomp, eigendecomp_simple, state_coords, canonical_states, door_config, data_env, replay_buffer
 
 
 def learn_eigenvectors(args):
@@ -922,6 +1031,12 @@ def learn_eigenvectors(args):
         # Load saved eigenvectors and state coordinates
         gt_eigenvalues = jnp.array(np.load(results_dir / "gt_eigenvalues.npy"))
         gt_eigenvectors = jnp.array(np.load(results_dir / "gt_eigenvectors.npy"))
+        # Try to load simple eigenvalues if they exist
+        simple_eigenvalues_path = results_dir / "gt_eigenvalues_simple.npy"
+        if simple_eigenvalues_path.exists():
+            gt_eigenvalues_simple = jnp.array(np.load(simple_eigenvalues_path))
+        else:
+            gt_eigenvalues_simple = None
         state_coords = jnp.array(np.load(results_dir / "state_coords.npy"))
 
         # Load visualization metadata
@@ -952,10 +1067,12 @@ def learn_eigenvectors(args):
     else:
         # Create environment and collect data (new run)
         env = create_gridworld_env(args)
-        laplacian_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
+        laplacian_matrix, eigendecomp, eigendecomp_simple, state_coords, canonical_states, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
 
         gt_eigenvalues = eigendecomp['eigenvalues_real']
         gt_eigenvectors = eigendecomp['right_eigenvectors_real']
+        gt_eigenvalues_simple = eigendecomp_simple['eigenvalues_real']
+        gt_eigenvectors_simple = eigendecomp_simple['right_eigenvectors_real']
 
     print(f"\nState coordinates shape: {state_coords.shape}")
     print(f"Ground truth eigenvectors shape: {gt_eigenvectors.shape}")
@@ -975,8 +1092,13 @@ def learn_eigenvectors(args):
             print(f"Door configuration saved to {door_save_path}")
 
         # Save ground truth eigendecomposition and state coords
+        # Weighted Laplacian (main baseline)
         np.save(results_dir / "gt_eigenvalues.npy", np.array(gt_eigenvalues))
         np.save(results_dir / "gt_eigenvectors.npy", np.array(gt_eigenvectors))
+        # Simple Laplacian (for comparison)
+        np.save(results_dir / "gt_eigenvalues_simple.npy", np.array(gt_eigenvalues_simple))
+        np.save(results_dir / "gt_eigenvectors_simple.npy", np.array(gt_eigenvectors_simple))
+        # State coordinates
         np.save(results_dir / "state_coords.npy", np.array(state_coords))
 
     # Initialize the encoder
@@ -1447,7 +1569,8 @@ def learn_eigenvectors(args):
                     gt_eigenvalues,
                     args.gamma,
                     str(plots_dir / "dual_variable_evolution.png"),
-                    num_eigenvectors=args.num_eigenvectors
+                    num_eigenvectors=args.num_eigenvectors,
+                    ground_truth_eigenvalues_simple=gt_eigenvalues_simple if 'gt_eigenvalues_simple' in locals() else None
                 )
 
                 # Plot cosine similarity evolution
