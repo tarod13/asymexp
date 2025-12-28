@@ -131,7 +131,7 @@ def compute_symmetrized_laplacian(
     gamma: float,
 ) -> jnp.ndarray:
     """
-    Compute the symmetrized Laplacian L = I - (SR_γ + SR_γ^T)/2.
+    Compute the symmetrized Laplacian L = I - (1-γ)(SR_γ + SR_γ^T)/2.
 
     This is the actual matrix whose eigenvectors the algorithm learns.
 
@@ -151,8 +151,8 @@ def compute_symmetrized_laplacian(
     # Symmetrize: (SR_γ + SR_γ^T)/2
     sr_symmetrized = (sr_matrix + sr_matrix.T) / 2.0
 
-    # Compute Laplacian: L = I - (SR_γ + SR_γ^T)/2
-    laplacian = identity - sr_symmetrized
+    # Compute Laplacian: L = I - (1-γ)(SR_γ + SR_γ^T)/2
+    laplacian = identity - (1 - gamma) * sr_symmetrized
 
     return laplacian
 
@@ -183,8 +183,8 @@ def compute_symmetrized_eigendecomposition(
     # Compute eigendecomposition (for symmetric matrices, use eigh for better stability)
     eigenvalues, eigenvectors = jnp.linalg.eigh(transition_matrix)
 
-    # Sort by descending eigenvalue magnitude
-    sorted_indices = jnp.argsort(-jnp.abs(eigenvalues))
+    # Sort by ascending eigenvalue magnitude
+    sorted_indices = jnp.argsort(jnp.abs(eigenvalues))
     eigenvalues = eigenvalues[sorted_indices]
     eigenvectors = eigenvectors[:, sorted_indices]
 
@@ -235,10 +235,9 @@ class Args:
     learning_rate: float = 3e-4
     batch_size: int = 256
     num_gradient_steps: int = 20000
-    gamma: float = 0.99
+    gamma: float = 0.2  # Discount factor for successor representation
 
     # Episodic replay buffer
-    geometric_gamma: float = 0.2  # Decay for truncated geometric distribution (higher = prefer shorter time gaps)
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
 
     # Augmented Lagrangian parameters
@@ -804,7 +803,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print("\nBuilding transition matrix...")
     transition_matrix = get_transition_matrix(transition_counts)
 
-    # Compute the symmetrized Laplacian L = I - (SR_γ + SR_γ^T)/2
+    # Compute the symmetrized Laplacian L = I - (1-γ)(SR_γ + SR_γ^T)/2
     # This is the actual matrix whose eigenvectors the algorithm learns
     print(f"Computing symmetrized Laplacian with gamma={args.gamma}...")
     laplacian_matrix = compute_symmetrized_laplacian(transition_matrix, args.gamma)
@@ -1250,7 +1249,7 @@ def learn_eigenvectors(args):
             'grid_height': env.height,
             'door_markers': door_markers,
             'num_eigenvectors': args.num_eigenvectors,
-            'geometric_gamma': args.geometric_gamma,
+            'gamma': args.gamma,
         }
         with open(results_dir / "viz_metadata.pkl", 'wb') as f:
             pickle.dump(viz_metadata, f)
@@ -1287,7 +1286,7 @@ def learn_eigenvectors(args):
     if checkpoint_data is not None:
         print("Running warmup step to trigger JIT compilation with loaded state...")
         # Sample a small batch for warmup
-        warmup_batch = replay_buffer.sample(min(args.batch_size, 32), discount=args.geometric_gamma)
+        warmup_batch = replay_buffer.sample(min(args.batch_size, 32), discount=args.gamma)
         warmup_indices = jnp.array(warmup_batch.obs)
         warmup_next_indices = jnp.array(warmup_batch.next_obs)
         warmup_coords = state_coords[warmup_indices]
@@ -1314,8 +1313,8 @@ def learn_eigenvectors(args):
 
         # Sample batches from episodic replay buffer using truncated geometric distribution
         sample_start = time.time()
-        batch1 = replay_buffer.sample(args.batch_size, discount=args.geometric_gamma)
-        batch2 = replay_buffer.sample(args.batch_size, discount=args.geometric_gamma)
+        batch1 = replay_buffer.sample(args.batch_size, discount=args.gamma)
+        batch2 = replay_buffer.sample(args.batch_size, discount=args.gamma)
 
         # Extract state indices (canonical state indices)
         state_indices = jnp.array(batch1.obs)
@@ -1446,7 +1445,7 @@ def learn_eigenvectors(args):
                 plot_dual_variable_evolution(
                     metrics_history,
                     gt_eigenvalues,
-                    args.geometric_gamma,
+                    args.gamma,
                     str(plots_dir / "dual_variable_evolution.png"),
                     num_eigenvectors=args.num_eigenvectors
                 )
