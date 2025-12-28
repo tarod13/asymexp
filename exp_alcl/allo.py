@@ -710,6 +710,8 @@ def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_
     """
     Plot the evolution of cosine similarities between learned and ground truth eigenvectors.
 
+    Plots comparisons against both weighted and simple Laplacian baselines if available.
+
     Args:
         metrics_history: List of metric dictionaries containing cosine similarity values
         save_path: Path to save the plot
@@ -717,31 +719,50 @@ def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_
     """
     steps = [m['gradient_step'] for m in metrics_history]
 
+    # Check if we have both weighted and simple comparisons
+    has_weighted = 'cosine_sim_avg_weighted' in metrics_history[0]
+    has_simple = 'cosine_sim_avg_simple' in metrics_history[0]
+    has_legacy = 'cosine_sim_avg' in metrics_history[0]  # Old format without _weighted suffix
+
     # Determine number of eigenvectors to plot
     if num_eigenvectors is None:
-        # Count how many cosine_sim_i keys exist
-        num_eigenvectors = sum(1 for key in metrics_history[0].keys() if key.startswith('cosine_sim_') and key != 'cosine_sim_avg')
+        # Count how many cosine_sim_i keys exist (check all variants)
+        if has_weighted:
+            num_eigenvectors = sum(1 for key in metrics_history[0].keys()
+                                 if key.startswith('cosine_sim_') and key.endswith('_weighted')
+                                 and 'avg' not in key)
+        elif has_legacy:
+            num_eigenvectors = sum(1 for key in metrics_history[0].keys()
+                                 if key.startswith('cosine_sim_') and key != 'cosine_sim_avg')
+        else:
+            num_eigenvectors = 0
 
     fig, ax = plt.subplots(1, 1, figsize=(12, 8))
 
-    # Use a colormap for different eigenvectors
-    colors = plt.cm.viridis(np.linspace(0, 1, num_eigenvectors + 1))
+    # Plot average cosine similarities
+    if has_weighted:
+        avg_values_weighted = [m['cosine_sim_avg_weighted'] for m in metrics_history]
+        ax.plot(steps, avg_values_weighted, label='Avg vs Weighted Laplacian',
+                color='blue', linewidth=2.5, linestyle='-')
 
-    # Plot cosine similarity for each component
-    for i in range(num_eigenvectors):
-        key = f'cosine_sim_{i}'
-        if key in metrics_history[0]:
-            values = [m[key] for m in metrics_history]
-            ax.plot(steps, values, label=f'Component {i}', color=colors[i], linewidth=1.5, alpha=0.7)
+    if has_simple:
+        avg_values_simple = [m['cosine_sim_avg_simple'] for m in metrics_history]
+        ax.plot(steps, avg_values_simple, label='Avg vs Simple Laplacian',
+                color='red', linewidth=2.5, linestyle='--')
 
-    # Plot average cosine similarity with thicker line
-    if 'cosine_sim_avg' in metrics_history[0]:
+    if has_legacy and not has_weighted:
+        # Old format compatibility
         avg_values = [m['cosine_sim_avg'] for m in metrics_history]
-        ax.plot(steps, avg_values, label='Average', color='black', linewidth=2.5, linestyle='--')
+        ax.plot(steps, avg_values, label='Average', color='black', linewidth=2.5, linestyle='-')
 
     ax.set_xlabel('Gradient Step', fontsize=12)
     ax.set_ylabel('Absolute Cosine Similarity', fontsize=12)
-    ax.set_title('Evolution of Absolute Cosine Similarity between Learned and Ground Truth Eigenvectors', fontsize=14)
+
+    if has_weighted and has_simple:
+        ax.set_title('Cosine Similarity: Learned vs Both Laplacian Baselines', fontsize=14)
+    else:
+        ax.set_title('Evolution of Absolute Cosine Similarity between Learned and Ground Truth Eigenvectors', fontsize=14)
+
     ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
     ax.grid(True, alpha=0.3)
     ax.set_ylim([0, 1.05])  # Cosine similarity is in [0, 1]
@@ -1577,8 +1598,14 @@ def learn_eigenvectors(args):
             # Compute learned eigenvectors on all states for cosine similarity
             learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
 
-            # Compute cosine similarities with ground truth
-            cosine_sims = compute_cosine_similarities(learned_features, gt_eigenvectors)
+            # Compute cosine similarities with ground truth (weighted Laplacian)
+            cosine_sims_weighted = compute_cosine_similarities(learned_features, gt_eigenvectors)
+
+            # Compute cosine similarities with simple Laplacian if available
+            if 'gt_eigenvectors_simple' in locals() and gt_eigenvectors_simple is not None:
+                cosine_sims_simple = compute_cosine_similarities(learned_features, gt_eigenvectors_simple)
+            else:
+                cosine_sims_simple = None
 
             # Store metrics
             elapsed_time = time.time() - start_time
@@ -1591,15 +1618,24 @@ def learn_eigenvectors(args):
             for k, v in metrics.items():
                 metrics_dict[k] = float(v.item())
 
-            # Add cosine similarities to metrics
-            metrics_dict.update(cosine_sims)
+            # Add cosine similarities to metrics (weighted Laplacian)
+            for k, v in cosine_sims_weighted.items():
+                metrics_dict[f'{k}_weighted'] = v
+
+            # Add cosine similarities for simple Laplacian if available
+            if cosine_sims_simple is not None:
+                for k, v in cosine_sims_simple.items():
+                    metrics_dict[f'{k}_simple'] = v
 
             metrics_history.append(metrics_dict)
 
             if gradient_step % (args.log_freq * 10) == 0:
+                weighted_sim = cosine_sims_weighted['cosine_sim_avg']
+                simple_sim = cosine_sims_simple['cosine_sim_avg'] if cosine_sims_simple else 'N/A'
                 print(f"Step {gradient_step}: loss={allo.item():.4f}, "
                       f"total_error={metrics['total_error'].item():.4f}, "
-                      f"cosine_sim_avg={cosine_sims['cosine_sim_avg']:.4f}")
+                      f"cosine_sim_weighted={weighted_sim:.4f}, "
+                      f"cosine_sim_simple={simple_sim}")
         log_time = time.time() - log_start
 
         # Collect timing samples (last 1000 steps for statistics)
