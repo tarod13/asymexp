@@ -528,6 +528,84 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
     print(f"Dual variable evolution plot saved to {save_path}")
 
 
+def plot_sampling_distribution(
+    sampling_probs: jnp.ndarray,
+    canonical_states: jnp.ndarray,
+    grid_width: int,
+    grid_height: int,
+    save_path: str,
+    portals: dict = None,
+):
+    """
+    Visualize the empirical sampling distribution D on the grid.
+
+    Args:
+        sampling_probs: 1D array of sampling probabilities for each canonical state
+        canonical_states: Array of canonical state indices
+        grid_width: Width of the grid
+        grid_height: Height of the grid
+        save_path: Path to save the visualization
+        portals: Optional dictionary of portal/door markers
+    """
+    fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+
+    # Create a full grid initialized with NaN for obstacles
+    grid_values = np.full((grid_height, grid_width), np.nan)
+
+    # Fill in the sampling probabilities for canonical states
+    for canon_idx, full_state_idx in enumerate(canonical_states):
+        y = int(full_state_idx) // grid_width
+        x = int(full_state_idx) % grid_width
+        grid_values[y, x] = float(sampling_probs[canon_idx])
+
+    # Create the heatmap
+    im = ax.imshow(grid_values, cmap='viridis', interpolation='nearest', origin='upper')
+
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Sampling Probability', fontsize=12)
+
+    # Add grid lines
+    ax.set_xticks(np.arange(grid_width) - 0.5, minor=True)
+    ax.set_yticks(np.arange(grid_height) - 0.5, minor=True)
+    ax.grid(which="minor", color="gray", linestyle='-', linewidth=0.5, alpha=0.3)
+
+    # Add portal markers if provided
+    if portals:
+        for (state, action), next_state in portals.items():
+            y = state // grid_width
+            x = state % grid_width
+            next_y = next_state // grid_width
+            next_x = next_state % grid_width
+
+            # Draw arrow from state to next_state
+            dx = next_x - x
+            dy = next_y - y
+            ax.arrow(x, y, dx * 0.3, dy * 0.3,
+                    head_width=0.2, head_length=0.15,
+                    fc='red', ec='red', linewidth=2, alpha=0.7)
+
+    ax.set_xlabel('X', fontsize=12)
+    ax.set_ylabel('Y', fontsize=12)
+    ax.set_title('Empirical Sampling Distribution D', fontsize=14, fontweight='bold')
+
+    # Add statistics text
+    stats_text = (f'Min: {np.nanmin(grid_values):.6f}\n'
+                  f'Max: {np.nanmax(grid_values):.6f}\n'
+                  f'Mean: {np.nanmean(grid_values):.6f}\n'
+                  f'Std: {np.nanstd(grid_values):.6f}')
+    ax.text(0.02, 0.98, stats_text,
+            transform=ax.transAxes,
+            fontsize=10,
+            verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Sampling distribution visualization saved to {save_path}")
+
+
 def save_checkpoint(
     encoder_state: TrainState,
     metrics_history: list,
@@ -794,7 +872,8 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         eigendecomp_simple: Dictionary with eigenvalues and eigenvectors of the simple Laplacian
         state_coords: Array of (x,y) coordinates for each state
         canonical_states: Array of free state indices
-        doors: Door configuration (if use_doors=True)
+        sampling_probs: 1D array of empirical sampling probabilities for each canonical state
+        door_config: Door configuration (if use_doors=True)
         data_env: The environment used for data collection (with doors if applicable)
         replay_buffer: Episodic replay buffer filled with collected episodes
     """
@@ -951,7 +1030,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print(f"  Coordinate range: x=[{state_coords[:, 0].min():.3f}, {state_coords[:, 0].max():.3f}], "
           f"y=[{state_coords[:, 1].min():.3f}, {state_coords[:, 1].max():.3f}]")
 
-    return laplacian_matrix, eigendecomp, eigendecomp_simple, state_coords, canonical_states, door_config, data_env, replay_buffer
+    return laplacian_matrix, eigendecomp, eigendecomp_simple, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer
 
 
 def learn_eigenvectors(args):
@@ -1038,6 +1117,12 @@ def learn_eigenvectors(args):
         else:
             gt_eigenvalues_simple = None
         state_coords = jnp.array(np.load(results_dir / "state_coords.npy"))
+        # Try to load sampling distribution if it exists
+        sampling_dist_path = results_dir / "sampling_distribution.npy"
+        if sampling_dist_path.exists():
+            sampling_probs = jnp.array(np.load(sampling_dist_path))
+        else:
+            sampling_probs = None
 
         # Load visualization metadata
         with open(results_dir / "viz_metadata.pkl", 'rb') as f:
@@ -1067,7 +1152,7 @@ def learn_eigenvectors(args):
     else:
         # Create environment and collect data (new run)
         env = create_gridworld_env(args)
-        laplacian_matrix, eigendecomp, eigendecomp_simple, state_coords, canonical_states, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
+        laplacian_matrix, eigendecomp, eigendecomp_simple, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
 
         gt_eigenvalues = eigendecomp['eigenvalues_real']
         gt_eigenvectors = eigendecomp['right_eigenvectors_real']
@@ -1100,6 +1185,27 @@ def learn_eigenvectors(args):
         np.save(results_dir / "gt_eigenvectors_simple.npy", np.array(gt_eigenvectors_simple))
         # State coordinates
         np.save(results_dir / "state_coords.npy", np.array(state_coords))
+        # Sampling distribution
+        np.save(results_dir / "sampling_distribution.npy", np.array(sampling_probs))
+
+        # Visualize and save sampling distribution
+        if args.plot_during_training:
+            # Convert doors to portal markers for visualization
+            door_markers = {}
+            if door_config is not None and 'doors' in door_config:
+                for s_canonical, a_forward, s_prime_canonical, a_reverse in door_config['doors']:
+                    s_full = int(canonical_states[s_canonical])
+                    s_prime_full = int(canonical_states[s_prime_canonical])
+                    door_markers[(s_full, a_forward)] = s_prime_full
+
+            plot_sampling_distribution(
+                sampling_probs=sampling_probs,
+                canonical_states=canonical_states,
+                grid_width=env.width,
+                grid_height=env.height,
+                save_path=str(plots_dir / "sampling_distribution.png"),
+                portals=door_markers if door_markers else None
+            )
 
     # Initialize the encoder
     encoder = CoordinateEncoder(
