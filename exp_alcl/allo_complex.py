@@ -860,13 +860,14 @@ def compute_complex_cosine_similarities(
     prefix: str = ""
 ) -> Dict[str, float]:
     """
-    Compute real part of complex cosine similarity between learned and ground truth eigenvectors.
+    Compute absolute value of real part of complex cosine similarity between learned and ground truth.
 
+    Uses standard complex inner product with conjugate:
     For complex vectors u = u_real + i·u_imag, v = v_real + i·v_imag:
-        <u, v> = u_real^T v_real - u_imag^T v_imag + i(u_real^T v_imag + u_imag^T v_real)
+        <u, v> = conj(u)^T v = (u_real^T v_real + u_imag^T v_imag) + i(u_real^T v_imag - u_imag^T v_real)
         ||u|| = sqrt(u_real^T u_real + u_imag^T u_imag)
         cos(θ) = <u, v> / (||u|| ||v||)
-        Result: Re(cos(θ))
+        Result: |Re(cos(θ))|
 
     Args:
         learned_real: Learned eigenvector real parts [num_states, num_eigenvectors]
@@ -877,7 +878,7 @@ def compute_complex_cosine_similarities(
 
     Returns:
         Dictionary containing:
-            - {prefix}cosine_sim_{i}: Real part of complex cosine similarity for each component i
+            - {prefix}cosine_sim_{i}: Absolute value of real part of cosine similarity for component i
             - {prefix}cosine_sim_avg: Average across all components
     """
     num_components = learned_real.shape[1]
@@ -892,11 +893,11 @@ def compute_complex_cosine_similarities(
         v_real = gt_real[:, i]
         v_imag = gt_imag[:, i]
 
-        # Complex inner product (no conjugate): <u, v> = u^T v
-        # Real part: u_real^T v_real - u_imag^T v_imag
-        # Imag part: u_real^T v_imag + u_imag^T v_real
-        inner_real = jnp.dot(u_real, v_real) - jnp.dot(u_imag, v_imag)
-        inner_imag = jnp.dot(u_real, v_imag) + jnp.dot(u_imag, v_real)
+        # Standard complex inner product (with conjugate): <u, v> = conj(u)^T v
+        # Real part: u_real^T v_real + u_imag^T v_imag
+        # Imag part: u_real^T v_imag - u_imag^T v_real
+        inner_real = jnp.dot(u_real, v_real) + jnp.dot(u_imag, v_imag)
+        inner_imag = jnp.dot(u_real, v_imag) - jnp.dot(u_imag, v_real)
 
         # Magnitudes: ||u|| = sqrt(u_real^T u_real + u_imag^T u_imag)
         u_norm = jnp.sqrt(jnp.dot(u_real, u_real) + jnp.dot(u_imag, u_imag))
@@ -906,10 +907,11 @@ def compute_complex_cosine_similarities(
         cos_real = inner_real / (u_norm * v_norm + 1e-10)
         cos_imag = inner_imag / (u_norm * v_norm + 1e-10)
 
-        # Take real part
-        similarities[f'{prefix}cosine_sim_{i}'] = float(cos_real)
+        # Take absolute value of real part
+        abs_cos_real = jnp.abs(cos_real)
+        similarities[f'{prefix}cosine_sim_{i}'] = float(abs_cos_real)
         similarities[f'{prefix}cosine_sim_imag_{i}'] = float(cos_imag)  # Also save imaginary for inspection
-        cosine_sims.append(float(cos_real))
+        cosine_sims.append(float(abs_cos_real))
 
     # Average across all components
     similarities[f'{prefix}cosine_sim_avg'] = float(np.mean(cosine_sims))
@@ -954,12 +956,12 @@ def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_
                 color='green', linewidth=2.0, linestyle='--', alpha=0.7)
 
     ax.set_xlabel('Gradient Step', fontsize=12)
-    ax.set_ylabel('Re(Complex Cosine Similarity)', fontsize=12)
-    ax.set_title('Evolution of Complex Cosine Similarity\n(Real Part of <u,v> / (||u|| ||v||))', fontsize=14)
+    ax.set_ylabel('|Re(Complex Cosine Similarity)|', fontsize=12)
+    ax.set_title('Evolution of Complex Cosine Similarity\n(Absolute Value of Real Part of <conj(u),v> / (||u|| ||v||))', fontsize=14)
 
     ax.legend(loc='best', fontsize=11)
     ax.grid(True, alpha=0.3)
-    ax.set_ylim([-1.05, 1.05])  # Complex cosine can be negative
+    ax.set_ylim([-0.05, 1.05])  # Absolute value ranges from 0 to 1
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
