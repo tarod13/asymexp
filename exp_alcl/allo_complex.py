@@ -1706,8 +1706,8 @@ def learn_eigenvectors(args):
             dx, dy = action_effects[action]
             dest_y = state_full // data_env.width
             dest_x = state_full % data_env.width
-            source_x = dest_x - dx
-            source_y = dest_y - dy
+            source_x = dest_x + dx
+            source_y = dest_y + dy
 
             # Check if source is valid
             if 0 <= source_x < data_env.width and 0 <= source_y < data_env.height:
