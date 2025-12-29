@@ -563,6 +563,11 @@ def main():
         help='Skip plotting latest learned eigenvectors'
     )
     parser.add_argument(
+        '--include-latest',
+        action='store_true',
+        help='Include latest learned plots (identical to final after training completes)'
+    )
+    parser.add_argument(
         '--skip-final',
         action='store_true',
         help='Skip plotting final learned eigenvectors'
@@ -606,7 +611,9 @@ def main():
     if not args.skip_ground_truth:
         plot_ground_truth(data, plots_dir)
 
-    if not args.skip_learned:
+    # Note: "latest" and "final" are identical after training completes
+    # Only plot "latest" if explicitly requested (useful during training)
+    if not args.skip_learned and args.include_latest:
         plot_latest_learned(data, plots_dir)
 
     if not args.skip_final:
