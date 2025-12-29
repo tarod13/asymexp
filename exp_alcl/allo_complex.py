@@ -46,6 +46,7 @@ from exp_complex_basis.eigenvector_visualization import (
     visualize_multiple_eigenvectors,
     visualize_eigenvector_on_grid,
 )
+from exp_complex_basis.eigendecomposition import compute_eigendecomposition
 from exp_alcl.episodic_replay_buffer import EpisodicReplayBuffer
 
 
@@ -309,76 +310,6 @@ def compute_nonsymmetric_laplacian(
     laplacian = identity - (1 - gamma) * sr_matrix
 
     return laplacian
-
-
-def compute_nonsymmetric_eigendecomposition(
-    matrix: jnp.ndarray,
-    k: int = None
-) -> Dict[str, jnp.ndarray]:
-    """
-    Compute eigendecomposition of a non-symmetric matrix.
-
-    For non-symmetric matrices, eigenvalues can be complex and left/right
-    eigenvectors are different (biorthogonal).
-
-    Uses improved matching algorithm from exp_complex_basis.
-
-    Args:
-        matrix: Shape [num_states, num_states], non-symmetric matrix
-        k: Number of eigenvalues/vectors to keep (None = keep all)
-
-    Returns:
-        Dictionary containing:
-            - eigenvalues: Shape [k] (complex)
-            - eigenvalues_real: Shape [k]
-            - eigenvalues_imag: Shape [k]
-            - right_eigenvectors_real: Shape [num_states, k]
-            - right_eigenvectors_imag: Shape [num_states, k]
-            - left_eigenvectors_real: Shape [num_states, k]
-            - left_eigenvectors_imag: Shape [num_states, k]
-    """
-    # Compute right eigendecomposition
-    eigenvalues, right_eigenvectors = jnp.linalg.eig(matrix)
-
-    # Compute left eigendecomposition via transpose
-    eigenvalues_left, left_eigenvectors = jnp.linalg.eig(matrix.T)
-
-    # Match left eigenvectors to right eigenvectors using cross-products
-    cross_products = jnp.einsum('ij,ik->jk', left_eigenvectors, right_eigenvectors)
-
-    # For each right eigenvector (column j), find the best matching left eigenvector (row i)
-    best_left_indices = jnp.argmax(jnp.abs(cross_products), axis=0)
-
-    # Reorder left eigenvectors to match right eigenvectors
-    left_eigenvectors = left_eigenvectors[:, best_left_indices]
-
-    # Normalize left eigenvectors (no conjugate: left_i^T @ right_j = delta_ij)
-    dot_products = cross_products[best_left_indices, jnp.arange(cross_products.shape[1])]
-    left_eigenvectors = left_eigenvectors / dot_products[None, :]
-
-    # Sort by magnitude in descending order
-    magnitudes = jnp.abs(eigenvalues)
-    sorted_indices = jnp.argsort(-magnitudes)
-    eigenvalues = eigenvalues[sorted_indices]
-    right_eigenvectors = right_eigenvectors[:, sorted_indices]
-    left_eigenvectors = left_eigenvectors[:, sorted_indices]
-
-    # Keep only top k if specified
-    if k is not None:
-        eigenvalues = eigenvalues[:k]
-        right_eigenvectors = right_eigenvectors[:, :k]
-        left_eigenvectors = left_eigenvectors[:, :k]
-
-    # Split into real and imaginary parts
-    return {
-        "eigenvalues": eigenvalues,
-        "eigenvalues_real": jnp.real(eigenvalues),
-        "eigenvalues_imag": jnp.imag(eigenvalues),
-        "right_eigenvectors_real": jnp.real(right_eigenvectors),
-        "right_eigenvectors_imag": jnp.imag(right_eigenvectors),
-        "left_eigenvectors_real": jnp.real(left_eigenvectors),
-        "left_eigenvectors_imag": jnp.imag(left_eigenvectors),
-    }
 
 
 def compute_symmetrized_eigendecomposition(
@@ -1202,7 +1133,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print("  L = I - (1-γ)SR_γ (no symmetrization, no D weighting)")
 
     laplacian_matrix = compute_nonsymmetric_laplacian(transition_matrix, args.gamma)
-    eigendecomp = compute_nonsymmetric_eigendecomposition(
+    eigendecomp = compute_eigendecomposition(
         laplacian_matrix,
         k=args.num_eigenvectors,
     )
