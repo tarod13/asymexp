@@ -282,6 +282,98 @@ def compute_inverse_weighted_laplacian(
     return laplacian
 
 
+def compute_nonsymmetric_laplacian(
+    transition_matrix: jnp.ndarray,
+    gamma: float,
+) -> jnp.ndarray:
+    """
+    Compute the non-symmetric Laplacian L = I - (1-γ)SR_γ.
+
+    This is the natural Laplacian for non-reversible dynamics that admits
+    complex eigenvectors.
+
+    Args:
+        transition_matrix: Shape [num_states, num_states], stochastic transition matrix P
+        gamma: Discount factor used in successor representation
+
+    Returns:
+        Non-symmetric Laplacian of shape [num_states, num_states]
+    """
+    num_states = transition_matrix.shape[0]
+    identity = jnp.eye(num_states)
+
+    # Compute successor representation SR_γ = (I - γP)^(-1)
+    sr_matrix = compute_successor_representation(transition_matrix, gamma)
+
+    # Compute Laplacian: L = I - (1-γ)SR_γ (no symmetrization)
+    laplacian = identity - (1 - gamma) * sr_matrix
+
+    return laplacian
+
+
+def compute_nonsymmetric_eigendecomposition(
+    matrix: jnp.ndarray,
+    k: int = None
+) -> Dict[str, jnp.ndarray]:
+    """
+    Compute eigendecomposition of a non-symmetric matrix.
+
+    For non-symmetric matrices, eigenvalues can be complex and left/right
+    eigenvectors are different (biorthogonal).
+
+    Args:
+        matrix: Shape [num_states, num_states], non-symmetric matrix
+        k: Number of eigenvalues/vectors to keep (None = keep all)
+
+    Returns:
+        Dictionary containing:
+            - eigenvalues: Shape [k] (complex)
+            - eigenvalues_real: Shape [k]
+            - eigenvalues_imag: Shape [k]
+            - right_eigenvectors_real: Shape [num_states, k]
+            - right_eigenvectors_imag: Shape [num_states, k]
+            - left_eigenvectors_real: Shape [num_states, k]
+            - left_eigenvectors_imag: Shape [num_states, k]
+    """
+    # Compute eigendecomposition (returns complex eigenvalues and right eigenvectors)
+    eigenvalues, right_eigenvectors = jnp.linalg.eig(matrix)
+
+    # Compute left eigenvectors (eigenvectors of matrix.T)
+    left_eigenvalues, left_eigenvectors_T = jnp.linalg.eig(matrix.T)
+
+    # Left eigenvectors are columns of left_eigenvectors_T
+    # We need to match them with right eigenvectors
+    # For numerical stability, we sort both by eigenvalue magnitude
+    right_sort_idx = jnp.argsort(jnp.abs(eigenvalues))
+    left_sort_idx = jnp.argsort(jnp.abs(left_eigenvalues))
+
+    eigenvalues = eigenvalues[right_sort_idx]
+    right_eigenvectors = right_eigenvectors[:, right_sort_idx]
+    left_eigenvectors = left_eigenvectors_T[:, left_sort_idx]
+
+    # Normalize to satisfy biorthogonality: left_i^T @ right_j = delta_ij
+    for i in range(len(eigenvalues)):
+        scale = jnp.dot(jnp.conj(left_eigenvectors[:, i]), right_eigenvectors[:, i])
+        left_eigenvectors = left_eigenvectors.at[:, i].set(left_eigenvectors[:, i] / scale)
+
+    # Keep only top k if specified
+    if k is not None:
+        eigenvalues = eigenvalues[:k]
+        right_eigenvectors = right_eigenvectors[:, :k]
+        left_eigenvectors = left_eigenvectors[:, :k]
+
+    # Split into real and imaginary parts
+    return {
+        "eigenvalues": eigenvalues,
+        "eigenvalues_real": eigenvalues.real,
+        "eigenvalues_imag": eigenvalues.imag,
+        "right_eigenvectors_real": right_eigenvectors.real,
+        "right_eigenvectors_imag": right_eigenvectors.imag,
+        "left_eigenvectors_real": left_eigenvectors.real,
+        "left_eigenvectors_imag": left_eigenvectors.imag,
+    }
+
+
 def compute_symmetrized_eigendecomposition(
     transition_matrix: jnp.ndarray,
     k: int = None
@@ -989,21 +1081,17 @@ def create_replay_buffer_only(env, canonical_states, args: Args):
 
 def collect_data_and_compute_eigenvectors(env, args: Args):
     """
-    Collect transition data and compute ground truth eigenvectors.
+    Collect transition data and compute ground truth complex eigenvectors.
 
-    Computes eigenvalues for three Laplacian versions:
-    - Simple: L = I - (1-γ)(SR_γ + SR_γ^T)/2
-    - Weighted: L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
-    - Inverse-Weighted: L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
+    Computes the non-symmetric Laplacian: L = I - (1-γ)SR_γ
+    This Laplacian admits complex eigenvalues and distinct left/right eigenvectors.
 
     Args:
         env: Base environment (possibly with doors already applied)
 
     Returns:
-        laplacian_matrix: Inverse-weighted Laplacian L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
-        eigendecomp: Dictionary with eigenvalues and eigenvectors of the inverse-weighted Laplacian
-        eigendecomp_simple: Dictionary with eigenvalues and eigenvectors of the simple Laplacian
-        eigendecomp_weighted: Dictionary with eigenvalues and eigenvectors of the weighted Laplacian
+        laplacian_matrix: Non-symmetric Laplacian L = I - (1-γ)SR_γ
+        eigendecomp: Dictionary with complex eigenvalues and left/right eigenvectors
         state_coords: Array of (x,y) coordinates for each state
         canonical_states: Array of free state indices
         sampling_probs: 1D array of empirical sampling probabilities for each canonical state
@@ -1109,48 +1197,22 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print(f"  Sampling prob range: [{sampling_probs.min():.6f}, {sampling_probs.max():.6f}]")
     print(f"  Sampling prob std: {sampling_probs.std():.6f}")
 
-    # Compute ALL three Laplacian versions for comparison
-    print(f"\nComputing Laplacians with gamma={args.gamma}...")
+    # Compute non-symmetric Laplacian for complex eigenvectors
+    print(f"\nComputing non-symmetric Laplacian with gamma={args.gamma}...")
+    print("  L = I - (1-γ)SR_γ (no symmetrization, no D weighting)")
 
-    # Version 1: Simple Laplacian L = I - (1-γ)(SR_γ + SR_γ^T)/2
-    print("  Computing simple Laplacian L = I - (1-γ)(SR_γ + SR_γ^T)/2...")
-    laplacian_simple = compute_symmetrized_laplacian(transition_matrix, args.gamma)
-    eigendecomp_simple = compute_symmetrized_eigendecomposition(
-        laplacian_simple,
+    laplacian_matrix = compute_nonsymmetric_laplacian(transition_matrix, args.gamma)
+    eigendecomp = compute_nonsymmetric_eigendecomposition(
+        laplacian_matrix,
         k=args.num_eigenvectors,
     )
 
-    # Version 2: Weighted Laplacian L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
-    print("  Computing weighted Laplacian L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2...")
-    laplacian_weighted = compute_weighted_symmetrized_laplacian(
-        transition_matrix, sampling_distribution, args.gamma
-    )
-    eigendecomp_weighted = compute_symmetrized_eigendecomposition(
-        laplacian_weighted,
-        k=args.num_eigenvectors,
-    )
-
-    # Version 3: Inverse-weighted Laplacian L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
-    print("  Computing inverse-weighted Laplacian L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2...")
-    laplacian_invweighted = compute_inverse_weighted_laplacian(
-        transition_matrix, sampling_distribution, args.gamma
-    )
-    eigendecomp_invweighted = compute_symmetrized_eigendecomposition(
-        laplacian_invweighted,
-        k=args.num_eigenvectors,
-    )
-
-    # Use the inverse-weighted version as the main baseline (most likely what the algorithm learns)
-    laplacian_matrix = laplacian_invweighted
-    eigendecomp = eigendecomp_invweighted
-
-    print(f"\nTop {min(5, args.num_eigenvectors)} eigenvalues comparison:")
-    print("  Simple | Weighted | Inverse-Weighted")
+    print(f"\nTop {min(5, args.num_eigenvectors)} eigenvalues (complex):")
+    print("  Eigenvalue (real + imag)")
     for i in range(min(5, args.num_eigenvectors)):
-        simple_ev = eigendecomp_simple['eigenvalues'][i]
-        weighted_ev = eigendecomp_weighted['eigenvalues'][i]
-        invweighted_ev = eigendecomp_invweighted['eigenvalues'][i]
-        print(f"  λ_{i}: {simple_ev:.6f} | {weighted_ev:.6f} | {invweighted_ev:.6f}")
+        ev_real = eigendecomp['eigenvalues_real'][i]
+        ev_imag = eigendecomp['eigenvalues_imag'][i]
+        print(f"  λ_{i}: {ev_real:.6f} + {ev_imag:.6f}i")
 
     # Create state coordinate mapping (only for canonical/free states)
     state_coords = []
@@ -1175,7 +1237,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print(f"  Coordinate range: x=[{state_coords[:, 0].min():.3f}, {state_coords[:, 0].max():.3f}], "
           f"y=[{state_coords[:, 1].min():.3f}, {state_coords[:, 1].max():.3f}]")
 
-    return laplacian_matrix, eigendecomp, eigendecomp_simple, eigendecomp_weighted, eigendecomp_invweighted, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer
+    return laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer
 
 
 def learn_eigenvectors(args):
@@ -1252,39 +1314,13 @@ def learn_eigenvectors(args):
         print("Loading saved environment data...")
         env = create_gridworld_env(args)
 
-        # Load saved eigenvectors and state coordinates
-        gt_eigenvalues = jnp.array(np.load(results_dir / "gt_eigenvalues.npy"))
-        gt_eigenvectors = jnp.array(np.load(results_dir / "gt_eigenvectors.npy"))
-
-        # Try to load simple eigenvalues if they exist
-        simple_eigenvalues_path = results_dir / "gt_eigenvalues_simple.npy"
-        simple_eigenvectors_path = results_dir / "gt_eigenvectors_simple.npy"
-        if simple_eigenvalues_path.exists() and simple_eigenvectors_path.exists():
-            gt_eigenvalues_simple = jnp.array(np.load(simple_eigenvalues_path))
-            gt_eigenvectors_simple = jnp.array(np.load(simple_eigenvectors_path))
-        else:
-            gt_eigenvalues_simple = None
-            gt_eigenvectors_simple = None
-
-        # Try to load weighted eigenvalues if they exist
-        weighted_eigenvalues_path = results_dir / "gt_eigenvalues_weighted.npy"
-        weighted_eigenvectors_path = results_dir / "gt_eigenvectors_weighted.npy"
-        if weighted_eigenvalues_path.exists() and weighted_eigenvectors_path.exists():
-            gt_eigenvalues_weighted = jnp.array(np.load(weighted_eigenvalues_path))
-            gt_eigenvectors_weighted = jnp.array(np.load(weighted_eigenvectors_path))
-        else:
-            gt_eigenvalues_weighted = None
-            gt_eigenvectors_weighted = None
-
-        # Try to load inverse-weighted eigenvalues if they exist
-        invweighted_eigenvalues_path = results_dir / "gt_eigenvalues_invweighted.npy"
-        invweighted_eigenvectors_path = results_dir / "gt_eigenvectors_invweighted.npy"
-        if invweighted_eigenvalues_path.exists() and invweighted_eigenvectors_path.exists():
-            gt_eigenvalues_invweighted = jnp.array(np.load(invweighted_eigenvalues_path))
-            gt_eigenvectors_invweighted = jnp.array(np.load(invweighted_eigenvectors_path))
-        else:
-            gt_eigenvalues_invweighted = None
-            gt_eigenvectors_invweighted = None
+        # Load saved eigenvectors and state coordinates (complex)
+        gt_eigenvalues_real = jnp.array(np.load(results_dir / "gt_eigenvalues_real.npy"))
+        gt_eigenvalues_imag = jnp.array(np.load(results_dir / "gt_eigenvalues_imag.npy"))
+        gt_left_real = jnp.array(np.load(results_dir / "gt_left_real.npy"))
+        gt_left_imag = jnp.array(np.load(results_dir / "gt_left_imag.npy"))
+        gt_right_real = jnp.array(np.load(results_dir / "gt_right_real.npy"))
+        gt_right_imag = jnp.array(np.load(results_dir / "gt_right_imag.npy"))
 
         state_coords = jnp.array(np.load(results_dir / "state_coords.npy"))
 
@@ -1323,19 +1359,20 @@ def learn_eigenvectors(args):
     else:
         # Create environment and collect data (new run)
         env = create_gridworld_env(args)
-        laplacian_matrix, eigendecomp, eigendecomp_simple, eigendecomp_weighted, eigendecomp_invweighted, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
+        laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
 
-        gt_eigenvalues = eigendecomp['eigenvalues_real']
-        gt_eigenvectors = eigendecomp['right_eigenvectors_real']
-        gt_eigenvalues_simple = eigendecomp_simple['eigenvalues_real']
-        gt_eigenvectors_simple = eigendecomp_simple['right_eigenvectors_real']
-        gt_eigenvalues_weighted = eigendecomp_weighted['eigenvalues_real']
-        gt_eigenvectors_weighted = eigendecomp_weighted['right_eigenvectors_real']
-        gt_eigenvalues_invweighted = eigendecomp_invweighted['eigenvalues_real']
-        gt_eigenvectors_invweighted = eigendecomp_invweighted['right_eigenvectors_real']
+        # Extract ground truth eigenvalues and eigenvectors (complex)
+        gt_eigenvalues = eigendecomp['eigenvalues']  # Complex eigenvalues
+        gt_eigenvalues_real = eigendecomp['eigenvalues_real']
+        gt_eigenvalues_imag = eigendecomp['eigenvalues_imag']
+        gt_left_real = eigendecomp['left_eigenvectors_real']
+        gt_left_imag = eigendecomp['left_eigenvectors_imag']
+        gt_right_real = eigendecomp['right_eigenvectors_real']
+        gt_right_imag = eigendecomp['right_eigenvectors_imag']
 
     print(f"\nState coordinates shape: {state_coords.shape}")
-    print(f"Ground truth eigenvectors shape: {gt_eigenvectors.shape}")
+    print(f"Ground truth right eigenvectors shape: {gt_right_real.shape}")
+    print(f"Ground truth left eigenvectors shape: {gt_left_real.shape}")
 
     # Save data for new runs (skip if resuming)
     if checkpoint_data is None:
@@ -1352,18 +1389,13 @@ def learn_eigenvectors(args):
             print(f"Door configuration saved to {door_save_path}")
 
         # Save ground truth eigendecomposition and state coords
-        # Inverse-weighted Laplacian (main baseline): L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
-        np.save(results_dir / "gt_eigenvalues.npy", np.array(gt_eigenvalues))
-        np.save(results_dir / "gt_eigenvectors.npy", np.array(gt_eigenvectors))
-        # Simple Laplacian (for comparison): L = I - (1-γ)(SR_γ + SR_γ^T)/2
-        np.save(results_dir / "gt_eigenvalues_simple.npy", np.array(gt_eigenvalues_simple))
-        np.save(results_dir / "gt_eigenvectors_simple.npy", np.array(gt_eigenvectors_simple))
-        # Weighted Laplacian (for comparison): L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
-        np.save(results_dir / "gt_eigenvalues_weighted.npy", np.array(gt_eigenvalues_weighted))
-        np.save(results_dir / "gt_eigenvectors_weighted.npy", np.array(gt_eigenvectors_weighted))
-        # Inverse-weighted Laplacian (for comparison): L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
-        np.save(results_dir / "gt_eigenvalues_invweighted.npy", np.array(gt_eigenvalues_invweighted))
-        np.save(results_dir / "gt_eigenvectors_invweighted.npy", np.array(gt_eigenvectors_invweighted))
+        # Non-symmetric Laplacian: L = I - (1-γ)SR_γ (complex eigenvalues and eigenvectors)
+        np.save(results_dir / "gt_eigenvalues_real.npy", np.array(gt_eigenvalues_real))
+        np.save(results_dir / "gt_eigenvalues_imag.npy", np.array(gt_eigenvalues_imag))
+        np.save(results_dir / "gt_left_real.npy", np.array(gt_left_real))
+        np.save(results_dir / "gt_left_imag.npy", np.array(gt_left_imag))
+        np.save(results_dir / "gt_right_real.npy", np.array(gt_right_real))
+        np.save(results_dir / "gt_right_imag.npy", np.array(gt_right_imag))
         # State coordinates
         np.save(results_dir / "state_coords.npy", np.array(state_coords))
         # Sampling distribution
@@ -1706,19 +1738,21 @@ def learn_eigenvectors(args):
 
         # Optionally plot ground truth eigenvectors immediately
         if args.plot_during_training:
-            # Plot inverse-weighted Laplacian eigenvectors (main baseline)
-            eigendecomp_invweighted_viz = {
-                'eigenvalues': gt_eigenvalues.astype(jnp.complex64),
-                'eigenvalues_real': gt_eigenvalues,
-                'eigenvalues_imag': jnp.zeros_like(gt_eigenvalues),
-                'right_eigenvectors_real': gt_eigenvectors,
-                'right_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors),
-                'left_eigenvectors_real': gt_eigenvectors,
-                'left_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors),
+            # Plot non-symmetric Laplacian eigenvectors (complex)
+            eigendecomp_viz = {
+                'eigenvalues': (gt_eigenvalues_real + 1j * gt_eigenvalues_imag).astype(jnp.complex64),
+                'eigenvalues_real': gt_eigenvalues_real,
+                'eigenvalues_imag': gt_eigenvalues_imag,
+                'right_eigenvectors_real': gt_right_real,
+                'right_eigenvectors_imag': gt_right_imag,
+                'left_eigenvectors_real': gt_left_real,
+                'left_eigenvectors_imag': gt_left_imag,
             }
+
+            # Visualize right eigenvectors (real part)
             visualize_multiple_eigenvectors(
                 eigenvector_indices=list(range(args.num_eigenvectors)),
-                eigendecomposition=eigendecomp_invweighted_viz,
+                eigendecomposition=eigendecomp_viz,
                 canonical_states=canonical_states,
                 grid_width=env.width,
                 grid_height=env.height,
@@ -1727,59 +1761,24 @@ def learn_eigenvectors(args):
                 component='real',
                 ncols=min(4, args.num_eigenvectors),
                 wall_color='gray',
-                save_path=str(plots_dir / "ground_truth_eigenvectors_invweighted.png"),
+                save_path=str(plots_dir / "ground_truth_right_eigenvectors_real.png"),
                 shared_colorbar=True
             )
             plt.close()
 
-            # Plot simple Laplacian eigenvectors
-            eigendecomp_simple_viz = {
-                'eigenvalues': gt_eigenvalues_simple.astype(jnp.complex64),
-                'eigenvalues_real': gt_eigenvalues_simple,
-                'eigenvalues_imag': jnp.zeros_like(gt_eigenvalues_simple),
-                'right_eigenvectors_real': gt_eigenvectors_simple,
-                'right_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors_simple),
-                'left_eigenvectors_real': gt_eigenvectors_simple,
-                'left_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors_simple),
-            }
+            # Visualize right eigenvectors (imaginary part)
             visualize_multiple_eigenvectors(
                 eigenvector_indices=list(range(args.num_eigenvectors)),
-                eigendecomposition=eigendecomp_simple_viz,
+                eigendecomposition=eigendecomp_viz,
                 canonical_states=canonical_states,
                 grid_width=env.width,
                 grid_height=env.height,
                 portals=door_markers if door_markers else None,
                 eigenvector_type='right',
-                component='real',
+                component='imag',
                 ncols=min(4, args.num_eigenvectors),
                 wall_color='gray',
-                save_path=str(plots_dir / "ground_truth_eigenvectors_simple.png"),
-                shared_colorbar=True
-            )
-            plt.close()
-
-            # Plot weighted Laplacian eigenvectors
-            eigendecomp_weighted_viz = {
-                'eigenvalues': gt_eigenvalues_weighted.astype(jnp.complex64),
-                'eigenvalues_real': gt_eigenvalues_weighted,
-                'eigenvalues_imag': jnp.zeros_like(gt_eigenvalues_weighted),
-                'right_eigenvectors_real': gt_eigenvectors_weighted,
-                'right_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors_weighted),
-                'left_eigenvectors_real': gt_eigenvectors_weighted,
-                'left_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors_weighted),
-            }
-            visualize_multiple_eigenvectors(
-                eigenvector_indices=list(range(args.num_eigenvectors)),
-                eigendecomposition=eigendecomp_weighted_viz,
-                canonical_states=canonical_states,
-                grid_width=env.width,
-                grid_height=env.height,
-                portals=door_markers if door_markers else None,
-                eigenvector_type='right',
-                component='real',
-                ncols=min(4, args.num_eigenvectors),
-                wall_color='gray',
-                save_path=str(plots_dir / "ground_truth_eigenvectors_weighted.png"),
+                save_path=str(plots_dir / "ground_truth_right_eigenvectors_imag.png"),
                 shared_colorbar=True
             )
             plt.close()
@@ -1854,21 +1853,9 @@ def learn_eigenvectors(args):
             learned_features_real = features_dict['right_real']
             learned_features_imag = features_dict['right_imag']
 
-            # Compute cosine similarities with ground truth (inverse-weighted Laplacian - main baseline)
-            # Compare real part of learned eigenvectors with ground truth
-            cosine_sims_invweighted = compute_cosine_similarities(learned_features_real, gt_eigenvectors)
-
-            # Compute cosine similarities with simple Laplacian if available
-            if 'gt_eigenvectors_simple' in locals() and gt_eigenvectors_simple is not None:
-                cosine_sims_simple = compute_cosine_similarities(learned_features_real, gt_eigenvectors_simple)
-            else:
-                cosine_sims_simple = None
-
-            # Compute cosine similarities with weighted Laplacian if available
-            if 'gt_eigenvectors_weighted' in locals() and gt_eigenvectors_weighted is not None:
-                cosine_sims_weighted = compute_cosine_similarities(learned_features_real, gt_eigenvectors_weighted)
-            else:
-                cosine_sims_weighted = None
+            # Compute cosine similarities with ground truth (non-symmetric Laplacian)
+            # Compare real part of learned right eigenvectors with ground truth right eigenvectors
+            cosine_sims = compute_cosine_similarities(learned_features_real, gt_right_real)
 
             # Store metrics
             elapsed_time = time.time() - start_time
@@ -1881,31 +1868,17 @@ def learn_eigenvectors(args):
             for k, v in metrics.items():
                 metrics_dict[k] = float(v.item())
 
-            # Add cosine similarities to metrics (inverse-weighted Laplacian - main baseline)
-            for k, v in cosine_sims_invweighted.items():
-                metrics_dict[f'{k}_invweighted'] = v
-
-            # Add cosine similarities for simple Laplacian if available
-            if cosine_sims_simple is not None:
-                for k, v in cosine_sims_simple.items():
-                    metrics_dict[f'{k}_simple'] = v
-
-            # Add cosine similarities for weighted Laplacian if available
-            if cosine_sims_weighted is not None:
-                for k, v in cosine_sims_weighted.items():
-                    metrics_dict[f'{k}_weighted'] = v
+            # Add cosine similarities to metrics
+            for k, v in cosine_sims.items():
+                metrics_dict[k] = v
 
             metrics_history.append(metrics_dict)
 
             if gradient_step % (args.log_freq * 10) == 0:
-                invweighted_sim = cosine_sims_invweighted['cosine_sim_avg']
-                simple_sim = cosine_sims_simple['cosine_sim_avg'] if cosine_sims_simple else 'N/A'
-                weighted_sim = cosine_sims_weighted['cosine_sim_avg'] if cosine_sims_weighted else 'N/A'
+                cosine_sim_avg = cosine_sims['cosine_sim_avg']
                 print(f"Step {gradient_step}: loss={allo.item():.4f}, "
                       f"total_error={metrics['total_error'].item():.4f}, "
-                      f"cosine_sim_invweighted={invweighted_sim:.4f}, "
-                      f"cosine_sim_simple={simple_sim}, "
-                      f"cosine_sim_weighted={weighted_sim}")
+                      f"cosine_sim_avg={cosine_sim_avg:.4f}")
         log_time = time.time() - log_start
 
         # Collect timing samples (last 1000 steps for statistics)
@@ -2034,8 +2007,12 @@ def learn_eigenvectors(args):
             pickle.dump({
                 'params': encoder_state.params,
                 'args': vars(args),
-                'gt_eigenvalues': np.array(gt_eigenvalues),
-                'gt_eigenvectors': np.array(gt_eigenvectors),
+                'gt_eigenvalues_real': np.array(gt_eigenvalues_real),
+                'gt_eigenvalues_imag': np.array(gt_eigenvalues_imag),
+                'gt_left_real': np.array(gt_left_real),
+                'gt_left_imag': np.array(gt_left_imag),
+                'gt_right_real': np.array(gt_right_real),
+                'gt_right_imag': np.array(gt_right_imag),
             }, f)
         print(f"Model saved to {save_path}")
 
@@ -2050,15 +2027,15 @@ def learn_eigenvectors(args):
     if args.plot_during_training:
         fig, axes = plt.subplots(1, 2, figsize=(12, 8))
 
-        # Plot first ground truth eigenvector (skip constant eigenvector 0)
+        # Plot first ground truth right eigenvector (real part, skip constant eigenvector 0)
         visualize_eigenvector_on_grid(
             eigenvector_idx=1,
-            eigenvector_values=np.array(gt_eigenvectors[:, 1]),
+            eigenvector_values=np.array(gt_right_real[:, 1]),
             canonical_states=canonical_states,
             grid_width=env.width,
             grid_height=env.height,
             portals=door_markers if door_markers else None,
-            title='Ground Truth Eigenvector 1',
+            title='Ground Truth Right Eigenvector 1 (Real)',
             ax=axes[0],
             cmap='RdBu_r',
             show_colorbar=True,
