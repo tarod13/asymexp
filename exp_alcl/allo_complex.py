@@ -852,44 +852,67 @@ def load_checkpoint(checkpoint_path: Path) -> Dict:
     return checkpoint
 
 
-def compute_cosine_similarities(learned_features: jnp.ndarray, gt_eigenvectors: jnp.ndarray) -> Dict[str, float]:
+def compute_complex_cosine_similarities(
+    learned_real: jnp.ndarray,
+    learned_imag: jnp.ndarray,
+    gt_real: jnp.ndarray,
+    gt_imag: jnp.ndarray,
+    prefix: str = ""
+) -> Dict[str, float]:
     """
-    Compute absolute cosine similarity per component between learned and ground truth eigenvectors.
+    Compute real part of complex cosine similarity between learned and ground truth eigenvectors.
 
-    For each eigenvector component i, computes the absolute cosine similarity:
-        |cos(θ_i)| = |<learned_i, gt_i>| / (||learned_i|| * ||gt_i||)
+    For complex vectors u = u_real + i·u_imag, v = v_real + i·v_imag:
+        <u, v> = u_real^T v_real - u_imag^T v_imag + i(u_real^T v_imag + u_imag^T v_real)
+        ||u|| = sqrt(u_real^T u_real + u_imag^T u_imag)
+        cos(θ) = <u, v> / (||u|| ||v||)
+        Result: Re(cos(θ))
 
     Args:
-        learned_features: Learned eigenvector features [num_states, num_eigenvectors]
-        gt_eigenvectors: Ground truth eigenvectors [num_states, num_eigenvectors]
+        learned_real: Learned eigenvector real parts [num_states, num_eigenvectors]
+        learned_imag: Learned eigenvector imaginary parts [num_states, num_eigenvectors]
+        gt_real: Ground truth eigenvector real parts [num_states, num_eigenvectors]
+        gt_imag: Ground truth eigenvector imaginary parts [num_states, num_eigenvectors]
+        prefix: Prefix for metric names (e.g., "left_" or "right_")
 
     Returns:
         Dictionary containing:
-            - cosine_sim_i: Absolute cosine similarity for each component i
-            - cosine_sim_avg: Average absolute cosine similarity across all components
+            - {prefix}cosine_sim_{i}: Real part of complex cosine similarity for each component i
+            - {prefix}cosine_sim_avg: Average across all components
     """
-    num_components = learned_features.shape[1]
+    num_components = learned_real.shape[1]
 
     similarities = {}
     cosine_sims = []
 
     for i in range(num_components):
-        learned_vec = learned_features[:, i]
-        gt_vec = gt_eigenvectors[:, i]
+        # Extract complex vectors
+        u_real = learned_real[:, i]
+        u_imag = learned_imag[:, i]
+        v_real = gt_real[:, i]
+        v_imag = gt_imag[:, i]
 
-        # Compute cosine similarity
-        dot_product = jnp.dot(learned_vec, gt_vec)
-        learned_norm = jnp.linalg.norm(learned_vec)
-        gt_norm = jnp.linalg.norm(gt_vec)
+        # Complex inner product (no conjugate): <u, v> = u^T v
+        # Real part: u_real^T v_real - u_imag^T v_imag
+        # Imag part: u_real^T v_imag + u_imag^T v_real
+        inner_real = jnp.dot(u_real, v_real) - jnp.dot(u_imag, v_imag)
+        inner_imag = jnp.dot(u_real, v_imag) + jnp.dot(u_imag, v_real)
 
-        # Absolute cosine similarity (handles sign ambiguity)
-        cosine_sim = jnp.abs(dot_product / (learned_norm * gt_norm + 1e-10))
+        # Magnitudes: ||u|| = sqrt(u_real^T u_real + u_imag^T u_imag)
+        u_norm = jnp.sqrt(jnp.dot(u_real, u_real) + jnp.dot(u_imag, u_imag))
+        v_norm = jnp.sqrt(jnp.dot(v_real, v_real) + jnp.dot(v_imag, v_imag))
 
-        similarities[f'cosine_sim_{i}'] = float(cosine_sim)
-        cosine_sims.append(float(cosine_sim))
+        # Complex cosine similarity
+        cos_real = inner_real / (u_norm * v_norm + 1e-10)
+        cos_imag = inner_imag / (u_norm * v_norm + 1e-10)
+
+        # Take real part
+        similarities[f'{prefix}cosine_sim_{i}'] = float(cos_real)
+        similarities[f'{prefix}cosine_sim_imag_{i}'] = float(cos_imag)  # Also save imaginary for inspection
+        cosine_sims.append(float(cos_real))
 
     # Average across all components
-    similarities['cosine_sim_avg'] = float(np.mean(cosine_sims))
+    similarities[f'{prefix}cosine_sim_avg'] = float(np.mean(cosine_sims))
 
     return similarities
 
@@ -1849,13 +1872,25 @@ def learn_eigenvectors(args):
         if is_log_step:
             # Compute learned eigenvectors on all states for cosine similarity
             features_dict = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
-            # For visualization and comparison, use right eigenvectors (real parts)
-            learned_features_real = features_dict['right_real']
-            learned_features_imag = features_dict['right_imag']
 
-            # Compute cosine similarities with ground truth (non-symmetric Laplacian)
-            # Compare real part of learned right eigenvectors with ground truth right eigenvectors
-            cosine_sims = compute_cosine_similarities(learned_features_real, gt_right_real)
+            # Compute complex cosine similarities for BOTH left and right eigenvectors
+            # Left eigenvectors (φ)
+            cosine_sims_left = compute_complex_cosine_similarities(
+                learned_real=features_dict['left_real'],
+                learned_imag=features_dict['left_imag'],
+                gt_real=gt_left_real,
+                gt_imag=gt_left_imag,
+                prefix="left_"
+            )
+
+            # Right eigenvectors (ψ)
+            cosine_sims_right = compute_complex_cosine_similarities(
+                learned_real=features_dict['right_real'],
+                learned_imag=features_dict['right_imag'],
+                gt_real=gt_right_real,
+                gt_imag=gt_right_imag,
+                prefix="right_"
+            )
 
             # Store metrics
             elapsed_time = time.time() - start_time
@@ -1868,17 +1903,20 @@ def learn_eigenvectors(args):
             for k, v in metrics.items():
                 metrics_dict[k] = float(v.item())
 
-            # Add cosine similarities to metrics
-            for k, v in cosine_sims.items():
+            # Add cosine similarities to metrics (both left and right)
+            for k, v in cosine_sims_left.items():
+                metrics_dict[k] = v
+            for k, v in cosine_sims_right.items():
                 metrics_dict[k] = v
 
             metrics_history.append(metrics_dict)
 
             if gradient_step % (args.log_freq * 10) == 0:
-                cosine_sim_avg = cosine_sims['cosine_sim_avg']
+                left_sim = cosine_sims_left['left_cosine_sim_avg']
+                right_sim = cosine_sims_right['right_cosine_sim_avg']
                 print(f"Step {gradient_step}: loss={allo.item():.4f}, "
                       f"total_error={metrics['total_error'].item():.4f}, "
-                      f"cosine_sim_avg={cosine_sim_avg:.4f}")
+                      f"left_sim={left_sim:.4f}, right_sim={right_sim:.4f}")
         log_time = time.time() - log_start
 
         # Collect timing samples (last 1000 steps for statistics)
