@@ -1688,6 +1688,12 @@ def learn_eigenvectors(args):
         # We need to figure out the forward transition for visualization
         full_to_canonical = {int(full_idx): canon_idx for canon_idx, full_idx in enumerate(canonical_states)}
 
+        print(f"  DEBUG: Blocked transitions from environment:")
+        action_names = {0: 'Up', 1: 'Right', 2: 'Down', 3: 'Left'}
+        for state, act in data_env.blocked_transitions:
+            y, x = state // data_env.width, state % data_env.width
+            print(f"    State ({x}, {y}) cannot perform action {action_names[act]}")
+
         for state_full, action in data_env.blocked_transitions:
             # This blocks the transition from state_full via action
             # To visualize, we need the REVERSE door (the one that's allowed)
@@ -1719,6 +1725,12 @@ def learn_eigenvectors(args):
         if len(door_markers) > (len(door_config['doors']) if door_config else 0):
             num_file_doors = len(door_markers) - (len(door_config['doors']) if door_config else 0)
             print(f"  Added {num_file_doors} file-defined doors to visualization")
+            print(f"  DEBUG: Door markers from file:")
+            action_names = {0: 'Up', 1: 'Right', 2: 'Down', 3: 'Left'}
+            for (src_state, action), dest_state in door_markers.items():
+                src_y, src_x = src_state // data_env.width, src_state % data_env.width
+                dest_y, dest_x = dest_state // data_env.width, dest_state % data_env.width
+                print(f"    Door from ({src_x}, {src_y}) via {action_names[action]} to ({dest_x}, {dest_y})")
 
     # Save visualization metadata for new runs (skip if resuming)
     if checkpoint_data is None:
