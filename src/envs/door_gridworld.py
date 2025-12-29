@@ -181,6 +181,13 @@ def create_door_gridworld_from_base(
     # Build set of blocked transitions from doors
     # Each door blocks the REVERSE transition
     blocked_transitions = set()
+
+    # If base_env is already a DoorGridWorldEnv, preserve its doors
+    if isinstance(base_env, DoorGridWorldEnv):
+        blocked_transitions.update(base_env.blocked_transitions)
+        print(f"  Preserving {len(base_env.blocked_transitions)} doors from base environment")
+
+    # Add new doors
     for s_canonical, a_forward, s_prime_canonical, a_reverse in doors:
         # Block (s', a_reverse) so that you can't go from s' back to s
         s_prime_full = int(canonical_states[s_prime_canonical])
