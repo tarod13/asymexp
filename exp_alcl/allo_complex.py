@@ -1136,9 +1136,10 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     eigendecomp = compute_eigendecomposition(
         laplacian_matrix,
         k=args.num_eigenvectors,
+        ascending=True  # For Laplacians, we want smallest eigenvalues
     )
 
-    print(f"\nTop {min(5, args.num_eigenvectors)} eigenvalues (complex):")
+    print(f"\nSmallest {min(5, args.num_eigenvectors)} eigenvalues (complex):")
     print("  Eigenvalue (real + imag)")
     for i in range(min(5, args.num_eigenvectors)):
         ev_real = eigendecomp['eigenvalues_real'][i]

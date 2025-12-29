@@ -47,7 +47,8 @@ def get_nonsymmetrized_transition_matrix(
 def compute_eigendecomposition(
     transition_matrix: jnp.ndarray,
     k: Optional[int] = None,
-    sort_by_magnitude: bool = True
+    sort_by_magnitude: bool = True,
+    ascending: bool = False
 ) -> Dict[str, jnp.ndarray]:
     """
     Compute eigendecomposition of a non-symmetric matrix.
@@ -57,8 +58,10 @@ def compute_eigendecomposition(
 
     Args:
         transition_matrix: Shape [num_states, num_states], non-symmetric
-        k: Number of top eigenvalues/vectors to keep (None = keep all)
-        sort_by_magnitude: If True, sort by magnitude of eigenvalues (descending)
+        k: Number of eigenvalues/vectors to keep (None = keep all)
+        sort_by_magnitude: If True, sort by magnitude of eigenvalues
+        ascending: If True, sort in ascending order (smallest first, for Laplacians).
+                   If False, sort in descending order (largest first, for transition matrices).
 
     Returns:
         Dictionary containing:
@@ -98,7 +101,10 @@ def compute_eigendecomposition(
     # Sort by magnitude if requested
     if sort_by_magnitude:
         magnitudes = jnp.abs(eigenvalues)
-        sorted_indices = jnp.argsort(-magnitudes)  # Descending order
+        if ascending:
+            sorted_indices = jnp.argsort(magnitudes)  # Ascending order (smallest first)
+        else:
+            sorted_indices = jnp.argsort(-magnitudes)  # Descending order (largest first)
         eigenvalues = eigenvalues[sorted_indices]
         right_eigenvectors = right_eigenvectors[:, sorted_indices]
         left_eigenvectors = left_eigenvectors[:, sorted_indices]
