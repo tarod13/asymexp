@@ -1,8 +1,10 @@
 """
-Train a model to learn eigenvectors of the symmetrized transition matrix.
+Train a model to learn eigenvectors of the symmetrized Laplacian.
 
 This script uses (x,y) coordinates as inputs to the network and learns
-the eigenvectors through an augmented Lagrangian optimization approach.
+the eigenvectors of L = I - (SR_γ + SR_γ^T)/2 through an augmented
+Lagrangian optimization approach, where SR_γ is the successor representation
+matrix (Neumann series).
 """
 
 import os
@@ -75,22 +77,18 @@ class CoordinateEncoder(nn.Module):
         return features, {}
 
 
-def get_symmetrized_transition_matrix(
+def get_transition_matrix(
     transition_counts: jnp.ndarray,
-    smoothing: float = 1e-5,
     make_stochastic: bool = True,
-    make_doubly_stochastic: bool = False,
 ) -> jnp.ndarray:
     """
-    Build symmetrized transition matrix from counts.
+    Build transition matrix from counts (non-symmetrized).
 
     Args:
         transition_counts: Shape [num_states, num_actions, num_states] or [num_states, num_states]
-        smoothing: Small value to add for numerical stability
         make_stochastic: Whether to row-normalize to get proper transition probabilities
-        make_doubly_stochastic: Whether to iteratively normalize rows and columns for doubly stochastic matrix
     Returns:
-        Symmetrized transition matrix of shape [num_states, num_states]
+        Transition matrix of shape [num_states, num_states]
     """
     # Sum over actions if needed
     if len(transition_counts.shape) == 3:
@@ -102,23 +100,164 @@ def get_symmetrized_transition_matrix(
         row_sums = jnp.sum(transition_matrix.clip(1), axis=1, keepdims=True)
         transition_matrix = transition_matrix.clip(1) / row_sums
 
-    # Symmetrize
-    transition_matrix = (transition_matrix + transition_matrix.T) / 2.0
-
-    # Normalize if requested (with iterations for better symmetry)
-    if make_doubly_stochastic:
-        # Add smoothing factor
-        transition_matrix = transition_matrix + smoothing
-
-        for _ in range(2):
-            row_sums = jnp.sum(transition_matrix, axis=1, keepdims=True)
-            transition_matrix = transition_matrix / jnp.maximum(row_sums, 1e-10)
-
-            # Re-symmetrize after normalization
-            transition_matrix = jnp.tril(transition_matrix)
-            transition_matrix = transition_matrix + transition_matrix.T - jnp.diag(jnp.diag(transition_matrix))
-
     return transition_matrix
+
+
+def compute_successor_representation(
+    transition_matrix: jnp.ndarray,
+    gamma: float,
+) -> jnp.ndarray:
+    """
+    Compute the successor representation SR_γ = (I - γP)^(-1).
+
+    Args:
+        transition_matrix: Shape [num_states, num_states], stochastic transition matrix P
+        gamma: Discount factor
+
+    Returns:
+        Successor representation of shape [num_states, num_states]
+    """
+    num_states = transition_matrix.shape[0]
+    identity = jnp.eye(num_states)
+
+    # SR_γ = (I - γP)^(-1)
+    sr_matrix = jnp.linalg.inv(identity - gamma * transition_matrix)
+
+    return sr_matrix
+
+
+def compute_sampling_distribution(
+    transition_counts: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Compute the empirical sampling distribution from transition counts.
+
+    Args:
+        transition_counts: Shape [num_states, num_actions, num_states] or [num_states, num_states]
+
+    Returns:
+        Diagonal matrix D where D_{ii} is the empirical sampling probability of state i
+    """
+    # Sum over actions and next states to get visit counts per state
+    if len(transition_counts.shape) == 3:
+        # Sum over actions and next states
+        state_visit_counts = jnp.sum(transition_counts, axis=(1, 2))
+    else:
+        # Sum over next states
+        state_visit_counts = jnp.sum(transition_counts, axis=1)
+
+    # Normalize to get probabilities
+    total_visits = jnp.sum(state_visit_counts)
+    sampling_probs = state_visit_counts / total_visits
+
+    # Create diagonal matrix
+    D = jnp.diag(sampling_probs)
+
+    return D
+
+
+def compute_symmetrized_laplacian(
+    transition_matrix: jnp.ndarray,
+    gamma: float,
+) -> jnp.ndarray:
+    """
+    Compute the symmetrized Laplacian L = I - (1-γ)(SR_γ + SR_γ^T)/2.
+
+    This is a simplified version that assumes uniform sampling distribution.
+
+    Args:
+        transition_matrix: Shape [num_states, num_states], stochastic transition matrix P
+        gamma: Discount factor used in successor representation
+
+    Returns:
+        Symmetrized Laplacian of shape [num_states, num_states]
+    """
+    num_states = transition_matrix.shape[0]
+    identity = jnp.eye(num_states)
+
+    # Compute successor representation SR_γ = (I - γP)^(-1)
+    sr_matrix = compute_successor_representation(transition_matrix, gamma)
+
+    # Symmetrize: (SR_γ + SR_γ^T)/2
+    sr_symmetrized = (sr_matrix + sr_matrix.T) / 2.0
+
+    # Compute Laplacian: L = I - (1-γ)(SR_γ + SR_γ^T)/2
+    laplacian = identity - (1 - gamma) * sr_symmetrized
+
+    return laplacian
+
+
+def compute_weighted_symmetrized_laplacian(
+    transition_matrix: jnp.ndarray,
+    sampling_distribution: jnp.ndarray,
+    gamma: float,
+) -> jnp.ndarray:
+    """
+    Compute the weighted symmetrized Laplacian L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2.
+
+    This version accounts for non-uniform sampling distribution D.
+
+    Args:
+        transition_matrix: Shape [num_states, num_states], stochastic transition matrix P
+        sampling_distribution: Shape [num_states, num_states], diagonal matrix D with sampling probabilities
+        gamma: Discount factor used in successor representation
+
+    Returns:
+        Weighted symmetrized Laplacian of shape [num_states, num_states]
+    """
+    # Compute successor representation SR_γ = (I - γP)^(-1)
+    sr_matrix = compute_successor_representation(transition_matrix, gamma)
+
+    # Compute DSR_γ and SR_γ^TD^T
+    D_SR = sampling_distribution @ sr_matrix
+    SR_D_T = sr_matrix.T @ sampling_distribution.T
+
+    # Symmetrize: (DSR_γ + SR_γ^TD^T)/2
+    weighted_sr_symmetrized = (D_SR + SR_D_T) / 2.0
+
+    # Compute Laplacian: L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
+    laplacian = sampling_distribution - (1 - gamma) * weighted_sr_symmetrized
+
+    return laplacian
+
+
+def compute_inverse_weighted_laplacian(
+    transition_matrix: jnp.ndarray,
+    sampling_distribution: jnp.ndarray,
+    gamma: float,
+) -> jnp.ndarray:
+    """
+    Compute the inverse-weighted Laplacian L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2.
+
+    This version accounts for the cancellation of D on the left and introduction of D^{-1} on the transpose.
+
+    Args:
+        transition_matrix: Shape [num_states, num_states], stochastic transition matrix P
+        sampling_distribution: Shape [num_states, num_states], diagonal matrix D with sampling probabilities
+        gamma: Discount factor used in successor representation
+
+    Returns:
+        Inverse-weighted Laplacian of shape [num_states, num_states]
+    """
+    num_states = transition_matrix.shape[0]
+    identity = jnp.eye(num_states)
+
+    # Compute successor representation SR_γ = (I - γP)^(-1)
+    sr_matrix = compute_successor_representation(transition_matrix, gamma)
+
+    # Compute D^{-1} (inverse of diagonal matrix)
+    D_inv = jnp.linalg.inv(sampling_distribution)
+
+    # Compute SR_γ and D^{-1}SR_γ^TD
+    Dinv_SRT_D = D_inv @ sr_matrix.T @ sampling_distribution
+
+    # Symmetrize: (SR_γ + D^{-1}SR_γ^TD)/2
+    inverse_weighted_sr_symmetrized = (sr_matrix + Dinv_SRT_D) / 2.0
+
+    # Compute Laplacian: L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
+    laplacian = identity - (1 - gamma) * inverse_weighted_sr_symmetrized
+
+    return laplacian
 
 
 def compute_symmetrized_eigendecomposition(
@@ -147,8 +286,8 @@ def compute_symmetrized_eigendecomposition(
     # Compute eigendecomposition (for symmetric matrices, use eigh for better stability)
     eigenvalues, eigenvectors = jnp.linalg.eigh(transition_matrix)
 
-    # Sort by descending eigenvalue magnitude
-    sorted_indices = jnp.argsort(-jnp.abs(eigenvalues))
+    # Sort by ascending eigenvalue magnitude
+    sorted_indices = jnp.argsort(jnp.abs(eigenvalues))
     eigenvalues = eigenvalues[sorted_indices]
     eigenvectors = eigenvectors[:, sorted_indices]
 
@@ -199,10 +338,9 @@ class Args:
     learning_rate: float = 3e-4
     batch_size: int = 256
     num_gradient_steps: int = 20000
-    gamma: float = 0.99
+    gamma: float = 0.2  # Discount factor for successor representation
 
     # Episodic replay buffer
-    geometric_gamma: float = 0.2  # Decay for truncated geometric distribution (higher = prefer shorter time gaps)
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
 
     # Augmented Lagrangian parameters
@@ -336,23 +474,27 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
     print(f"Learning curves saved to {save_path}")
 
 
-def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamma, save_path, num_eigenvectors=11):
+def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamma, save_path,
+                                  num_eigenvectors=11, ground_truth_eigenvalues_simple=None,
+                                  ground_truth_eigenvalues_weighted=None):
     """
-    Plot the evolution of dual variables (eigenvalue estimates) vs ground truth eigenvalues.
+    Plot the evolution of dual variables (Laplacian eigenvalue estimates) vs ground truth eigenvalues.
 
-    The duals are eigenvalues of the Laplacian L = I - SR_gamma, where SR_gamma is the
-    successor representation with discount gamma. They are converted to approximate
-    eigenvalues of the transition matrix using:
-    approx_eigenvalue = (gamma + 0.5*dual) / (gamma * (1 + 0.5*dual))
+    The duals are eigenvalues of the inverse-weighted Laplacian L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2,
+    where SR_γ is the successor representation with discount gamma and D is the sampling distribution.
 
-    The 0.5 factor arises from the sampling scheme with the episodic replay buffer.
+    The 0.5 factor arises from the sampling scheme with the episodic replay buffer,
+    which samples (s_t, s_{t+k}) pairs where k is geometrically distributed. This
+    effectively implements the symmetrized version with the 0.5 scaling.
 
     Args:
         metrics_history: List of metric dictionaries
-        ground_truth_eigenvalues: Array of ground truth eigenvalues of the transition matrix
-        gamma: Discount factor used in the successor representation
+        ground_truth_eigenvalues: Array of ground truth eigenvalues of the inverse-weighted Laplacian
+        gamma: Discount factor used in the successor representation (not used in this version)
         save_path: Path to save the plot
         num_eigenvectors: Number of eigenvectors to plot
+        ground_truth_eigenvalues_simple: Optional array of simple Laplacian eigenvalues for comparison
+        ground_truth_eigenvalues_weighted: Optional array of weighted Laplacian eigenvalues for comparison
     """
     steps = [m['gradient_step'] for m in metrics_history]
     num_plot = min(num_eigenvectors, len(ground_truth_eigenvalues))
@@ -360,52 +502,96 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
     # Create figure with two rows: eigenvalue approximation and errors
     fig, axes = plt.subplots(2, 1, figsize=(12, 10))
 
-    # Plot 1: Approximate eigenvalues vs ground truth
+    # Plot 1: Dual variables (Laplacian eigenvalues) vs ground truth
     ax1 = axes[0]
     colors = plt.cm.tab10(np.linspace(0, 1, num_plot))
 
     for i in range(num_plot):
         dual_key = f'dual_{i}'
         if dual_key in metrics_history[0]:
-            # Get dual values and convert to approximate eigenvalues
+            # Get dual values (these are eigenvalues of the Laplacian)
             dual_values = np.array([m[dual_key] for m in metrics_history])
-            # Apply 0.5 factor before conversion (due to sampling scheme)
-            dual_values_scaled = (0.5 * dual_values).clip(-0.99, None)
-            approx_eigenvalues = (gamma + dual_values_scaled) / (gamma * (1 + dual_values_scaled))
-            approx_eigenvalues = approx_eigenvalues.clip(-2.0, 2.0)
+            # Apply 0.5 factor due to sampling scheme
+            dual_values_scaled = 0.5 * dual_values
 
-            ax1.plot(steps, approx_eigenvalues, label=f'Approx λ_{i}', color=colors[i], linewidth=1.5)
+            ax1.plot(steps, dual_values_scaled, label=f'Learned λ_{i}', color=colors[i], linewidth=1.5)
 
-            # Plot ground truth as horizontal dashed line
+            # Plot inverse-weighted Laplacian ground truth as solid horizontal line (main baseline)
             gt_value = float(ground_truth_eigenvalues[i].real)
-            ax1.axhline(y=gt_value, color=colors[i], linestyle='--', alpha=0.5, linewidth=1.5)
+            ax1.axhline(y=gt_value, color=colors[i], linestyle='-', alpha=0.3, linewidth=2.5,
+                       label=f'GT Inv-Weighted λ_{i}' if i == 0 else '')
+
+            # Plot weighted Laplacian ground truth as dash-dot line if provided
+            if ground_truth_eigenvalues_weighted is not None:
+                gt_weighted_value = float(ground_truth_eigenvalues_weighted[i].real)
+                ax1.axhline(y=gt_weighted_value, color=colors[i], linestyle='-.', alpha=0.3, linewidth=1.5,
+                           label=f'GT Weighted λ_{i}' if i == 0 else '')
+
+            # Plot simple Laplacian ground truth as dashed line if provided
+            if ground_truth_eigenvalues_simple is not None:
+                gt_simple_value = float(ground_truth_eigenvalues_simple[i].real)
+                ax1.axhline(y=gt_simple_value, color=colors[i], linestyle='--', alpha=0.3, linewidth=1.5,
+                           label=f'GT Simple λ_{i}' if i == 0 else '')
 
     ax1.set_xlabel('Gradient Step', fontsize=12)
-    ax1.set_ylabel('Eigenvalue', fontsize=12)
-    ax1.set_title('Approximate Eigenvalues from Duals (solid) vs Ground Truth (dashed)', fontsize=14)
+    ax1.set_ylabel('Laplacian Eigenvalue', fontsize=12)
+
+    # Build title based on what baselines are available
+    title_parts = []
+    if ground_truth_eigenvalues is not None:
+        title_parts.append('solid=inv-weighted')
+    if ground_truth_eigenvalues_weighted is not None:
+        title_parts.append('dash-dot=weighted')
+    if ground_truth_eigenvalues_simple is not None:
+        title_parts.append('dashed=simple')
+    title = 'Learned Eigenvalues vs Ground Truth (' + ', '.join(title_parts) + ')'
+    ax1.set_title(title, fontsize=14)
     ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
     ax1.grid(True, alpha=0.3)
 
-    # Plot 2: Absolute errors
+    # Plot 2: Absolute errors for all versions
     ax2 = axes[1]
 
     for i in range(num_plot):
         dual_key = f'dual_{i}'
         if dual_key in metrics_history[0]:
-            # Get dual values and convert to approximate eigenvalues
+            # Get dual values (eigenvalues of the Laplacian)
             dual_values = np.array([m[dual_key] for m in metrics_history])
-            # Apply 0.5 factor before conversion (due to sampling scheme)
-            dual_values_scaled = (0.5 * dual_values).clip(-0.99, None)
-            approx_eigenvalues = (gamma + dual_values_scaled) / (gamma * (1 + dual_values_scaled))
-            approx_eigenvalues = approx_eigenvalues.clip(-2.0, 2.0)
+            # Apply 0.5 factor due to sampling scheme
+            dual_values_scaled = 0.5 * dual_values
 
+            # Error vs inverse-weighted Laplacian (main baseline)
             gt_value = float(ground_truth_eigenvalues[i].real)
-            errors = np.abs(approx_eigenvalues - gt_value)
-            ax2.plot(steps, errors, label=f'|Approx λ_{i} - λ_{i}|', color=colors[i], linewidth=1.5)
+            errors = np.abs(dual_values_scaled - gt_value)
+            ax2.plot(steps, errors, label=f'vs Inv-Weighted λ_{i}', color=colors[i], linewidth=1.5, linestyle='-')
+
+            # Error vs weighted Laplacian if provided
+            if ground_truth_eigenvalues_weighted is not None:
+                gt_weighted_value = float(ground_truth_eigenvalues_weighted[i].real)
+                errors_weighted = np.abs(dual_values_scaled - gt_weighted_value)
+                ax2.plot(steps, errors_weighted, label=f'vs Weighted λ_{i}', color=colors[i],
+                        linewidth=1.5, linestyle='-.', alpha=0.5)
+
+            # Error vs simple Laplacian if provided
+            if ground_truth_eigenvalues_simple is not None:
+                gt_simple_value = float(ground_truth_eigenvalues_simple[i].real)
+                errors_simple = np.abs(dual_values_scaled - gt_simple_value)
+                ax2.plot(steps, errors_simple, label=f'vs Simple λ_{i}', color=colors[i],
+                        linewidth=1.5, linestyle='--', alpha=0.5)
 
     ax2.set_xlabel('Gradient Step', fontsize=12)
     ax2.set_ylabel('Absolute Error', fontsize=12)
-    ax2.set_title('Absolute Errors in Eigenvalue Approximations', fontsize=14)
+
+    # Build title based on what baselines are available
+    error_title_parts = []
+    if ground_truth_eigenvalues is not None:
+        error_title_parts.append('solid=inv-weighted')
+    if ground_truth_eigenvalues_weighted is not None:
+        error_title_parts.append('dash-dot=weighted')
+    if ground_truth_eigenvalues_simple is not None:
+        error_title_parts.append('dashed=simple')
+    error_title = 'Absolute Errors (' + ', '.join(error_title_parts) + ')'
+    ax2.set_title(error_title, fontsize=14)
     ax2.set_yscale('log')
     ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
     ax2.grid(True, alpha=0.3, which='both')
@@ -414,6 +600,84 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"Dual variable evolution plot saved to {save_path}")
+
+
+def plot_sampling_distribution(
+    sampling_probs: jnp.ndarray,
+    canonical_states: jnp.ndarray,
+    grid_width: int,
+    grid_height: int,
+    save_path: str,
+    portals: dict = None,
+):
+    """
+    Visualize the empirical sampling distribution D on the grid.
+
+    Args:
+        sampling_probs: 1D array of sampling probabilities for each canonical state
+        canonical_states: Array of canonical state indices
+        grid_width: Width of the grid
+        grid_height: Height of the grid
+        save_path: Path to save the visualization
+        portals: Optional dictionary of portal/door markers
+    """
+    fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+
+    # Create a full grid initialized with NaN for obstacles
+    grid_values = np.full((grid_height, grid_width), np.nan)
+
+    # Fill in the sampling probabilities for canonical states
+    for canon_idx, full_state_idx in enumerate(canonical_states):
+        y = int(full_state_idx) // grid_width
+        x = int(full_state_idx) % grid_width
+        grid_values[y, x] = float(sampling_probs[canon_idx])
+
+    # Create the heatmap
+    im = ax.imshow(grid_values, cmap='viridis', interpolation='nearest', origin='upper')
+
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Sampling Probability', fontsize=12)
+
+    # Add grid lines
+    ax.set_xticks(np.arange(grid_width) - 0.5, minor=True)
+    ax.set_yticks(np.arange(grid_height) - 0.5, minor=True)
+    ax.grid(which="minor", color="gray", linestyle='-', linewidth=0.5, alpha=0.3)
+
+    # Add portal markers if provided
+    if portals:
+        for (state, action), next_state in portals.items():
+            y = state // grid_width
+            x = state % grid_width
+            next_y = next_state // grid_width
+            next_x = next_state % grid_width
+
+            # Draw arrow from state to next_state
+            dx = next_x - x
+            dy = next_y - y
+            ax.arrow(x, y, dx * 0.3, dy * 0.3,
+                    head_width=0.2, head_length=0.15,
+                    fc='red', ec='red', linewidth=2, alpha=0.7)
+
+    ax.set_xlabel('X', fontsize=12)
+    ax.set_ylabel('Y', fontsize=12)
+    ax.set_title('Empirical Sampling Distribution D', fontsize=14, fontweight='bold')
+
+    # Add statistics text
+    stats_text = (f'Min: {np.nanmin(grid_values):.6f}\n'
+                  f'Max: {np.nanmax(grid_values):.6f}\n'
+                  f'Mean: {np.nanmean(grid_values):.6f}\n'
+                  f'Std: {np.nanstd(grid_values):.6f}')
+    ax.text(0.02, 0.98, stats_text,
+            transform=ax.transAxes,
+            fontsize=10,
+            verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Sampling distribution visualization saved to {save_path}")
 
 
 def save_checkpoint(
@@ -520,6 +784,11 @@ def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_
     """
     Plot the evolution of cosine similarities between learned and ground truth eigenvectors.
 
+    Plots comparisons against all three Laplacian baselines if available:
+    - Simple: L = I - (1-γ)(SR_γ + SR_γ^T)/2
+    - Weighted: L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
+    - Inverse-weighted: L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
+
     Args:
         metrics_history: List of metric dictionaries containing cosine similarity values
         save_path: Path to save the plot
@@ -527,31 +796,62 @@ def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_
     """
     steps = [m['gradient_step'] for m in metrics_history]
 
+    # Check which baseline comparisons are available
+    has_invweighted = 'cosine_sim_avg_invweighted' in metrics_history[0]
+    has_weighted = 'cosine_sim_avg_weighted' in metrics_history[0]
+    has_simple = 'cosine_sim_avg_simple' in metrics_history[0]
+    has_legacy = 'cosine_sim_avg' in metrics_history[0]  # Old format without suffix
+
     # Determine number of eigenvectors to plot
     if num_eigenvectors is None:
-        # Count how many cosine_sim_i keys exist
-        num_eigenvectors = sum(1 for key in metrics_history[0].keys() if key.startswith('cosine_sim_') and key != 'cosine_sim_avg')
+        # Count how many cosine_sim_i keys exist (check all variants)
+        if has_invweighted:
+            num_eigenvectors = sum(1 for key in metrics_history[0].keys()
+                                 if key.startswith('cosine_sim_') and key.endswith('_invweighted')
+                                 and 'avg' not in key)
+        elif has_weighted:
+            num_eigenvectors = sum(1 for key in metrics_history[0].keys()
+                                 if key.startswith('cosine_sim_') and key.endswith('_weighted')
+                                 and 'avg' not in key)
+        elif has_legacy:
+            num_eigenvectors = sum(1 for key in metrics_history[0].keys()
+                                 if key.startswith('cosine_sim_') and key != 'cosine_sim_avg')
+        else:
+            num_eigenvectors = 0
 
     fig, ax = plt.subplots(1, 1, figsize=(12, 8))
 
-    # Use a colormap for different eigenvectors
-    colors = plt.cm.viridis(np.linspace(0, 1, num_eigenvectors + 1))
+    # Plot average cosine similarities for each baseline
+    if has_invweighted:
+        avg_values_invweighted = [m['cosine_sim_avg_invweighted'] for m in metrics_history]
+        ax.plot(steps, avg_values_invweighted, label='Avg vs Inverse-Weighted Laplacian',
+                color='green', linewidth=2.5, linestyle='-')
 
-    # Plot cosine similarity for each component
-    for i in range(num_eigenvectors):
-        key = f'cosine_sim_{i}'
-        if key in metrics_history[0]:
-            values = [m[key] for m in metrics_history]
-            ax.plot(steps, values, label=f'Component {i}', color=colors[i], linewidth=1.5, alpha=0.7)
+    if has_weighted:
+        avg_values_weighted = [m['cosine_sim_avg_weighted'] for m in metrics_history]
+        ax.plot(steps, avg_values_weighted, label='Avg vs Weighted Laplacian',
+                color='blue', linewidth=2.5, linestyle='-.')
 
-    # Plot average cosine similarity with thicker line
-    if 'cosine_sim_avg' in metrics_history[0]:
+    if has_simple:
+        avg_values_simple = [m['cosine_sim_avg_simple'] for m in metrics_history]
+        ax.plot(steps, avg_values_simple, label='Avg vs Simple Laplacian',
+                color='red', linewidth=2.5, linestyle='--')
+
+    if has_legacy and not (has_invweighted or has_weighted):
+        # Old format compatibility
         avg_values = [m['cosine_sim_avg'] for m in metrics_history]
-        ax.plot(steps, avg_values, label='Average', color='black', linewidth=2.5, linestyle='--')
+        ax.plot(steps, avg_values, label='Average', color='black', linewidth=2.5, linestyle='-')
 
     ax.set_xlabel('Gradient Step', fontsize=12)
     ax.set_ylabel('Absolute Cosine Similarity', fontsize=12)
-    ax.set_title('Evolution of Absolute Cosine Similarity between Learned and Ground Truth Eigenvectors', fontsize=14)
+
+    # Set title based on what baselines are available
+    num_baselines = sum([has_invweighted, has_weighted, has_simple])
+    if num_baselines > 1:
+        ax.set_title('Cosine Similarity: Learned vs All Laplacian Baselines', fontsize=14)
+    else:
+        ax.set_title('Evolution of Absolute Cosine Similarity between Learned and Ground Truth Eigenvectors', fontsize=14)
+
     ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
     ax.grid(True, alpha=0.3)
     ax.set_ylim([0, 1.05])  # Cosine similarity is in [0, 1]
@@ -669,16 +969,25 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     """
     Collect transition data and compute ground truth eigenvectors.
 
+    Computes eigenvalues for three Laplacian versions:
+    - Simple: L = I - (1-γ)(SR_γ + SR_γ^T)/2
+    - Weighted: L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
+    - Inverse-Weighted: L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
+
     Args:
         env: Base environment (possibly with doors already applied)
 
     Returns:
-        transition_matrix: Symmetrized transition matrix
-        eigendecomp: Dictionary with eigenvalues and eigenvectors
+        laplacian_matrix: Inverse-weighted Laplacian L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
+        eigendecomp: Dictionary with eigenvalues and eigenvectors of the inverse-weighted Laplacian
+        eigendecomp_simple: Dictionary with eigenvalues and eigenvectors of the simple Laplacian
+        eigendecomp_weighted: Dictionary with eigenvalues and eigenvectors of the weighted Laplacian
         state_coords: Array of (x,y) coordinates for each state
         canonical_states: Array of free state indices
-        doors: Door configuration (if use_doors=True)
+        sampling_probs: 1D array of empirical sampling probabilities for each canonical state
+        door_config: Door configuration (if use_doors=True)
         data_env: The environment used for data collection (with doors if applicable)
+        replay_buffer: Episodic replay buffer filled with collected episodes
     """
     print("Collecting transition data...")
     num_states = env.width * env.height
@@ -767,20 +1076,59 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     # Extract canonical state subspace
     transition_counts = transition_counts_full[jnp.ix_(canonical_states, jnp.arange(env.action_space), canonical_states)]
 
-    # Build symmetrized transition matrix
-    print("\nBuilding symmetrized transition matrix...")
-    transition_matrix = get_symmetrized_transition_matrix(transition_counts)
+    # Build transition matrix (non-symmetrized)
+    print("\nBuilding transition matrix...")
+    transition_matrix = get_transition_matrix(transition_counts)
 
-    # Compute eigendecomposition
-    print(f"Computing eigendecomposition (top {args.num_eigenvectors} eigenvectors)...")
-    eigendecomp = compute_symmetrized_eigendecomposition(
-        transition_matrix,
+    # Compute sampling distribution D
+    print("Computing empirical sampling distribution...")
+    sampling_distribution = compute_sampling_distribution(transition_counts)
+    sampling_probs = jnp.diag(sampling_distribution)
+    print(f"  Sampling prob range: [{sampling_probs.min():.6f}, {sampling_probs.max():.6f}]")
+    print(f"  Sampling prob std: {sampling_probs.std():.6f}")
+
+    # Compute ALL three Laplacian versions for comparison
+    print(f"\nComputing Laplacians with gamma={args.gamma}...")
+
+    # Version 1: Simple Laplacian L = I - (1-γ)(SR_γ + SR_γ^T)/2
+    print("  Computing simple Laplacian L = I - (1-γ)(SR_γ + SR_γ^T)/2...")
+    laplacian_simple = compute_symmetrized_laplacian(transition_matrix, args.gamma)
+    eigendecomp_simple = compute_symmetrized_eigendecomposition(
+        laplacian_simple,
         k=args.num_eigenvectors,
     )
 
-    print(f"Top {min(5, args.num_eigenvectors)} eigenvalues:")
+    # Version 2: Weighted Laplacian L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
+    print("  Computing weighted Laplacian L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2...")
+    laplacian_weighted = compute_weighted_symmetrized_laplacian(
+        transition_matrix, sampling_distribution, args.gamma
+    )
+    eigendecomp_weighted = compute_symmetrized_eigendecomposition(
+        laplacian_weighted,
+        k=args.num_eigenvectors,
+    )
+
+    # Version 3: Inverse-weighted Laplacian L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
+    print("  Computing inverse-weighted Laplacian L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2...")
+    laplacian_invweighted = compute_inverse_weighted_laplacian(
+        transition_matrix, sampling_distribution, args.gamma
+    )
+    eigendecomp_invweighted = compute_symmetrized_eigendecomposition(
+        laplacian_invweighted,
+        k=args.num_eigenvectors,
+    )
+
+    # Use the inverse-weighted version as the main baseline (most likely what the algorithm learns)
+    laplacian_matrix = laplacian_invweighted
+    eigendecomp = eigendecomp_invweighted
+
+    print(f"\nTop {min(5, args.num_eigenvectors)} eigenvalues comparison:")
+    print("  Simple | Weighted | Inverse-Weighted")
     for i in range(min(5, args.num_eigenvectors)):
-        print(f"  λ_{i}: {eigendecomp['eigenvalues'][i]:.6f}")
+        simple_ev = eigendecomp_simple['eigenvalues'][i]
+        weighted_ev = eigendecomp_weighted['eigenvalues'][i]
+        invweighted_ev = eigendecomp_invweighted['eigenvalues'][i]
+        print(f"  λ_{i}: {simple_ev:.6f} | {weighted_ev:.6f} | {invweighted_ev:.6f}")
 
     # Create state coordinate mapping (only for canonical/free states)
     state_coords = []
@@ -805,7 +1153,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print(f"  Coordinate range: x=[{state_coords[:, 0].min():.3f}, {state_coords[:, 0].max():.3f}], "
           f"y=[{state_coords[:, 1].min():.3f}, {state_coords[:, 1].max():.3f}]")
 
-    return transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env, replay_buffer
+    return laplacian_matrix, eigendecomp, eigendecomp_simple, eigendecomp_weighted, eigendecomp_invweighted, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer
 
 
 def learn_eigenvectors(args):
@@ -885,7 +1233,45 @@ def learn_eigenvectors(args):
         # Load saved eigenvectors and state coordinates
         gt_eigenvalues = jnp.array(np.load(results_dir / "gt_eigenvalues.npy"))
         gt_eigenvectors = jnp.array(np.load(results_dir / "gt_eigenvectors.npy"))
+
+        # Try to load simple eigenvalues if they exist
+        simple_eigenvalues_path = results_dir / "gt_eigenvalues_simple.npy"
+        simple_eigenvectors_path = results_dir / "gt_eigenvectors_simple.npy"
+        if simple_eigenvalues_path.exists() and simple_eigenvectors_path.exists():
+            gt_eigenvalues_simple = jnp.array(np.load(simple_eigenvalues_path))
+            gt_eigenvectors_simple = jnp.array(np.load(simple_eigenvectors_path))
+        else:
+            gt_eigenvalues_simple = None
+            gt_eigenvectors_simple = None
+
+        # Try to load weighted eigenvalues if they exist
+        weighted_eigenvalues_path = results_dir / "gt_eigenvalues_weighted.npy"
+        weighted_eigenvectors_path = results_dir / "gt_eigenvectors_weighted.npy"
+        if weighted_eigenvalues_path.exists() and weighted_eigenvectors_path.exists():
+            gt_eigenvalues_weighted = jnp.array(np.load(weighted_eigenvalues_path))
+            gt_eigenvectors_weighted = jnp.array(np.load(weighted_eigenvectors_path))
+        else:
+            gt_eigenvalues_weighted = None
+            gt_eigenvectors_weighted = None
+
+        # Try to load inverse-weighted eigenvalues if they exist
+        invweighted_eigenvalues_path = results_dir / "gt_eigenvalues_invweighted.npy"
+        invweighted_eigenvectors_path = results_dir / "gt_eigenvectors_invweighted.npy"
+        if invweighted_eigenvalues_path.exists() and invweighted_eigenvectors_path.exists():
+            gt_eigenvalues_invweighted = jnp.array(np.load(invweighted_eigenvalues_path))
+            gt_eigenvectors_invweighted = jnp.array(np.load(invweighted_eigenvectors_path))
+        else:
+            gt_eigenvalues_invweighted = None
+            gt_eigenvectors_invweighted = None
+
         state_coords = jnp.array(np.load(results_dir / "state_coords.npy"))
+
+        # Try to load sampling distribution if it exists
+        sampling_dist_path = results_dir / "sampling_distribution.npy"
+        if sampling_dist_path.exists():
+            sampling_probs = jnp.array(np.load(sampling_dist_path))
+        else:
+            sampling_probs = None
 
         # Load visualization metadata
         with open(results_dir / "viz_metadata.pkl", 'rb') as f:
@@ -915,10 +1301,16 @@ def learn_eigenvectors(args):
     else:
         # Create environment and collect data (new run)
         env = create_gridworld_env(args)
-        transition_matrix, eigendecomp, state_coords, canonical_states, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
+        laplacian_matrix, eigendecomp, eigendecomp_simple, eigendecomp_weighted, eigendecomp_invweighted, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
 
         gt_eigenvalues = eigendecomp['eigenvalues_real']
         gt_eigenvectors = eigendecomp['right_eigenvectors_real']
+        gt_eigenvalues_simple = eigendecomp_simple['eigenvalues_real']
+        gt_eigenvectors_simple = eigendecomp_simple['right_eigenvectors_real']
+        gt_eigenvalues_weighted = eigendecomp_weighted['eigenvalues_real']
+        gt_eigenvectors_weighted = eigendecomp_weighted['right_eigenvectors_real']
+        gt_eigenvalues_invweighted = eigendecomp_invweighted['eigenvalues_real']
+        gt_eigenvectors_invweighted = eigendecomp_invweighted['right_eigenvectors_real']
 
     print(f"\nState coordinates shape: {state_coords.shape}")
     print(f"Ground truth eigenvectors shape: {gt_eigenvectors.shape}")
@@ -938,9 +1330,41 @@ def learn_eigenvectors(args):
             print(f"Door configuration saved to {door_save_path}")
 
         # Save ground truth eigendecomposition and state coords
+        # Inverse-weighted Laplacian (main baseline): L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
         np.save(results_dir / "gt_eigenvalues.npy", np.array(gt_eigenvalues))
         np.save(results_dir / "gt_eigenvectors.npy", np.array(gt_eigenvectors))
+        # Simple Laplacian (for comparison): L = I - (1-γ)(SR_γ + SR_γ^T)/2
+        np.save(results_dir / "gt_eigenvalues_simple.npy", np.array(gt_eigenvalues_simple))
+        np.save(results_dir / "gt_eigenvectors_simple.npy", np.array(gt_eigenvectors_simple))
+        # Weighted Laplacian (for comparison): L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
+        np.save(results_dir / "gt_eigenvalues_weighted.npy", np.array(gt_eigenvalues_weighted))
+        np.save(results_dir / "gt_eigenvectors_weighted.npy", np.array(gt_eigenvectors_weighted))
+        # Inverse-weighted Laplacian (for comparison): L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
+        np.save(results_dir / "gt_eigenvalues_invweighted.npy", np.array(gt_eigenvalues_invweighted))
+        np.save(results_dir / "gt_eigenvectors_invweighted.npy", np.array(gt_eigenvectors_invweighted))
+        # State coordinates
         np.save(results_dir / "state_coords.npy", np.array(state_coords))
+        # Sampling distribution
+        np.save(results_dir / "sampling_distribution.npy", np.array(sampling_probs))
+
+        # Visualize and save sampling distribution
+        if args.plot_during_training:
+            # Convert doors to portal markers for visualization
+            door_markers = {}
+            if door_config is not None and 'doors' in door_config:
+                for s_canonical, a_forward, s_prime_canonical, a_reverse in door_config['doors']:
+                    s_full = int(canonical_states[s_canonical])
+                    s_prime_full = int(canonical_states[s_prime_canonical])
+                    door_markers[(s_full, a_forward)] = s_prime_full
+
+            plot_sampling_distribution(
+                sampling_probs=sampling_probs,
+                canonical_states=canonical_states,
+                grid_width=env.width,
+                grid_height=env.height,
+                save_path=str(plots_dir / "sampling_distribution.png"),
+                portals=door_markers if door_markers else None
+            )
 
     # Initialize the encoder
     encoder = CoordinateEncoder(
@@ -1212,15 +1636,15 @@ def learn_eigenvectors(args):
             'grid_height': env.height,
             'door_markers': door_markers,
             'num_eigenvectors': args.num_eigenvectors,
-            'geometric_gamma': args.geometric_gamma,
+            'gamma': args.gamma,
         }
         with open(results_dir / "viz_metadata.pkl", 'wb') as f:
             pickle.dump(viz_metadata, f)
 
         # Optionally plot ground truth eigenvectors immediately
         if args.plot_during_training:
-            # Need to create eigendecomp for visualization
-            eigendecomp_viz = {
+            # Plot inverse-weighted Laplacian eigenvectors (main baseline)
+            eigendecomp_invweighted_viz = {
                 'eigenvalues': gt_eigenvalues.astype(jnp.complex64),
                 'eigenvalues_real': gt_eigenvalues,
                 'eigenvalues_imag': jnp.zeros_like(gt_eigenvalues),
@@ -1231,7 +1655,7 @@ def learn_eigenvectors(args):
             }
             visualize_multiple_eigenvectors(
                 eigenvector_indices=list(range(args.num_eigenvectors)),
-                eigendecomposition=eigendecomp_viz,
+                eigendecomposition=eigendecomp_invweighted_viz,
                 canonical_states=canonical_states,
                 grid_width=env.width,
                 grid_height=env.height,
@@ -1240,7 +1664,59 @@ def learn_eigenvectors(args):
                 component='real',
                 ncols=min(4, args.num_eigenvectors),
                 wall_color='gray',
-                save_path=str(plots_dir / "ground_truth_eigenvectors.png"),
+                save_path=str(plots_dir / "ground_truth_eigenvectors_invweighted.png"),
+                shared_colorbar=True
+            )
+            plt.close()
+
+            # Plot simple Laplacian eigenvectors
+            eigendecomp_simple_viz = {
+                'eigenvalues': gt_eigenvalues_simple.astype(jnp.complex64),
+                'eigenvalues_real': gt_eigenvalues_simple,
+                'eigenvalues_imag': jnp.zeros_like(gt_eigenvalues_simple),
+                'right_eigenvectors_real': gt_eigenvectors_simple,
+                'right_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors_simple),
+                'left_eigenvectors_real': gt_eigenvectors_simple,
+                'left_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors_simple),
+            }
+            visualize_multiple_eigenvectors(
+                eigenvector_indices=list(range(args.num_eigenvectors)),
+                eigendecomposition=eigendecomp_simple_viz,
+                canonical_states=canonical_states,
+                grid_width=env.width,
+                grid_height=env.height,
+                portals=door_markers if door_markers else None,
+                eigenvector_type='right',
+                component='real',
+                ncols=min(4, args.num_eigenvectors),
+                wall_color='gray',
+                save_path=str(plots_dir / "ground_truth_eigenvectors_simple.png"),
+                shared_colorbar=True
+            )
+            plt.close()
+
+            # Plot weighted Laplacian eigenvectors
+            eigendecomp_weighted_viz = {
+                'eigenvalues': gt_eigenvalues_weighted.astype(jnp.complex64),
+                'eigenvalues_real': gt_eigenvalues_weighted,
+                'eigenvalues_imag': jnp.zeros_like(gt_eigenvalues_weighted),
+                'right_eigenvectors_real': gt_eigenvectors_weighted,
+                'right_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors_weighted),
+                'left_eigenvectors_real': gt_eigenvectors_weighted,
+                'left_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors_weighted),
+            }
+            visualize_multiple_eigenvectors(
+                eigenvector_indices=list(range(args.num_eigenvectors)),
+                eigendecomposition=eigendecomp_weighted_viz,
+                canonical_states=canonical_states,
+                grid_width=env.width,
+                grid_height=env.height,
+                portals=door_markers if door_markers else None,
+                eigenvector_type='right',
+                component='real',
+                ncols=min(4, args.num_eigenvectors),
+                wall_color='gray',
+                save_path=str(plots_dir / "ground_truth_eigenvectors_weighted.png"),
                 shared_colorbar=True
             )
             plt.close()
@@ -1249,7 +1725,7 @@ def learn_eigenvectors(args):
     if checkpoint_data is not None:
         print("Running warmup step to trigger JIT compilation with loaded state...")
         # Sample a small batch for warmup
-        warmup_batch = replay_buffer.sample(min(args.batch_size, 32), discount=args.geometric_gamma)
+        warmup_batch = replay_buffer.sample(min(args.batch_size, 32), discount=args.gamma)
         warmup_indices = jnp.array(warmup_batch.obs)
         warmup_next_indices = jnp.array(warmup_batch.next_obs)
         warmup_coords = state_coords[warmup_indices]
@@ -1276,8 +1752,8 @@ def learn_eigenvectors(args):
 
         # Sample batches from episodic replay buffer using truncated geometric distribution
         sample_start = time.time()
-        batch1 = replay_buffer.sample(args.batch_size, discount=args.geometric_gamma)
-        batch2 = replay_buffer.sample(args.batch_size, discount=args.geometric_gamma)
+        batch1 = replay_buffer.sample(args.batch_size, discount=args.gamma)
+        batch2 = replay_buffer.sample(args.batch_size, discount=args.gamma)
 
         # Extract state indices (canonical state indices)
         state_indices = jnp.array(batch1.obs)
@@ -1312,8 +1788,20 @@ def learn_eigenvectors(args):
             # Compute learned eigenvectors on all states for cosine similarity
             learned_features = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
 
-            # Compute cosine similarities with ground truth
-            cosine_sims = compute_cosine_similarities(learned_features, gt_eigenvectors)
+            # Compute cosine similarities with ground truth (inverse-weighted Laplacian - main baseline)
+            cosine_sims_invweighted = compute_cosine_similarities(learned_features, gt_eigenvectors)
+
+            # Compute cosine similarities with simple Laplacian if available
+            if 'gt_eigenvectors_simple' in locals() and gt_eigenvectors_simple is not None:
+                cosine_sims_simple = compute_cosine_similarities(learned_features, gt_eigenvectors_simple)
+            else:
+                cosine_sims_simple = None
+
+            # Compute cosine similarities with weighted Laplacian if available
+            if 'gt_eigenvectors_weighted' in locals() and gt_eigenvectors_weighted is not None:
+                cosine_sims_weighted = compute_cosine_similarities(learned_features, gt_eigenvectors_weighted)
+            else:
+                cosine_sims_weighted = None
 
             # Store metrics
             elapsed_time = time.time() - start_time
@@ -1326,15 +1814,31 @@ def learn_eigenvectors(args):
             for k, v in metrics.items():
                 metrics_dict[k] = float(v.item())
 
-            # Add cosine similarities to metrics
-            metrics_dict.update(cosine_sims)
+            # Add cosine similarities to metrics (inverse-weighted Laplacian - main baseline)
+            for k, v in cosine_sims_invweighted.items():
+                metrics_dict[f'{k}_invweighted'] = v
+
+            # Add cosine similarities for simple Laplacian if available
+            if cosine_sims_simple is not None:
+                for k, v in cosine_sims_simple.items():
+                    metrics_dict[f'{k}_simple'] = v
+
+            # Add cosine similarities for weighted Laplacian if available
+            if cosine_sims_weighted is not None:
+                for k, v in cosine_sims_weighted.items():
+                    metrics_dict[f'{k}_weighted'] = v
 
             metrics_history.append(metrics_dict)
 
             if gradient_step % (args.log_freq * 10) == 0:
+                invweighted_sim = cosine_sims_invweighted['cosine_sim_avg']
+                simple_sim = cosine_sims_simple['cosine_sim_avg'] if cosine_sims_simple else 'N/A'
+                weighted_sim = cosine_sims_weighted['cosine_sim_avg'] if cosine_sims_weighted else 'N/A'
                 print(f"Step {gradient_step}: loss={allo.item():.4f}, "
                       f"total_error={metrics['total_error'].item():.4f}, "
-                      f"cosine_sim_avg={cosine_sims['cosine_sim_avg']:.4f}")
+                      f"cosine_sim_invweighted={invweighted_sim:.4f}, "
+                      f"cosine_sim_simple={simple_sim}, "
+                      f"cosine_sim_weighted={weighted_sim}")
         log_time = time.time() - log_start
 
         # Collect timing samples (last 1000 steps for statistics)
@@ -1408,9 +1912,11 @@ def learn_eigenvectors(args):
                 plot_dual_variable_evolution(
                     metrics_history,
                     gt_eigenvalues,
-                    args.geometric_gamma,
+                    args.gamma,
                     str(plots_dir / "dual_variable_evolution.png"),
-                    num_eigenvectors=args.num_eigenvectors
+                    num_eigenvectors=args.num_eigenvectors,
+                    ground_truth_eigenvalues_simple=gt_eigenvalues_simple if 'gt_eigenvalues_simple' in locals() else None,
+                    ground_truth_eigenvalues_weighted=gt_eigenvalues_weighted if 'gt_eigenvalues_weighted' in locals() else None
                 )
 
                 # Plot cosine similarity evolution
