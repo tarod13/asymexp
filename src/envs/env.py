@@ -64,6 +64,34 @@ X           X
 X      X    X
 X      X    X
 XXXXXXXXXXXXX"""
+),
+
+    # Example using new comma-separated format with doors
+    "room4_doors": (
+"""X,X,X,X,X,X,X,X,X,X,X,X,X
+X,.,.,.,.,.,X,.,.,.,.,.,X
+X,.,.,.,.,.,.,.,.,.,.,.,X
+X,.,.,.,.,.,X,.,.,.,.,.,X
+X,.,.,.,.,.,X,.,.,.,.,.,X
+X,.,.,.,.,.,X,.,.,.,.,.,X
+X,X,X,D14>27D,X,X,X,X,X,X,X,X
+X,.,.,.,.,.,.,X,.,.,.,.,X
+X,.,.,.,.,.,.,X,.,.,.,.,X
+X,.,.,.,.,.,.,.,.,.,.,.,X
+X,.,.,.,.,.,.,X,.,.,.,.,X
+X,.,.,.,.,.,.,X,.,.,.,.,X
+X,X,X,X,X,X,X,X,X,X,X,X,X"""
+),
+
+    # Example with multiple doors creating hard-to-reach states
+    "asymmetric_maze": (
+"""X,X,X,X,X,X,X
+X,.,.,D8>16D,.,.,X
+X,.,X,X,X,.,X
+X,.,.,.,.,.,X
+X,X,X,D22>9U,X,X,X
+X,.,.,.,.,.,X
+X,X,X,X,X,X,X"""
 )}
 
 def get_env_path(file_name):
@@ -79,14 +107,27 @@ def create_environment_from_text(text_content=None, file_name=None, file_path=No
         text_content: String containing the environment layout (if provided directly)
         file_path: Path to a text file containing the environment layout
 
-    Text format:
+    Text format (two modes):
+
+    1. Legacy format (space/character separated):
         - ' ' or '.' for empty space
         - 'X' or '#' for obstacle
         - 'S' for starting position
         - 'G' for goal position
 
+    2. New format (comma-separated, supports multiple elements per tile):
+        - Tiles separated by commas, rows separated by newlines
+        - '.' for empty space
+        - 'X' or '#' for obstacle
+        - 'S' for starting position
+        - 'G' for goal position
+        - 'D{source}>{dest}{action}' for door (one-way passage)
+          e.g., 'D5>12U' = door from state 5 to state 12 via Up action
+          Actions: U (up), D (down), L (left), R (right)
+        - Multiple elements can be combined: 'X,D5>12U' or just 'D5>12U,D6>13R'
+
     Returns:
-        env: GridWorld environment instance
+        env: GridWorld environment instance (may be DoorGridWorldEnv if doors are specified)
     """
     # Load text with file name if provided
     if file_name is not None:
@@ -96,7 +137,7 @@ def create_environment_from_text(text_content=None, file_name=None, file_path=No
                 text_content = f.read()
         except FileNotFoundError:
             raise FileNotFoundError(f"Environment file not found: {file_path}")
-        
+
     # Load text from file if path is provided
     elif file_path is not None:
         with open(file_path, 'r') as f:
@@ -105,9 +146,18 @@ def create_environment_from_text(text_content=None, file_name=None, file_path=No
     if text_content is None:
         raise ValueError("Either text_content or file_path must be provided")
 
-    # Parse the text content
-    lines = text_content.split('\n')
+    # Detect format: if line contains comma, use new format
+    lines = text_content.strip().split('\n')
+    is_comma_format = any(',' in line for line in lines)
 
+    if is_comma_format:
+        return _parse_comma_format(lines, **env_kwargs)
+    else:
+        return _parse_legacy_format(lines, **env_kwargs)
+
+
+def _parse_legacy_format(lines, **env_kwargs):
+    """Parse the legacy character-by-character format."""
     # Get grid dimensions
     height = len(lines)
     width = max(len(line) for line in lines)
@@ -136,6 +186,87 @@ def create_environment_from_text(text_content=None, file_name=None, file_path=No
         goal_pos=goal_pos,
         **env_kwargs,
     )
+
+
+def _parse_comma_format(lines, **env_kwargs):
+    """Parse the new comma-separated format with support for doors and multiple elements per tile."""
+    from src.envs.door_gridworld import DoorGridWorldEnv
+
+    # Parse grid
+    grid = []
+    for line in lines:
+        if line.strip():  # Skip empty lines
+            row = [tile.strip() for tile in line.split(',')]
+            grid.append(row)
+
+    height = len(grid)
+    width = max(len(row) for row in grid) if grid else 0
+
+    # Pad rows to have same width
+    for row in grid:
+        while len(row) < width:
+            row.append('.')
+
+    # Initialize grid elements
+    obstacles = []
+    start_pos = None
+    goal_pos = None
+    blocked_transitions = set()  # For doors: (state_idx, action)
+
+    # Action mapping
+    action_map = {'U': 0, 'R': 1, 'D': 2, 'L': 3}
+
+    # Process each tile
+    for y, row in enumerate(grid):
+        for x, tile in enumerate(row):
+            # A tile can contain multiple elements
+            if 'X' in tile or '#' in tile:
+                obstacles.append((x, y))
+            if 'S' in tile:
+                start_pos = (x, y)
+            if 'G' in tile:
+                goal_pos = (x, y)
+
+            # Parse door specifications: D{source}>{dest}{action}
+            # Example: D5>12U means door from state 5 to state 12 via Up action
+            import re
+            door_pattern = r'D(\d+)>(\d+)([UDLR])'
+            for match in re.finditer(door_pattern, tile):
+                source_state = int(match.group(1))
+                dest_state = int(match.group(2))
+                action_char = match.group(3)
+                action = action_map[action_char]
+
+                # Add the blocked transition (the reverse of the door)
+                # Door allows source->dest via action, so we block the reverse
+                # Actually, re-reading the door code, it blocks the specific (state, action) pair
+                # So if we want a one-way door, we specify which transition is blocked
+                # For now, let's interpret D{source}>{dest}{action} as:
+                # "block the transition from dest back to source via reverse action"
+                reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}  # U<->D, L<->R
+                reverse_action = reverse_action_map[action]
+                blocked_transitions.add((dest_state, reverse_action))
+
+    # Create environment
+    if blocked_transitions:
+        return DoorGridWorldEnv(
+            width=width,
+            height=height,
+            obstacles=obstacles,
+            start_pos=start_pos,
+            goal_pos=goal_pos,
+            blocked_transitions=blocked_transitions,
+            **env_kwargs,
+        )
+    else:
+        return GridWorldEnv(
+            width=width,
+            height=height,
+            obstacles=obstacles,
+            start_pos=start_pos,
+            goal_pos=goal_pos,
+            **env_kwargs,
+        )
 
 
 def save_environment_to_text(env, file_path):
