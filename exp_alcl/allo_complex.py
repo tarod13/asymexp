@@ -351,9 +351,9 @@ def compute_nonsymmetric_eigendecomposition(
     right_eigenvectors = right_eigenvectors[:, right_sort_idx]
     left_eigenvectors = left_eigenvectors_T[:, left_sort_idx]
 
-    # Normalize to satisfy biorthogonality: left_i^T @ right_j = delta_ij
+    # Normalize to satisfy biorthogonality: left_i^T @ right_j = delta_ij (no conjugate)
     for i in range(len(eigenvalues)):
-        scale = jnp.dot(jnp.conj(left_eigenvectors[:, i]), right_eigenvectors[:, i])
+        scale = jnp.dot(left_eigenvectors[:, i], right_eigenvectors[:, i])
         left_eigenvectors = left_eigenvectors.at[:, i].set(left_eigenvectors[:, i] / scale)
 
     # Keep only top k if specified
