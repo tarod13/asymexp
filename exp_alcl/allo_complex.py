@@ -1774,6 +1774,40 @@ def learn_eigenvectors(args):
             )
             plt.close()
 
+            # Visualize left eigenvectors (real part)
+            visualize_multiple_eigenvectors(
+                eigenvector_indices=list(range(args.num_eigenvectors)),
+                eigendecomposition=eigendecomp_viz,
+                canonical_states=canonical_states,
+                grid_width=env.width,
+                grid_height=env.height,
+                portals=door_markers if door_markers else None,
+                eigenvector_type='left',
+                component='real',
+                ncols=min(4, args.num_eigenvectors),
+                wall_color='gray',
+                save_path=str(plots_dir / "ground_truth_left_eigenvectors_real.png"),
+                shared_colorbar=True
+            )
+            plt.close()
+
+            # Visualize left eigenvectors (imaginary part)
+            visualize_multiple_eigenvectors(
+                eigenvector_indices=list(range(args.num_eigenvectors)),
+                eigendecomposition=eigendecomp_viz,
+                canonical_states=canonical_states,
+                grid_width=env.width,
+                grid_height=env.height,
+                portals=door_markers if door_markers else None,
+                eigenvector_type='left',
+                component='imag',
+                ncols=min(4, args.num_eigenvectors),
+                wall_color='gray',
+                save_path=str(plots_dir / "ground_truth_left_eigenvectors_imag.png"),
+                shared_colorbar=True
+            )
+            plt.close()
+
     # Warmup: trigger JIT compilation with loaded checkpoint state
     if checkpoint_data is not None:
         print("Running warmup step to trigger JIT compilation with loaded state...")
