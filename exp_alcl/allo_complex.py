@@ -1146,6 +1146,22 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         ev_imag = eigendecomp['eigenvalues_imag'][i]
         print(f"  λ_{i}: {ev_real:.6f} + {ev_imag:.6f}i")
 
+    # Print ranges of eigenvector values to debug visualization issues
+    print(f"\nEigenvector value ranges (first {min(5, args.num_eigenvectors)} eigenvectors):")
+    for i in range(min(5, args.num_eigenvectors)):
+        # Right eigenvectors
+        right_real = eigendecomp['right_eigenvectors_real'][:, i]
+        right_imag = eigendecomp['right_eigenvectors_imag'][:, i]
+        print(f"  Right eigenvector {i} (real): min={np.min(right_real):.6f}, max={np.max(right_real):.6f}, mean={np.mean(right_real):.6f}")
+        print(f"  Right eigenvector {i} (imag): min={np.min(right_imag):.6f}, max={np.max(right_imag):.6f}, mean={np.mean(right_imag):.6f}")
+
+        # Left eigenvectors
+        left_real = eigendecomp['left_eigenvectors_real'][:, i]
+        left_imag = eigendecomp['left_eigenvectors_imag'][:, i]
+        print(f"  Left eigenvector {i} (real):  min={np.min(left_real):.6f}, max={np.max(left_real):.6f}, mean={np.mean(left_real):.6f}")
+        print(f"  Left eigenvector {i} (imag):  min={np.min(left_imag):.6f}, max={np.max(left_imag):.6f}, mean={np.mean(left_imag):.6f}")
+        print()
+
     # Create state coordinate mapping (only for canonical/free states)
     state_coords = []
     for state_idx in canonical_states:
