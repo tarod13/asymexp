@@ -115,15 +115,20 @@ You can use a separate plotting script (see below).
 
 ## Creating Plots After Training
 
-### Option 1: Check if generate_plots.py exists
+### Option 1: Use generate_plots_complex.py
 ```bash
-ls exp_alcl/generate_plots.py
+python generate_plots_complex.py ./results/room4/room4__allo_complex__0__42__1735502400
 ```
 
-If it exists, run:
-```bash
-python exp_alcl/generate_plots.py --results_dir ./results/room4/room4__allo_complex__0__42__1735502400
-```
+This script will generate all plots from the saved data:
+- Ground truth eigenvectors (left/right, real/imag)
+- Latest learned eigenvectors (all 4 components)
+- Final learned eigenvectors (all 4 components)
+- Learning curves
+- Dual variable evolution
+- Cosine similarity evolution (left and right separately)
+- Sampling distribution
+- Final comparison plots
 
 ### Option 2: Manual plotting with saved data
 

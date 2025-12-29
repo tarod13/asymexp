@@ -2101,7 +2101,8 @@ def learn_eigenvectors(args):
         plt.savefig(plots_dir / "final_comparison.png", dpi=300, bbox_inches='tight')
         plt.close()
 
-    print(f"\nData exported. Use generate_plots.py to create visualizations.")
+    print(f"\nData exported. Use generate_plots_complex.py to create visualizations.")
+    print(f"Example: python generate_plots_complex.py {results_dir}")
 
     print(f"\nAll results saved to: {results_dir}")
 
