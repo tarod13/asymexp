@@ -74,7 +74,7 @@ X,.,.,.,.,.,.,.,.,.,.,.,X
 X,.,.,.,.,.,X,.,.,.,.,.,X
 X,.,.,.,.,.,X,.,.,.,.,.,X
 X,.,.,.,.,.,X,.,.,.,.,.,X
-X,X,X,D14>27D,X,X,X,X,X,X,X,X
+X,X,X,DD,X,X,X,X,X,X,X,X
 X,.,.,.,.,.,.,X,.,.,.,.,X
 X,.,.,.,.,.,.,X,.,.,.,.,X
 X,.,.,.,.,.,.,.,.,.,.,.,X
@@ -86,10 +86,10 @@ X,X,X,X,X,X,X,X,X,X,X,X,X"""
     # Example with multiple doors creating hard-to-reach states
     "asymmetric_maze": (
 """X,X,X,X,X,X,X
-X,.,.,D8>16D,.,.,X
+X,.,.,DD,.,.,X
 X,.,X,X,X,.,X
 X,.,.,.,.,.,X
-X,X,X,D22>9U,X,X,X
+X,X,X,DU,X,X,X
 X,.,.,.,.,.,X
 X,X,X,X,X,X,X"""
 )}
@@ -121,10 +121,11 @@ def create_environment_from_text(text_content=None, file_name=None, file_path=No
         - 'X' or '#' for obstacle
         - 'S' for starting position
         - 'G' for goal position
-        - 'D{source}>{dest}{action}' for door (one-way passage)
-          e.g., 'D5>12U' = door from state 5 to state 12 via Up action
+        - 'D{action}' for door (one-way passage from this tile)
+          e.g., 'DD' = door going Down from this tile
           Actions: U (up), D (down), L (left), R (right)
-        - Multiple elements can be combined: 'X,D5>12U' or just 'D5>12U,D6>13R'
+        - 'D{source}>{dest}{action}' for non-adjacent doors/teleports (advanced)
+        - Multiple elements can be combined: 'X', 'DD', 'DD,DR' (multiple doors)
 
     Returns:
         env: GridWorld environment instance (may be DoorGridWorldEnv if doors are specified)
@@ -227,22 +228,50 @@ def _parse_comma_format(lines, **env_kwargs):
             if 'G' in tile:
                 goal_pos = (x, y)
 
-            # Parse door specifications: D{source}>{dest}{action}
-            # Example: D5>12U means door from state 5 to state 12 via Up action
+            # Parse door specifications:
+            # Simple format: D{action} - door from this tile in the given direction
+            # Example: DD means door going Down from this tile
             import re
-            door_pattern = r'D(\d+)>(\d+)([UDLR])'
-            for match in re.finditer(door_pattern, tile):
+
+            # Simple door format: D{action} (e.g., DD, DR, DU, DL)
+            simple_door_pattern = r'D([UDLR])'
+            for match in re.finditer(simple_door_pattern, tile):
+                action_char = match.group(1)
+                action = action_map[action_char]
+
+                # Calculate source and destination states
+                source_state = y * width + x
+
+                # Calculate destination based on action
+                action_effects = {
+                    0: (0, -1),  # Up
+                    1: (1, 0),   # Right
+                    2: (0, 1),   # Down
+                    3: (-1, 0),  # Left
+                }
+                dx, dy = action_effects[action]
+                dest_x, dest_y = x + dx, y + dy
+
+                # Only add door if destination is within bounds
+                if 0 <= dest_x < width and 0 <= dest_y < height:
+                    dest_state = dest_y * width + dest_x
+
+                    # Block the reverse transition
+                    reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}  # U<->D, L<->R
+                    reverse_action = reverse_action_map[action]
+                    blocked_transitions.add((dest_state, reverse_action))
+
+            # Complex door format (for non-adjacent): D{source}>{dest}{action}
+            # Example: D5>12U means door from state 5 to state 12 via Up action
+            # (Kept for backward compatibility and teleportation-like doors)
+            complex_door_pattern = r'D(\d+)>(\d+)([UDLR])'
+            for match in re.finditer(complex_door_pattern, tile):
                 source_state = int(match.group(1))
                 dest_state = int(match.group(2))
                 action_char = match.group(3)
                 action = action_map[action_char]
 
-                # Add the blocked transition (the reverse of the door)
-                # Door allows source->dest via action, so we block the reverse
-                # Actually, re-reading the door code, it blocks the specific (state, action) pair
-                # So if we want a one-way door, we specify which transition is blocked
-                # For now, let's interpret D{source}>{dest}{action} as:
-                # "block the transition from dest back to source via reverse action"
+                # Block the reverse transition
                 reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}  # U<->D, L<->R
                 reverse_action = reverse_action_map[action]
                 blocked_transitions.add((dest_state, reverse_action))
