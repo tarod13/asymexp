@@ -121,11 +121,12 @@ def create_environment_from_text(text_content=None, file_name=None, file_path=No
         - 'X' or '#' for obstacle
         - 'S' for starting position
         - 'G' for goal position
-        - 'D{action}' for door (one-way passage from this tile)
-          e.g., 'DD' = door going Down from this tile
-          Actions: U (up), D (down), L (left), R (right)
-        - 'D{source}>{dest}{action}' for non-adjacent doors/teleports (advanced)
-        - Multiple elements can be combined: 'X', 'DD', 'DD,DR' (multiple doors)
+        - 'D{actions}' for doors (one-way passages from this tile)
+          - First character 'D' marks door, each following character is an action
+          - e.g., 'DD' = one door Down, 'DDL' = two doors (Down and Left)
+          - Actions: U (up), D (down), L (left), R (right)
+        - 'P{source}>{dest}{action}' for portals (non-adjacent teleports)
+        - Multiple elements can be combined in a tile: 'X', 'DD', 'DDLR', etc.
 
     Returns:
         env: GridWorld environment instance (may be DoorGridWorldEnv if doors are specified)
@@ -229,43 +230,46 @@ def _parse_comma_format(lines, **env_kwargs):
                 goal_pos = (x, y)
 
             # Parse door specifications:
-            # Simple format: D{action} - door from this tile in the given direction
-            # Example: DD means door going Down from this tile
+            # Format: D followed by one or more action characters
+            # Each action character creates a separate door from this tile
+            # Example: DD = one door Down, DDL = two doors (Down and Left), DDLR = three doors
             import re
 
-            # Simple door format: D{action} (e.g., DD, DR, DU, DL)
-            simple_door_pattern = r'D([UDLR])'
-            for match in re.finditer(simple_door_pattern, tile):
-                action_char = match.group(1)
-                action = action_map[action_char]
+            # Door format: D{actions} where each action is U/D/L/R
+            door_pattern = r'D([UDLR]+)'
+            for match in re.finditer(door_pattern, tile):
+                actions_str = match.group(1)
 
-                # Calculate source and destination states
-                source_state = y * width + x
+                # Each character in actions_str creates a separate door
+                for action_char in actions_str:
+                    action = action_map[action_char]
 
-                # Calculate destination based on action
-                action_effects = {
-                    0: (0, -1),  # Up
-                    1: (1, 0),   # Right
-                    2: (0, 1),   # Down
-                    3: (-1, 0),  # Left
-                }
-                dx, dy = action_effects[action]
-                dest_x, dest_y = x + dx, y + dy
+                    # Calculate source and destination states
+                    source_state = y * width + x
 
-                # Only add door if destination is within bounds
-                if 0 <= dest_x < width and 0 <= dest_y < height:
-                    dest_state = dest_y * width + dest_x
+                    # Calculate destination based on action
+                    action_effects = {
+                        0: (0, -1),  # Up
+                        1: (1, 0),   # Right
+                        2: (0, 1),   # Down
+                        3: (-1, 0),  # Left
+                    }
+                    dx, dy = action_effects[action]
+                    dest_x, dest_y = x + dx, y + dy
 
-                    # Block the reverse transition
-                    reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}  # U<->D, L<->R
-                    reverse_action = reverse_action_map[action]
-                    blocked_transitions.add((dest_state, reverse_action))
+                    # Only add door if destination is within bounds
+                    if 0 <= dest_x < width and 0 <= dest_y < height:
+                        dest_state = dest_y * width + dest_x
 
-            # Complex door format (for non-adjacent): D{source}>{dest}{action}
-            # Example: D5>12U means door from state 5 to state 12 via Up action
-            # (Kept for backward compatibility and teleportation-like doors)
-            complex_door_pattern = r'D(\d+)>(\d+)([UDLR])'
-            for match in re.finditer(complex_door_pattern, tile):
+                        # Block the reverse transition
+                        reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}  # U<->D, L<->R
+                        reverse_action = reverse_action_map[action]
+                        blocked_transitions.add((dest_state, reverse_action))
+
+            # Portal format (for non-adjacent teleportation): P{source}>{dest}{action}
+            # Example: P5>12U means portal from state 5 to state 12 via Up action
+            portal_pattern = r'P(\d+)>(\d+)([UDLR])'
+            for match in re.finditer(portal_pattern, tile):
                 source_state = int(match.group(1))
                 dest_state = int(match.group(2))
                 action_char = match.group(3)
