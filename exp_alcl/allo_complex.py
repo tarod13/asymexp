@@ -921,10 +921,7 @@ def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_
     """
     Plot the evolution of cosine similarities between learned and ground truth eigenvectors.
 
-    Plots comparisons against all three Laplacian baselines if available:
-    - Simple: L = I - (1-γ)(SR_γ + SR_γ^T)/2
-    - Weighted: L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
-    - Inverse-weighted: L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
+    For complex eigenvectors, plots both left and right eigenvector similarities.
 
     Args:
         metrics_history: List of metric dictionaries containing cosine similarity values
@@ -933,65 +930,36 @@ def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_
     """
     steps = [m['gradient_step'] for m in metrics_history]
 
-    # Check which baseline comparisons are available
-    has_invweighted = 'cosine_sim_avg_invweighted' in metrics_history[0]
-    has_weighted = 'cosine_sim_avg_weighted' in metrics_history[0]
-    has_simple = 'cosine_sim_avg_simple' in metrics_history[0]
-    has_legacy = 'cosine_sim_avg' in metrics_history[0]  # Old format without suffix
-
-    # Determine number of eigenvectors to plot
-    if num_eigenvectors is None:
-        # Count how many cosine_sim_i keys exist (check all variants)
-        if has_invweighted:
-            num_eigenvectors = sum(1 for key in metrics_history[0].keys()
-                                 if key.startswith('cosine_sim_') and key.endswith('_invweighted')
-                                 and 'avg' not in key)
-        elif has_weighted:
-            num_eigenvectors = sum(1 for key in metrics_history[0].keys()
-                                 if key.startswith('cosine_sim_') and key.endswith('_weighted')
-                                 and 'avg' not in key)
-        elif has_legacy:
-            num_eigenvectors = sum(1 for key in metrics_history[0].keys()
-                                 if key.startswith('cosine_sim_') and key != 'cosine_sim_avg')
-        else:
-            num_eigenvectors = 0
+    # Check for complex eigenvector metrics (left and right)
+    has_left = 'left_cosine_sim_avg' in metrics_history[0]
+    has_right = 'right_cosine_sim_avg' in metrics_history[0]
 
     fig, ax = plt.subplots(1, 1, figsize=(12, 8))
 
-    # Plot average cosine similarities for each baseline
-    if has_invweighted:
-        avg_values_invweighted = [m['cosine_sim_avg_invweighted'] for m in metrics_history]
-        ax.plot(steps, avg_values_invweighted, label='Avg vs Inverse-Weighted Laplacian',
-                color='green', linewidth=2.5, linestyle='-')
+    # Plot left and right eigenvector cosine similarities
+    if has_left:
+        left_values = [m['left_cosine_sim_avg'] for m in metrics_history]
+        ax.plot(steps, left_values, label='Left Eigenvectors (φ)',
+                color='blue', linewidth=2.5, linestyle='-', marker='o', markersize=3, markevery=max(1, len(steps)//20))
 
-    if has_weighted:
-        avg_values_weighted = [m['cosine_sim_avg_weighted'] for m in metrics_history]
-        ax.plot(steps, avg_values_weighted, label='Avg vs Weighted Laplacian',
-                color='blue', linewidth=2.5, linestyle='-.')
+    if has_right:
+        right_values = [m['right_cosine_sim_avg'] for m in metrics_history]
+        ax.plot(steps, right_values, label='Right Eigenvectors (ψ)',
+                color='red', linewidth=2.5, linestyle='-', marker='s', markersize=3, markevery=max(1, len(steps)//20))
 
-    if has_simple:
-        avg_values_simple = [m['cosine_sim_avg_simple'] for m in metrics_history]
-        ax.plot(steps, avg_values_simple, label='Avg vs Simple Laplacian',
-                color='red', linewidth=2.5, linestyle='--')
-
-    if has_legacy and not (has_invweighted or has_weighted):
-        # Old format compatibility
-        avg_values = [m['cosine_sim_avg'] for m in metrics_history]
-        ax.plot(steps, avg_values, label='Average', color='black', linewidth=2.5, linestyle='-')
+    # Plot average of both if both exist
+    if has_left and has_right:
+        avg_values = [(left_values[i] + right_values[i]) / 2 for i in range(len(steps))]
+        ax.plot(steps, avg_values, label='Average (Left + Right)',
+                color='green', linewidth=2.0, linestyle='--', alpha=0.7)
 
     ax.set_xlabel('Gradient Step', fontsize=12)
-    ax.set_ylabel('Absolute Cosine Similarity', fontsize=12)
+    ax.set_ylabel('Re(Complex Cosine Similarity)', fontsize=12)
+    ax.set_title('Evolution of Complex Cosine Similarity\n(Real Part of <u,v> / (||u|| ||v||))', fontsize=14)
 
-    # Set title based on what baselines are available
-    num_baselines = sum([has_invweighted, has_weighted, has_simple])
-    if num_baselines > 1:
-        ax.set_title('Cosine Similarity: Learned vs All Laplacian Baselines', fontsize=14)
-    else:
-        ax.set_title('Evolution of Absolute Cosine Similarity between Learned and Ground Truth Eigenvectors', fontsize=14)
-
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+    ax.legend(loc='best', fontsize=11)
     ax.grid(True, alpha=0.3)
-    ax.set_ylim([0, 1.05])  # Cosine similarity is in [0, 1]
+    ax.set_ylim([-1.05, 1.05])  # Complex cosine can be negative
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
