@@ -109,13 +109,12 @@ def load_data(results_dir):
 
 
 def plot_ground_truth(data, plots_dir):
-    """Generate ground truth eigenvector plots."""
-    print("Plotting ground truth eigenvectors...")
-
+    """Generate ground truth eigenvector plots for all available Laplacian formulations."""
     viz_meta = data['viz_metadata']
-    gt_eigenvectors = data['gt_eigenvectors']
 
-    # Create eigendecomposition dict
+    # Plot inverse-weighted Laplacian eigenvectors (main baseline)
+    print("Plotting inverse-weighted Laplacian ground truth eigenvectors...")
+    gt_eigenvectors = data['gt_eigenvectors']
     num_eigs = gt_eigenvectors.shape[1]
     eigendecomp = {
         'eigenvalues': data['gt_eigenvalues'].astype(np.complex64),
@@ -138,10 +137,78 @@ def plot_ground_truth(data, plots_dir):
         component='real',
         ncols=min(4, num_eigs),
         wall_color='gray',
-        save_path=str(plots_dir / "ground_truth_eigenvectors.png"),
+        save_path=str(plots_dir / "ground_truth_eigenvectors_invweighted.png"),
         shared_colorbar=True
     )
     plt.close()
+
+    # Plot simple Laplacian eigenvectors if available
+    if data['gt_eigenvalues_simple'] is not None:
+        print("Plotting simple Laplacian ground truth eigenvectors...")
+        # Load the simple eigenvectors
+        simple_eigenvectors_file = data['results_dir'] / "gt_eigenvectors_simple.npy"
+        if simple_eigenvectors_file.exists():
+            gt_eigenvectors_simple = np.load(simple_eigenvectors_file)
+
+            eigendecomp_simple = {
+                'eigenvalues': data['gt_eigenvalues_simple'].astype(np.complex64),
+                'eigenvalues_real': data['gt_eigenvalues_simple'],
+                'eigenvalues_imag': np.zeros_like(data['gt_eigenvalues_simple']),
+                'right_eigenvectors_real': gt_eigenvectors_simple,
+                'right_eigenvectors_imag': np.zeros_like(gt_eigenvectors_simple),
+                'left_eigenvectors_real': gt_eigenvectors_simple,
+                'left_eigenvectors_imag': np.zeros_like(gt_eigenvectors_simple),
+            }
+
+            visualize_multiple_eigenvectors(
+                eigenvector_indices=list(range(num_eigs)),
+                eigendecomposition=eigendecomp_simple,
+                canonical_states=viz_meta['canonical_states'],
+                grid_width=viz_meta['grid_width'],
+                grid_height=viz_meta['grid_height'],
+                portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
+                eigenvector_type='right',
+                component='real',
+                ncols=min(4, num_eigs),
+                wall_color='gray',
+                save_path=str(plots_dir / "ground_truth_eigenvectors_simple.png"),
+                shared_colorbar=True
+            )
+            plt.close()
+
+    # Plot weighted Laplacian eigenvectors if available
+    if data['gt_eigenvalues_weighted'] is not None:
+        print("Plotting weighted Laplacian ground truth eigenvectors...")
+        # Load the weighted eigenvectors
+        weighted_eigenvectors_file = data['results_dir'] / "gt_eigenvectors_weighted.npy"
+        if weighted_eigenvectors_file.exists():
+            gt_eigenvectors_weighted = np.load(weighted_eigenvectors_file)
+
+            eigendecomp_weighted = {
+                'eigenvalues': data['gt_eigenvalues_weighted'].astype(np.complex64),
+                'eigenvalues_real': data['gt_eigenvalues_weighted'],
+                'eigenvalues_imag': np.zeros_like(data['gt_eigenvalues_weighted']),
+                'right_eigenvectors_real': gt_eigenvectors_weighted,
+                'right_eigenvectors_imag': np.zeros_like(gt_eigenvectors_weighted),
+                'left_eigenvectors_real': gt_eigenvectors_weighted,
+                'left_eigenvectors_imag': np.zeros_like(gt_eigenvectors_weighted),
+            }
+
+            visualize_multiple_eigenvectors(
+                eigenvector_indices=list(range(num_eigs)),
+                eigendecomposition=eigendecomp_weighted,
+                canonical_states=viz_meta['canonical_states'],
+                grid_width=viz_meta['grid_width'],
+                grid_height=viz_meta['grid_height'],
+                portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
+                eigenvector_type='right',
+                component='real',
+                ncols=min(4, num_eigs),
+                wall_color='gray',
+                save_path=str(plots_dir / "ground_truth_eigenvectors_weighted.png"),
+                shared_colorbar=True
+            )
+            plt.close()
 
 
 def plot_latest_learned(data, plots_dir):

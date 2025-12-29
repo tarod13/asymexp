@@ -1643,8 +1643,8 @@ def learn_eigenvectors(args):
 
         # Optionally plot ground truth eigenvectors immediately
         if args.plot_during_training:
-            # Need to create eigendecomp for visualization
-            eigendecomp_viz = {
+            # Plot inverse-weighted Laplacian eigenvectors (main baseline)
+            eigendecomp_invweighted_viz = {
                 'eigenvalues': gt_eigenvalues.astype(jnp.complex64),
                 'eigenvalues_real': gt_eigenvalues,
                 'eigenvalues_imag': jnp.zeros_like(gt_eigenvalues),
@@ -1655,7 +1655,7 @@ def learn_eigenvectors(args):
             }
             visualize_multiple_eigenvectors(
                 eigenvector_indices=list(range(args.num_eigenvectors)),
-                eigendecomposition=eigendecomp_viz,
+                eigendecomposition=eigendecomp_invweighted_viz,
                 canonical_states=canonical_states,
                 grid_width=env.width,
                 grid_height=env.height,
@@ -1664,7 +1664,59 @@ def learn_eigenvectors(args):
                 component='real',
                 ncols=min(4, args.num_eigenvectors),
                 wall_color='gray',
-                save_path=str(plots_dir / "ground_truth_eigenvectors.png"),
+                save_path=str(plots_dir / "ground_truth_eigenvectors_invweighted.png"),
+                shared_colorbar=True
+            )
+            plt.close()
+
+            # Plot simple Laplacian eigenvectors
+            eigendecomp_simple_viz = {
+                'eigenvalues': gt_eigenvalues_simple.astype(jnp.complex64),
+                'eigenvalues_real': gt_eigenvalues_simple,
+                'eigenvalues_imag': jnp.zeros_like(gt_eigenvalues_simple),
+                'right_eigenvectors_real': gt_eigenvectors_simple,
+                'right_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors_simple),
+                'left_eigenvectors_real': gt_eigenvectors_simple,
+                'left_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors_simple),
+            }
+            visualize_multiple_eigenvectors(
+                eigenvector_indices=list(range(args.num_eigenvectors)),
+                eigendecomposition=eigendecomp_simple_viz,
+                canonical_states=canonical_states,
+                grid_width=env.width,
+                grid_height=env.height,
+                portals=door_markers if door_markers else None,
+                eigenvector_type='right',
+                component='real',
+                ncols=min(4, args.num_eigenvectors),
+                wall_color='gray',
+                save_path=str(plots_dir / "ground_truth_eigenvectors_simple.png"),
+                shared_colorbar=True
+            )
+            plt.close()
+
+            # Plot weighted Laplacian eigenvectors
+            eigendecomp_weighted_viz = {
+                'eigenvalues': gt_eigenvalues_weighted.astype(jnp.complex64),
+                'eigenvalues_real': gt_eigenvalues_weighted,
+                'eigenvalues_imag': jnp.zeros_like(gt_eigenvalues_weighted),
+                'right_eigenvectors_real': gt_eigenvectors_weighted,
+                'right_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors_weighted),
+                'left_eigenvectors_real': gt_eigenvectors_weighted,
+                'left_eigenvectors_imag': jnp.zeros_like(gt_eigenvectors_weighted),
+            }
+            visualize_multiple_eigenvectors(
+                eigenvector_indices=list(range(args.num_eigenvectors)),
+                eigendecomposition=eigendecomp_weighted_viz,
+                canonical_states=canonical_states,
+                grid_width=env.width,
+                grid_height=env.height,
+                portals=door_markers if door_markers else None,
+                eigenvector_type='right',
+                component='real',
+                ncols=min(4, args.num_eigenvectors),
+                wall_color='gray',
+                save_path=str(plots_dir / "ground_truth_eigenvectors_weighted.png"),
                 shared_colorbar=True
             )
             plt.close()
