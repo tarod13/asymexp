@@ -321,6 +321,8 @@ def compute_nonsymmetric_eigendecomposition(
     For non-symmetric matrices, eigenvalues can be complex and left/right
     eigenvectors are different (biorthogonal).
 
+    Uses improved matching algorithm from exp_complex_basis.
+
     Args:
         matrix: Shape [num_states, num_states], non-symmetric matrix
         k: Number of eigenvalues/vectors to keep (None = keep all)
@@ -335,26 +337,31 @@ def compute_nonsymmetric_eigendecomposition(
             - left_eigenvectors_real: Shape [num_states, k]
             - left_eigenvectors_imag: Shape [num_states, k]
     """
-    # Compute eigendecomposition (returns complex eigenvalues and right eigenvectors)
+    # Compute right eigendecomposition
     eigenvalues, right_eigenvectors = jnp.linalg.eig(matrix)
 
-    # Compute left eigenvectors (eigenvectors of matrix.T)
-    left_eigenvalues, left_eigenvectors_T = jnp.linalg.eig(matrix.T)
+    # Compute left eigendecomposition via transpose
+    eigenvalues_left, left_eigenvectors = jnp.linalg.eig(matrix.T)
 
-    # Left eigenvectors are columns of left_eigenvectors_T
-    # We need to match them with right eigenvectors
-    # For numerical stability, we sort both by eigenvalue magnitude
-    right_sort_idx = jnp.argsort(jnp.abs(eigenvalues))
-    left_sort_idx = jnp.argsort(jnp.abs(left_eigenvalues))
+    # Match left eigenvectors to right eigenvectors using cross-products
+    cross_products = jnp.einsum('ij,ik->jk', left_eigenvectors, right_eigenvectors)
 
-    eigenvalues = eigenvalues[right_sort_idx]
-    right_eigenvectors = right_eigenvectors[:, right_sort_idx]
-    left_eigenvectors = left_eigenvectors_T[:, left_sort_idx]
+    # For each right eigenvector (column j), find the best matching left eigenvector (row i)
+    best_left_indices = jnp.argmax(jnp.abs(cross_products), axis=0)
 
-    # Normalize to satisfy biorthogonality: left_i^T @ right_j = delta_ij (no conjugate)
-    for i in range(len(eigenvalues)):
-        scale = jnp.dot(left_eigenvectors[:, i], right_eigenvectors[:, i])
-        left_eigenvectors = left_eigenvectors.at[:, i].set(left_eigenvectors[:, i] / scale)
+    # Reorder left eigenvectors to match right eigenvectors
+    left_eigenvectors = left_eigenvectors[:, best_left_indices]
+
+    # Normalize left eigenvectors (no conjugate: left_i^T @ right_j = delta_ij)
+    dot_products = cross_products[best_left_indices, jnp.arange(cross_products.shape[1])]
+    left_eigenvectors = left_eigenvectors / dot_products[None, :]
+
+    # Sort by magnitude in descending order
+    magnitudes = jnp.abs(eigenvalues)
+    sorted_indices = jnp.argsort(-magnitudes)
+    eigenvalues = eigenvalues[sorted_indices]
+    right_eigenvectors = right_eigenvectors[:, sorted_indices]
+    left_eigenvectors = left_eigenvectors[:, sorted_indices]
 
     # Keep only top k if specified
     if k is not None:
@@ -365,12 +372,12 @@ def compute_nonsymmetric_eigendecomposition(
     # Split into real and imaginary parts
     return {
         "eigenvalues": eigenvalues,
-        "eigenvalues_real": eigenvalues.real,
-        "eigenvalues_imag": eigenvalues.imag,
-        "right_eigenvectors_real": right_eigenvectors.real,
-        "right_eigenvectors_imag": right_eigenvectors.imag,
-        "left_eigenvectors_real": left_eigenvectors.real,
-        "left_eigenvectors_imag": left_eigenvectors.imag,
+        "eigenvalues_real": jnp.real(eigenvalues),
+        "eigenvalues_imag": jnp.imag(eigenvalues),
+        "right_eigenvectors_real": jnp.real(right_eigenvectors),
+        "right_eigenvectors_imag": jnp.imag(right_eigenvectors),
+        "left_eigenvectors_real": jnp.real(left_eigenvectors),
+        "left_eigenvectors_imag": jnp.imag(left_eigenvectors),
     }
 
 
