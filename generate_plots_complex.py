@@ -422,7 +422,7 @@ def plot_learning_metrics(data, plots_dir):
     gamma = data['viz_metadata'].get('gamma', data['viz_metadata'].get('geometric_gamma', 0.99))
     plot_dual_variable_evolution(
         data['metrics_history'],
-        data['gt_eigenvalues_real'],  # Use real part for comparison
+        data['gt_eigenvalues'],  # Use full complex eigenvalues
         gamma,
         str(plots_dir / "dual_variable_evolution.png"),
         num_eigenvectors=data['viz_metadata']['num_eigenvectors']

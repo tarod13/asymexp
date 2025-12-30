@@ -546,6 +546,8 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
     which samples (s_t, s_{t+k}) pairs where k is geometrically distributed. This
     effectively implements the symmetrized version with the 0.5 scaling.
 
+    Now handles separated real and imaginary dual variables for complex constraints.
+
     Args:
         metrics_history: List of metric dictionaries
         ground_truth_eigenvalues: Array of ground truth eigenvalues of the inverse-weighted Laplacian
@@ -558,102 +560,109 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
     steps = [m['gradient_step'] for m in metrics_history]
     num_plot = min(num_eigenvectors, len(ground_truth_eigenvalues))
 
-    # Create figure with two rows: eigenvalue approximation and errors
-    fig, axes = plt.subplots(2, 1, figsize=(12, 10))
+    # Create figure with three rows: real/imag components, magnitude, and errors
+    fig, axes = plt.subplots(3, 1, figsize=(12, 14))
 
-    # Plot 1: Dual variables (Laplacian eigenvalues) vs ground truth
-    ax1 = axes[0]
     colors = plt.cm.tab10(np.linspace(0, 1, num_plot))
 
+    # Plot 1: Real and imaginary components of dual variables
+    ax1 = axes[0]
+
     for i in range(num_plot):
-        dual_key = f'dual_{i}'
-        if dual_key in metrics_history[0]:
+        dual_real_key = f'dual_real_{i}'
+        dual_imag_key = f'dual_imag_{i}'
+
+        if dual_real_key in metrics_history[0] and dual_imag_key in metrics_history[0]:
             # Get dual values (these are eigenvalues of the Laplacian)
-            dual_values = np.array([m[dual_key] for m in metrics_history])
+            dual_values_real = np.array([m[dual_real_key] for m in metrics_history])
+            dual_values_imag = np.array([m[dual_imag_key] for m in metrics_history])
+
             # Apply 0.5 factor due to sampling scheme
-            dual_values_scaled = 0.5 * dual_values
+            dual_values_real_scaled = 0.5 * dual_values_real
+            dual_values_imag_scaled = 0.5 * dual_values_imag
 
-            ax1.plot(steps, dual_values_scaled, label=f'Learned λ_{i}', color=colors[i], linewidth=1.5)
+            # Plot real and imaginary components
+            ax1.plot(steps, dual_values_real_scaled, label=f'λ_{i} (real)',
+                    color=colors[i], linewidth=1.5, linestyle='-')
+            ax1.plot(steps, dual_values_imag_scaled, label=f'λ_{i} (imag)',
+                    color=colors[i], linewidth=1.5, linestyle='--', alpha=0.7)
 
-            # Plot inverse-weighted Laplacian ground truth as solid horizontal line (main baseline)
-            gt_value = float(ground_truth_eigenvalues[i].real)
-            ax1.axhline(y=gt_value, color=colors[i], linestyle='-', alpha=0.3, linewidth=2.5,
-                       label=f'GT Inv-Weighted λ_{i}' if i == 0 else '')
-
-            # Plot weighted Laplacian ground truth as dash-dot line if provided
-            if ground_truth_eigenvalues_weighted is not None:
-                gt_weighted_value = float(ground_truth_eigenvalues_weighted[i].real)
-                ax1.axhline(y=gt_weighted_value, color=colors[i], linestyle='-.', alpha=0.3, linewidth=1.5,
-                           label=f'GT Weighted λ_{i}' if i == 0 else '')
-
-            # Plot simple Laplacian ground truth as dashed line if provided
-            if ground_truth_eigenvalues_simple is not None:
-                gt_simple_value = float(ground_truth_eigenvalues_simple[i].real)
-                ax1.axhline(y=gt_simple_value, color=colors[i], linestyle='--', alpha=0.3, linewidth=1.5,
-                           label=f'GT Simple λ_{i}' if i == 0 else '')
+            # Plot ground truth (real and imaginary)
+            gt_value_real = float(ground_truth_eigenvalues[i].real)
+            gt_value_imag = float(ground_truth_eigenvalues[i].imag)
+            ax1.axhline(y=gt_value_real, color=colors[i], linestyle='-', alpha=0.2, linewidth=2)
+            ax1.axhline(y=gt_value_imag, color=colors[i], linestyle='--', alpha=0.2, linewidth=2)
 
     ax1.set_xlabel('Gradient Step', fontsize=12)
-    ax1.set_ylabel('Laplacian Eigenvalue', fontsize=12)
-
-    # Build title based on what baselines are available
-    title_parts = []
-    if ground_truth_eigenvalues is not None:
-        title_parts.append('solid=inv-weighted')
-    if ground_truth_eigenvalues_weighted is not None:
-        title_parts.append('dash-dot=weighted')
-    if ground_truth_eigenvalues_simple is not None:
-        title_parts.append('dashed=simple')
-    title = 'Learned Eigenvalues vs Ground Truth (' + ', '.join(title_parts) + ')'
-    ax1.set_title(title, fontsize=14)
-    ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+    ax1.set_ylabel('Dual Variable Value', fontsize=12)
+    ax1.set_title('Dual Variables: Real (solid) and Imaginary (dashed) Components', fontsize=14)
+    ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8, ncol=2)
     ax1.grid(True, alpha=0.3)
 
-    # Plot 2: Absolute errors for all versions
+    # Plot 2: Magnitude of complex dual variables
     ax2 = axes[1]
 
     for i in range(num_plot):
-        dual_key = f'dual_{i}'
-        if dual_key in metrics_history[0]:
-            # Get dual values (eigenvalues of the Laplacian)
-            dual_values = np.array([m[dual_key] for m in metrics_history])
+        dual_real_key = f'dual_real_{i}'
+        dual_imag_key = f'dual_imag_{i}'
+
+        if dual_real_key in metrics_history[0] and dual_imag_key in metrics_history[0]:
+            # Get dual values
+            dual_values_real = np.array([m[dual_real_key] for m in metrics_history])
+            dual_values_imag = np.array([m[dual_imag_key] for m in metrics_history])
+
             # Apply 0.5 factor due to sampling scheme
-            dual_values_scaled = 0.5 * dual_values
+            dual_values_real_scaled = 0.5 * dual_values_real
+            dual_values_imag_scaled = 0.5 * dual_values_imag
 
-            # Error vs inverse-weighted Laplacian (main baseline)
-            gt_value = float(ground_truth_eigenvalues[i].real)
-            errors = np.abs(dual_values_scaled - gt_value)
-            ax2.plot(steps, errors, label=f'vs Inv-Weighted λ_{i}', color=colors[i], linewidth=1.5, linestyle='-')
+            # Calculate magnitude
+            dual_magnitude = np.sqrt(dual_values_real_scaled**2 + dual_values_imag_scaled**2)
 
-            # Error vs weighted Laplacian if provided
-            if ground_truth_eigenvalues_weighted is not None:
-                gt_weighted_value = float(ground_truth_eigenvalues_weighted[i].real)
-                errors_weighted = np.abs(dual_values_scaled - gt_weighted_value)
-                ax2.plot(steps, errors_weighted, label=f'vs Weighted λ_{i}', color=colors[i],
-                        linewidth=1.5, linestyle='-.', alpha=0.5)
+            ax2.plot(steps, dual_magnitude, label=f'|λ_{i}|', color=colors[i], linewidth=1.5)
 
-            # Error vs simple Laplacian if provided
-            if ground_truth_eigenvalues_simple is not None:
-                gt_simple_value = float(ground_truth_eigenvalues_simple[i].real)
-                errors_simple = np.abs(dual_values_scaled - gt_simple_value)
-                ax2.plot(steps, errors_simple, label=f'vs Simple λ_{i}', color=colors[i],
-                        linewidth=1.5, linestyle='--', alpha=0.5)
+            # Plot ground truth magnitude
+            gt_magnitude = np.abs(ground_truth_eigenvalues[i])
+            ax2.axhline(y=gt_magnitude, color=colors[i], linestyle='-', alpha=0.3, linewidth=2.5)
 
     ax2.set_xlabel('Gradient Step', fontsize=12)
-    ax2.set_ylabel('Absolute Error', fontsize=12)
-
-    # Build title based on what baselines are available
-    error_title_parts = []
-    if ground_truth_eigenvalues is not None:
-        error_title_parts.append('solid=inv-weighted')
-    if ground_truth_eigenvalues_weighted is not None:
-        error_title_parts.append('dash-dot=weighted')
-    if ground_truth_eigenvalues_simple is not None:
-        error_title_parts.append('dashed=simple')
-    error_title = 'Absolute Errors (' + ', '.join(error_title_parts) + ')'
-    ax2.set_title(error_title, fontsize=14)
-    ax2.set_yscale('log')
+    ax2.set_ylabel('Magnitude', fontsize=12)
+    ax2.set_title('Magnitude of Complex Dual Variables', fontsize=14)
     ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
-    ax2.grid(True, alpha=0.3, which='both')
+    ax2.grid(True, alpha=0.3)
+
+    # Plot 3: Complex magnitude errors
+    ax3 = axes[2]
+
+    for i in range(num_plot):
+        dual_real_key = f'dual_real_{i}'
+        dual_imag_key = f'dual_imag_{i}'
+
+        if dual_real_key in metrics_history[0] and dual_imag_key in metrics_history[0]:
+            # Get dual values
+            dual_values_real = np.array([m[dual_real_key] for m in metrics_history])
+            dual_values_imag = np.array([m[dual_imag_key] for m in metrics_history])
+
+            # Apply 0.5 factor due to sampling scheme
+            dual_values_real_scaled = 0.5 * dual_values_real
+            dual_values_imag_scaled = 0.5 * dual_values_imag
+
+            # Calculate complex error magnitude: |dual - ground_truth|
+            gt_value_real = float(ground_truth_eigenvalues[i].real)
+            gt_value_imag = float(ground_truth_eigenvalues[i].imag)
+
+            error_real = dual_values_real_scaled - gt_value_real
+            error_imag = dual_values_imag_scaled - gt_value_imag
+            error_magnitude = np.sqrt(error_real**2 + error_imag**2)
+
+            ax3.plot(steps, error_magnitude, label=f'|error λ_{i}|',
+                    color=colors[i], linewidth=1.5)
+
+    ax3.set_xlabel('Gradient Step', fontsize=12)
+    ax3.set_ylabel('Error Magnitude', fontsize=12)
+    ax3.set_title('Complex Error Magnitude in Complex Plane', fontsize=14)
+    ax3.set_yscale('log')
+    ax3.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+    ax3.grid(True, alpha=0.3, which='both')
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
