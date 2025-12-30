@@ -1398,15 +1398,21 @@ def learn_eigenvectors(args):
     # Create masks for different parameter groups
     encoder_mask = {
         'encoder': True,
-        'duals': False,
-        'barrier_coefs': False,
-        'error_integral': False,
+        'duals_real': False,
+        'duals_imag': False,
+        'barrier_coefs_real': False,
+        'barrier_coefs_imag': False,
+        'error_integral_real': False,
+        'error_integral_imag': False,
     }
     other_mask = {
         'encoder': False,
-        'duals': True,
-        'barrier_coefs': True,
-        'error_integral': False,
+        'duals_real': True,
+        'duals_imag': True,
+        'barrier_coefs_real': True,
+        'barrier_coefs_imag': True,
+        'error_integral_real': False,
+        'error_integral_imag': False,
     }
 
     tx = optax.chain(
