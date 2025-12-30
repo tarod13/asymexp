@@ -249,6 +249,19 @@ def visualize_multiple_eigenvectors(
         vmin = np.min(all_values)
         vmax = np.max(all_values)
 
+        # Handle case where all values are the same (e.g., all zeros for imaginary parts)
+        if vmin == vmax:
+            # Set a small symmetric range around the constant value
+            if abs(vmin) < 1e-10:
+                # If essentially zero, use symmetric range around zero
+                vmin = -0.1
+                vmax = 0.1
+            else:
+                # Otherwise, use ±10% of the value
+                delta = abs(vmin) * 0.1
+                vmin = vmin - delta
+                vmax = vmax + delta
+
     for plot_idx, eigenvec_idx in enumerate(eigenvector_indices):
         row = plot_idx // ncols
         col = plot_idx % ncols
