@@ -338,8 +338,8 @@ def compute_symmetrized_eigendecomposition(
     # Compute eigendecomposition (for symmetric matrices, use eigh for better stability)
     eigenvalues, eigenvectors = jnp.linalg.eigh(transition_matrix)
 
-    # Sort by ascending eigenvalue magnitude
-    sorted_indices = jnp.argsort(jnp.abs(eigenvalues))
+    # Sort by ascending eigenvalue real part
+    sorted_indices = jnp.argsort(jnp.real(eigenvalues))
     eigenvalues = eigenvalues[sorted_indices]
     eigenvectors = eigenvectors[:, sorted_indices]
 
