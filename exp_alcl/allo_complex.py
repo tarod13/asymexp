@@ -1542,10 +1542,10 @@ def learn_eigenvectors(args):
             eigenvalue_sum_imag = -0.5 * diagonal_duals_left_imag.sum()
 
             # Compute biorthogonality inner products: ψ^T φ
-            # Real part: Re(ψ^T φ) = ψ_real^T φ_real + ψ_imag^T φ_imag
-            inner_product_left_real_1 = (jnp.einsum('ij,ik->jk', psi_real, jax.lax.stop_gradient(phi_real)) +
+            # Real part: Re(ψ^T φ) = ψ_real^T φ_real - ψ_imag^T φ_imag
+            inner_product_left_real_1 = (jnp.einsum('ij,ik->jk', psi_real, jax.lax.stop_gradient(phi_real)) -
                                    jnp.einsum('ij,ik->jk', psi_imag, jax.lax.stop_gradient(phi_imag))) / n
-            inner_product_left_real_2 = (jnp.einsum('ij,ik->jk', psi_real_2, jax.lax.stop_gradient(phi_real_2)) +
+            inner_product_left_real_2 = (jnp.einsum('ij,ik->jk', psi_real_2, jax.lax.stop_gradient(phi_real_2)) -
                                    jnp.einsum('ij,ik->jk', psi_imag_2, jax.lax.stop_gradient(phi_imag_2))) / n
             # Imaginary part: Im(ψ^T φ) = ψ_real^T φ_imag + ψ_imag^T φ_real
             inner_product_left_imag_1 = (jnp.einsum('ij,ik->jk', psi_real, jax.lax.stop_gradient(phi_imag)) +
@@ -1554,9 +1554,9 @@ def learn_eigenvectors(args):
                                    jnp.einsum('ij,ik->jk', psi_imag_2, jax.lax.stop_gradient(phi_real_2))) / n
             
             # Same for right eigenvectors
-            inner_product_right_real_1 = (jnp.einsum('ij,ik->jk', phi_real, jax.lax.stop_gradient(psi_real)) +
+            inner_product_right_real_1 = (jnp.einsum('ij,ik->jk', phi_real, jax.lax.stop_gradient(psi_real)) -
                                     jnp.einsum('ij,ik->jk', phi_imag, jax.lax.stop_gradient(psi_imag))) / n
-            inner_product_right_real_2 = (jnp.einsum('ij,ik->jk', phi_real_2, jax.lax.stop_gradient(psi_real_2)) +
+            inner_product_right_real_2 = (jnp.einsum('ij,ik->jk', phi_real_2, jax.lax.stop_gradient(psi_real_2)) -
                                     jnp.einsum('ij,ik->jk', phi_imag_2, jax.lax.stop_gradient(psi_imag_2))) / n
             inner_product_right_imag_1 = (jnp.einsum('ij,ik->jk', phi_real, jax.lax.stop_gradient(psi_imag)) +
                                     jnp.einsum('ij,ik->jk', phi_imag, jax.lax.stop_gradient(psi_real))) / n
@@ -1651,10 +1651,10 @@ def learn_eigenvectors(args):
             barrier_loss_neg = barrier_loss_neg_left + barrier_loss_neg_right
 
             # Compute graph drawing loss for complex eigenvectors
-            # E[-(ψ_real(s)*(φ_real(s) - φ_real(s')))^2 - (ψ_imag(s)*(φ_imag(s) - φ_imag(s')))^2]
-            graph_losses_real = ((psi_real * (phi_real-next_phi_real))**2).mean(0, keepdims=True)
-            graph_losses_imag = ((psi_imag * (phi_imag-next_phi_imag))**2).mean(0, keepdims=True)
-            graph_loss = (graph_losses_real + graph_losses_imag).sum()
+            # E[(ψ_real(s)*(φ_real(s) - φ_real(s')) - ψ_imag(s)*(φ_imag(s) - φ_imag(s')))^2]
+            graph_products_real = (psi_real * (phi_real-next_phi_real)).mean(0, keepdims=True)
+            graph_products_imag = (psi_imag * (phi_imag-next_phi_imag)).mean(0, keepdims=True)
+            graph_loss = ((graph_products_real - graph_products_imag)**2).sum()
 
             # Compute representation variances (for perturbation, use right eigenvectors)
             phi_real_centered = (phi_real - jnp.mean(phi_real, axis=0, keepdims=True))
