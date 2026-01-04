@@ -477,13 +477,14 @@ def create_gridworld_env(args: Args):
 
 
 def plot_learning_curves(metrics_history: Dict, save_path: str):
-    """Plot and save learning curves."""
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-    fig.suptitle('Training Metrics', fontsize=16)
+    """Plot and save comprehensive learning curves with all diagnostics."""
+    fig, axes = plt.subplots(4, 3, figsize=(18, 16))
+    fig.suptitle('Training Metrics (Comprehensive Diagnostics)', fontsize=16)
 
     # Extract data
     steps = [m['gradient_step'] for m in metrics_history]
 
+    # Row 1: Main losses
     # Plot 1: Total loss
     axes[0, 0].plot(steps, [m['allo'] for m in metrics_history])
     axes[0, 0].set_xlabel('Gradient Step')
@@ -498,13 +499,14 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
     axes[0, 1].set_title('Graph Drawing Loss')
     axes[0, 1].grid(True, alpha=0.3)
 
-    # Plot 3: Total error
-    axes[0, 2].plot(steps, [m['total_error'] for m in metrics_history])
+    # Plot 3: Gradient norm
+    axes[0, 2].plot(steps, [m['grad_norm'] for m in metrics_history])
     axes[0, 2].set_xlabel('Gradient Step')
-    axes[0, 2].set_ylabel('Total Error')
-    axes[0, 2].set_title('Orthogonality Error')
+    axes[0, 2].set_ylabel('Gradient Norm')
+    axes[0, 2].set_title('Gradient Norm')
     axes[0, 2].grid(True, alpha=0.3)
 
+    # Row 2: Dual losses and errors
     # Plot 4: Dual loss
     axes[1, 0].plot(steps, [m['dual_loss'] for m in metrics_history], label='Positive')
     axes[1, 0].plot(steps, [m['dual_loss_neg'] for m in metrics_history], label='Negative')
@@ -515,23 +517,88 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
     axes[1, 0].grid(True, alpha=0.3)
 
     # Plot 5: Barrier loss
-    axes[1, 1].plot(steps, [m['barrier_loss'] for m in metrics_history])
+    axes[1, 1].plot(steps, [m['barrier_loss'] for m in metrics_history], label='Positive')
+    axes[1, 1].plot(steps, [m['barrier_loss_neg'] for m in metrics_history], label='Negative')
     axes[1, 1].set_xlabel('Gradient Step')
     axes[1, 1].set_ylabel('Barrier Loss')
-    axes[1, 1].set_title('Barrier Loss')
+    axes[1, 1].set_title('Barrier Losses')
+    axes[1, 1].legend()
     axes[1, 1].grid(True, alpha=0.3)
 
-    # Plot 6: Gradient norm
-    axes[1, 2].plot(steps, [m['grad_norm'] for m in metrics_history])
+    # Plot 6: Total errors
+    axes[1, 2].plot(steps, [m['total_error'] for m in metrics_history], label='Total')
+    axes[1, 2].plot(steps, [m['total_norm_error'] for m in metrics_history], label='Norm')
+    axes[1, 2].plot(steps, [m['total_two_component_error'] for m in metrics_history], label='First 2')
     axes[1, 2].set_xlabel('Gradient Step')
-    axes[1, 2].set_ylabel('Gradient Norm')
-    axes[1, 2].set_title('Gradient Norm')
+    axes[1, 2].set_ylabel('Error')
+    axes[1, 2].set_title('Orthogonality Errors')
+    axes[1, 2].legend()
     axes[1, 2].grid(True, alpha=0.3)
+
+    # Row 3: Diagonal errors for first few eigenvectors
+    # Plot 7: Left real diagonal errors
+    axes[2, 0].set_title('Left Real Diagonal Errors')
+    for i in range(min(5, 11)):
+        key = f'error_left_real_{i}'
+        if key in metrics_history[0]:
+            axes[2, 0].plot(steps, [m[key] for m in metrics_history], label=f'ev{i}', alpha=0.7)
+    axes[2, 0].set_xlabel('Gradient Step')
+    axes[2, 0].set_ylabel('Error')
+    axes[2, 0].legend(fontsize=8)
+    axes[2, 0].grid(True, alpha=0.3)
+
+    # Plot 8: Left imag diagonal errors
+    axes[2, 1].set_title('Left Imag Diagonal Errors')
+    for i in range(min(5, 11)):
+        key = f'error_left_imag_{i}'
+        if key in metrics_history[0]:
+            axes[2, 1].plot(steps, [m[key] for m in metrics_history], label=f'ev{i}', alpha=0.7)
+    axes[2, 1].set_xlabel('Gradient Step')
+    axes[2, 1].set_ylabel('Error')
+    axes[2, 1].legend(fontsize=8)
+    axes[2, 1].grid(True, alpha=0.3)
+
+    # Plot 9: Right real diagonal errors
+    axes[2, 2].set_title('Right Real Diagonal Errors')
+    for i in range(min(5, 11)):
+        key = f'error_right_real_{i}'
+        if key in metrics_history[0]:
+            axes[2, 2].plot(steps, [m[key] for m in metrics_history], label=f'ev{i}', alpha=0.7)
+    axes[2, 2].set_xlabel('Gradient Step')
+    axes[2, 2].set_ylabel('Error')
+    axes[2, 2].legend(fontsize=8)
+    axes[2, 2].grid(True, alpha=0.3)
+
+    # Row 4: Barrier coefficients and distance metrics
+    # Plot 10: Barrier coefficients
+    axes[3, 0].plot(steps, [m['barrier_coef_left_real'] for m in metrics_history], label='Left Real')
+    axes[3, 0].plot(steps, [m['barrier_coef_left_imag'] for m in metrics_history], label='Left Imag')
+    axes[3, 0].plot(steps, [m['barrier_coef_right_real'] for m in metrics_history], label='Right Real')
+    axes[3, 0].plot(steps, [m['barrier_coef_right_imag'] for m in metrics_history], label='Right Imag')
+    axes[3, 0].set_xlabel('Gradient Step')
+    axes[3, 0].set_ylabel('Coefficient')
+    axes[3, 0].set_title('Barrier Coefficients')
+    axes[3, 0].legend(fontsize=8)
+    axes[3, 0].grid(True, alpha=0.3)
+
+    # Plot 11: Distance to constraint manifold
+    axes[3, 1].plot(steps, [m['distance_to_constraint_manifold'] for m in metrics_history])
+    axes[3, 1].set_xlabel('Gradient Step')
+    axes[3, 1].set_ylabel('Distance')
+    axes[3, 1].set_title('Distance to Constraint Manifold')
+    axes[3, 1].grid(True, alpha=0.3)
+
+    # Plot 12: Distance to origin
+    axes[3, 2].plot(steps, [m['distance_to_origin'] for m in metrics_history])
+    axes[3, 2].set_xlabel('Gradient Step')
+    axes[3, 2].set_ylabel('Distance')
+    axes[3, 2].set_title('Distance to Origin')
+    axes[3, 2].grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"Learning curves saved to {save_path}")
+    print(f"Comprehensive learning curves saved to {save_path}")
 
 
 def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamma, save_path,
@@ -540,23 +607,20 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
     """
     Plot the evolution of dual variables (Laplacian eigenvalue estimates) vs ground truth eigenvalues.
 
-    The duals are eigenvalues of the inverse-weighted Laplacian L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2,
-    where SR_γ is the successor representation with discount gamma and D is the sampling distribution.
+    The duals are eigenvalues of the non-symmetric Laplacian L = I - (1-γ)P·SR_γ,
+    where P is the transition matrix, SR_γ is the successor representation, and γ is the discount factor.
 
-    The 0.5 factor arises from the sampling scheme with the episodic replay buffer,
-    which samples (s_t, s_{t+k}) pairs where k is geometrically distributed. This
-    effectively implements the symmetrized version with the 0.5 scaling.
-
-    Now handles separated real and imaginary dual variables for complex constraints.
+    The eigenvalue estimates are computed as -0.5 * (dual_left + dual_right) where dual_left and
+    dual_right are the left and right biorthogonality constraint multipliers.
 
     Args:
         metrics_history: List of metric dictionaries
-        ground_truth_eigenvalues: Array of ground truth eigenvalues of the inverse-weighted Laplacian
-        gamma: Discount factor used in the successor representation (not used in this version)
+        ground_truth_eigenvalues: Array of ground truth eigenvalues of the non-symmetric Laplacian
+        gamma: Discount factor used in the successor representation
         save_path: Path to save the plot
         num_eigenvectors: Number of eigenvectors to plot
-        ground_truth_eigenvalues_simple: Optional array of simple Laplacian eigenvalues for comparison
-        ground_truth_eigenvalues_weighted: Optional array of weighted Laplacian eigenvalues for comparison
+        ground_truth_eigenvalues_simple: Optional array for comparison (unused)
+        ground_truth_eigenvalues_weighted: Optional array for comparison (unused)
     """
     steps = [m['gradient_step'] for m in metrics_history]
     num_plot = min(num_eigenvectors, len(ground_truth_eigenvalues))
@@ -575,17 +639,14 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
 
         if dual_real_key in metrics_history[0] and dual_imag_key in metrics_history[0]:
             # Get dual values (these are eigenvalues of the Laplacian)
+            # Already scaled as -0.5 * (dual_left + dual_right) in aux
             dual_values_real = np.array([m[dual_real_key] for m in metrics_history])
             dual_values_imag = np.array([m[dual_imag_key] for m in metrics_history])
 
-            # Apply 0.5 factor due to sampling scheme
-            dual_values_real_scaled = 0.5 * dual_values_real
-            dual_values_imag_scaled = 0.5 * dual_values_imag
-
             # Plot real and imaginary components
-            ax1.plot(steps, dual_values_real_scaled, label=f'λ_{i} (real)',
+            ax1.plot(steps, dual_values_real, label=f'λ_{i} (real)',
                     color=colors[i], linewidth=1.5, linestyle='-')
-            ax1.plot(steps, dual_values_imag_scaled, label=f'λ_{i} (imag)',
+            ax1.plot(steps, dual_values_imag, label=f'λ_{i} (imag)',
                     color=colors[i], linewidth=1.5, linestyle='--', alpha=0.7)
 
             # Plot ground truth (real and imaginary)
@@ -608,16 +669,12 @@ def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamm
         dual_imag_key = f'dual_imag_{i}'
 
         if dual_real_key in metrics_history[0] and dual_imag_key in metrics_history[0]:
-            # Get dual values
+            # Get dual values (already scaled as -0.5 * (dual_left + dual_right))
             dual_values_real = np.array([m[dual_real_key] for m in metrics_history])
             dual_values_imag = np.array([m[dual_imag_key] for m in metrics_history])
 
-            # Apply 0.5 factor due to sampling scheme
-            dual_values_real_scaled = 0.5 * dual_values_real
-            dual_values_imag_scaled = 0.5 * dual_values_imag
-
             # Calculate magnitude
-            dual_magnitude = np.sqrt(dual_values_real_scaled**2 + dual_values_imag_scaled**2)
+            dual_magnitude = np.sqrt(dual_values_real**2 + dual_values_imag**2)
 
             ax2.plot(steps, dual_magnitude, label=f'|λ_{i}|', color=colors[i], linewidth=1.5)
 
@@ -922,6 +979,76 @@ def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"Cosine similarity evolution plot saved to {save_path}")
+
+
+def plot_all_duals_evolution(metrics_history: Dict, save_path: str, num_eigenvectors: int = 6):
+    """
+    Plot comprehensive dual variable evolution showing left, right, and combined duals.
+
+    Args:
+        metrics_history: List of metric dictionaries
+        save_path: Path to save the plot
+        num_eigenvectors: Number of eigenvectors to plot
+    """
+    steps = [m['gradient_step'] for m in metrics_history]
+
+    # Create a large figure with subplots for each eigenvector
+    fig, axes = plt.subplots(num_eigenvectors, 2, figsize=(16, 4*num_eigenvectors))
+    fig.suptitle('Dual Variables Evolution (All Components)', fontsize=16)
+
+    if num_eigenvectors == 1:
+        axes = axes.reshape(1, -1)
+
+    for i in range(num_eigenvectors):
+        # Left column: Real parts
+        ax_real = axes[i, 0]
+
+        # Plot left, right, and combined real duals
+        if f'dual_left_real_{i}' in metrics_history[0]:
+            dual_left_real = [m[f'dual_left_real_{i}'] for m in metrics_history]
+            ax_real.plot(steps, dual_left_real, label='Left', alpha=0.7, linewidth=1.5)
+
+        if f'dual_right_real_{i}' in metrics_history[0]:
+            dual_right_real = [m[f'dual_right_real_{i}'] for m in metrics_history]
+            ax_real.plot(steps, dual_right_real, label='Right', alpha=0.7, linewidth=1.5)
+
+        if f'dual_real_{i}' in metrics_history[0]:
+            dual_combined_real = [m[f'dual_real_{i}'] for m in metrics_history]
+            ax_real.plot(steps, dual_combined_real, label='Combined (Eigenvalue)',
+                        linewidth=2.5, linestyle='--', color='black')
+
+        ax_real.set_xlabel('Gradient Step')
+        ax_real.set_ylabel('Dual Value (Real)')
+        ax_real.set_title(f'Eigenvector {i} - Real Part Duals')
+        ax_real.legend()
+        ax_real.grid(True, alpha=0.3)
+
+        # Right column: Imaginary parts
+        ax_imag = axes[i, 1]
+
+        if f'dual_left_imag_{i}' in metrics_history[0]:
+            dual_left_imag = [m[f'dual_left_imag_{i}'] for m in metrics_history]
+            ax_imag.plot(steps, dual_left_imag, label='Left', alpha=0.7, linewidth=1.5)
+
+        if f'dual_right_imag_{i}' in metrics_history[0]:
+            dual_right_imag = [m[f'dual_right_imag_{i}'] for m in metrics_history]
+            ax_imag.plot(steps, dual_right_imag, label='Right', alpha=0.7, linewidth=1.5)
+
+        if f'dual_imag_{i}' in metrics_history[0]:
+            dual_combined_imag = [m[f'dual_imag_{i}'] for m in metrics_history]
+            ax_imag.plot(steps, dual_combined_imag, label='Combined (Eigenvalue)',
+                        linewidth=2.5, linestyle='--', color='black')
+
+        ax_imag.set_xlabel('Gradient Step')
+        ax_imag.set_ylabel('Dual Value (Imag)')
+        ax_imag.set_title(f'Eigenvector {i} - Imaginary Part Duals')
+        ax_imag.legend()
+        ax_imag.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"All duals evolution plot saved to {save_path}")
 
 
 def state_idx_to_xy(state_idx: int, width: int) -> tuple:
@@ -1540,8 +1667,11 @@ def learn_eigenvectors(args):
             barrier_coefficients_right_imag = params['barrier_coefs_right_imag']
             diagonal_duals_left_real = jnp.diag(dual_variables_left_real)
             diagonal_duals_left_imag = jnp.diag(dual_variables_left_imag)
-            eigenvalue_sum_real = -0.5 * diagonal_duals_left_real.sum()
-            eigenvalue_sum_imag = -0.5 * diagonal_duals_left_imag.sum()
+            diagonal_duals_right_real = jnp.diag(dual_variables_right_real)
+            diagonal_duals_right_imag = jnp.diag(dual_variables_right_imag)
+            # Eigenvalue sum is the sum of left and right duals (averaged)
+            eigenvalue_sum_real = -0.5 * (diagonal_duals_left_real + diagonal_duals_right_real).sum()
+            eigenvalue_sum_imag = -0.5 * (diagonal_duals_left_imag + diagonal_duals_right_imag).sum()
 
             # Compute biorthogonality inner products: ψ^T φ
             # Real part: Re(ψ^T φ) = ψ_real^T φ_real - ψ_imag^T φ_imag
@@ -1724,19 +1854,32 @@ def learn_eigenvectors(args):
                 'distance_to_origin': norm_phi_real.sum() + norm_phi_imag.sum(),
             }
 
-            # Add dual variables to aux
+            # Add dual variables and errors to aux
             for i in range(min(11, args.num_eigenvectors)):
                 aux[f'dual_left_real_{i}'] = dual_variables_left_real[i, i]
                 aux[f'dual_left_imag_{i}'] = dual_variables_left_imag[i, i]
                 aux[f'dual_right_real_{i}'] = dual_variables_right_real[i, i]
                 aux[f'dual_right_imag_{i}'] = dual_variables_right_imag[i, i]
+                # Combined eigenvalue estimate (sum of left and right duals)
+                aux[f'dual_real_{i}'] = -0.5 * (dual_variables_left_real[i, i] + dual_variables_right_real[i, i])
+                aux[f'dual_imag_{i}'] = -0.5 * (dual_variables_left_imag[i, i] + dual_variables_right_imag[i, i])
                 aux[f'graph_perturbation_{i}'] = graph_perturbation[0, i]
+                # Add diagonal errors for each eigenvector
+                aux[f'error_left_real_{i}'] = error_matrix_left_real_1[i, i]
+                aux[f'error_left_imag_{i}'] = error_matrix_left_imag_1[i, i]
+                aux[f'error_right_real_{i}'] = error_matrix_right_real_1[i, i]
+                aux[f'error_right_imag_{i}'] = error_matrix_right_imag_1[i, i]
 
                 for j in range(0, min(2, i)):
                     aux[f'dual_left_real_{i}_{j}'] = dual_variables_left_real[i, j]
                     aux[f'dual_left_imag_{i}_{j}'] = dual_variables_left_imag[i, j]
                     aux[f'dual_right_real_{i}_{j}'] = dual_variables_right_real[i, j]
                     aux[f'dual_right_imag_{i}_{j}'] = dual_variables_right_imag[i, j]
+                    # Add off-diagonal errors
+                    aux[f'error_left_real_{i}_{j}'] = error_matrix_left_real_1[i, j]
+                    aux[f'error_left_imag_{i}_{j}'] = error_matrix_left_imag_1[i, j]
+                    aux[f'error_right_real_{i}_{j}'] = error_matrix_right_real_1[i, j]
+                    aux[f'error_right_imag_{i}_{j}'] = error_matrix_right_imag_1[i, j]
 
             return allo, (error_matrix_left_real_1, error_matrix_left_imag_1, error_matrix_right_real_1, error_matrix_right_imag_1, aux)
 
@@ -2141,6 +2284,13 @@ def learn_eigenvectors(args):
                     metrics_history,
                     str(plots_dir / "cosine_similarity_evolution.png"),
                     num_eigenvectors=args.num_eigenvectors
+                )
+
+                # Plot all duals evolution (left, right, combined)
+                plot_all_duals_evolution(
+                    metrics_history,
+                    str(plots_dir / "all_duals_evolution.png"),
+                    num_eigenvectors=min(6, args.num_eigenvectors)
                 )
             else:
                 # Just log progress
