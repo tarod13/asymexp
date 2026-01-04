@@ -259,14 +259,13 @@ class EpisodicReplayBuffer:
 
             # Vectorized selection using np.where
             # Prefer second terminal (boundary) if available, otherwise use first
-            # Add 1 to include k=0 in the sampling range
             max_durations = np.where(
                 num_valid_terms >= 2,
-                sorted_terms[:, 1] + 1,  # Second terminal (boundary) - preferred
+                sorted_terms[:, 1],  # Second terminal (boundary) - preferred
                 np.where(
                     num_valid_terms >= 1,
-                    sorted_terms[:, 0] + 1,  # First terminal (done state) - fallback
-                    transition_ranges - obs_idx  # No terminals - use episode length
+                    sorted_terms[:, 0],  # First terminal (done state) - fallback
+                    transition_ranges - obs_idx - 1  # No terminals - use episode length
                 )
             )
         elif 'terminals' in self._episodes:
@@ -285,16 +284,16 @@ class EpisodicReplayBuffer:
 
                 if len(terminal_indices) > 0:
                     if len(terminal_indices) > 1:
-                        max_durations[i] = terminal_indices[1] + 1  # Second terminal (boundary), +1 to include k=0
+                        max_durations[i] = terminal_indices[1]  # Second terminal (boundary)
                     else:
-                        max_durations[i] = terminal_indices[0] + 1  # Only one terminal available, +1 to include k=0
+                        max_durations[i] = terminal_indices[0]  # Only one terminal available
                 else:
-                    max_durations[i] = ep_length - start_idx
+                    max_durations[i] = ep_length - start_idx - 1
         else:
             # No terminals available, use full episode length
-            max_durations = transition_ranges - obs_idx
+            max_durations = transition_ranges - obs_idx - 1
 
-        transition_durations = discounted_sampling(max_durations, discount=discount)  # Allow k=0 to properly approximate SR_γ
+        transition_durations = discounted_sampling(max_durations, discount=discount) + 1   # +1 because the minimal transition length is 1
         next_obs_idx = obs_idx + transition_durations
 
         # Get the samples
