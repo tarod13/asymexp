@@ -288,10 +288,11 @@ def compute_nonsymmetric_laplacian(
     gamma: float,
 ) -> jnp.ndarray:
     """
-    Compute the non-symmetric Laplacian L = I - (1-γ)SR_γ.
+    Compute the non-symmetric Laplacian L = I - (1-γ)P·SR_γ.
 
-    This is the natural Laplacian for non-reversible dynamics that admits
-    complex eigenvectors.
+    This definition matches what the episodic replay buffer approximates with
+    geometric sampling (k >= 1). The transition matrix P applied to SR_γ gives
+    the expected discounted future occupancy starting from the next state.
 
     Args:
         transition_matrix: Shape [num_states, num_states], stochastic transition matrix P
@@ -306,8 +307,8 @@ def compute_nonsymmetric_laplacian(
     # Compute successor representation SR_γ = (I - γP)^(-1)
     sr_matrix = compute_successor_representation(transition_matrix, gamma)
 
-    # Compute Laplacian: L = I - (1-γ)SR_γ (no symmetrization)
-    laplacian = identity - (1 - gamma) * sr_matrix
+    # Compute Laplacian: L = I - (1-γ)P·SR_γ (matches geometric sampling with k >= 1)
+    laplacian = identity - (1 - gamma) * (transition_matrix @ sr_matrix)
 
     return laplacian
 
@@ -1030,14 +1031,15 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     """
     Collect transition data and compute ground truth complex eigenvectors.
 
-    Computes the non-symmetric Laplacian: L = I - (1-γ)SR_γ
+    Computes the non-symmetric Laplacian: L = I - (1-γ)P·SR_γ
     This Laplacian admits complex eigenvalues and distinct left/right eigenvectors.
+    The definition matches what the graph loss approximates via geometric sampling.
 
     Args:
         env: Base environment (possibly with doors already applied)
 
     Returns:
-        laplacian_matrix: Non-symmetric Laplacian L = I - (1-γ)SR_γ
+        laplacian_matrix: Non-symmetric Laplacian L = I - (1-γ)P·SR_γ
         eigendecomp: Dictionary with complex eigenvalues and left/right eigenvectors
         state_coords: Array of (x,y) coordinates for each state
         canonical_states: Array of free state indices
@@ -1146,7 +1148,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
 
     # Compute non-symmetric Laplacian for complex eigenvectors
     print(f"\nComputing non-symmetric Laplacian with gamma={args.gamma}...")
-    print("  L = I - (1-γ)SR_γ (no symmetrization, no D weighting)")
+    print("  L = I - (1-γ)P·SR_γ (matches geometric sampling with k >= 1)")
 
     laplacian_matrix = compute_nonsymmetric_laplacian(transition_matrix, args.gamma)
     eigendecomp = compute_eigendecomposition(
@@ -1353,7 +1355,7 @@ def learn_eigenvectors(args):
             print(f"Door configuration saved to {door_save_path}")
 
         # Save ground truth eigendecomposition and state coords
-        # Non-symmetric Laplacian: L = I - (1-γ)SR_γ (complex eigenvalues and eigenvectors)
+        # Non-symmetric Laplacian: L = I - (1-γ)P·SR_γ (complex eigenvalues and eigenvectors)
         np.save(results_dir / "gt_eigenvalues_real.npy", np.array(gt_eigenvalues_real))
         np.save(results_dir / "gt_eigenvalues_imag.npy", np.array(gt_eigenvalues_imag))
         np.save(results_dir / "gt_left_real.npy", np.array(gt_left_real))
