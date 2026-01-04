@@ -7,7 +7,7 @@ non-symmetric Laplacians through an augmented Lagrangian optimization approach.
 The network outputs 4 sets of features: left_real, left_imag, right_real, right_imag.
 
 The loss function consists of:
-1. Graph drawing loss: E[(φ_real(s) - ψ_real(s'))² + (φ_img(s) - ψ_img(s'))²]
+1. Graph drawing loss: E[(ψ_real(s)(φ_real(s) - φ_real(s')) + ψ_img(s)(φ_img(s) - φ_img(s')))²]
 2. Biorthogonality constraints: φ^T ψ = I (for both real and imaginary parts)
 """
 
