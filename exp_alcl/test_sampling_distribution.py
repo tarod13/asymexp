@@ -71,8 +71,13 @@ def test_sampling_distribution(test_args: TestArgs):
 
     # Create environment and collect data using the same process as allo_complex.py
     # Convert TestArgs to Args for compatibility
-    # Use all eigenvectors if None specified
-    num_eig = test_args.num_eigenvectors if test_args.num_eigenvectors is not None else 10
+    # Determine how many eigenvectors to compute
+    # If None specified, we'll compute ALL (set to a large number initially, then trim)
+    if test_args.num_eigenvectors is None:
+        # We'll determine the actual number after creating the environment
+        num_eig_initial = None  # Signal to compute all
+    else:
+        num_eig_initial = test_args.num_eigenvectors
 
     args = Args(
         env_type=test_args.env_type,
@@ -86,13 +91,13 @@ def test_sampling_distribution(test_args: TestArgs):
         num_doors=test_args.num_doors,
         door_seed=test_args.door_seed,
         seed=test_args.seed,
-        num_eigenvectors=num_eig,
+        num_eigenvectors=10,  # Temporary, will update after we know num_states
     )
 
     print("\n1. Creating environment and collecting data...")
     env = create_gridworld_env(args)
 
-    laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer = \
+    laplacian_matrix, eigendecomp_temp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer = \
         collect_data_and_compute_eigenvectors(env, args)
 
     num_states = len(canonical_states)
@@ -103,13 +108,27 @@ def test_sampling_distribution(test_args: TestArgs):
     num_eigenvectors_to_compare = min(num_eigenvectors_to_compare, num_states)
 
     print(f"   Comparing {num_eigenvectors_to_compare} eigenvectors (out of {num_states} total states)")
+
+    # Recompute eigendecomposition with the correct number if needed
+    if num_eigenvectors_to_compare > 10:
+        print(f"   Recomputing ground truth eigendecomposition with {num_eigenvectors_to_compare} eigenvectors...")
+        eigendecomp = compute_eigendecomposition(
+            laplacian_matrix,
+            k=num_eigenvectors_to_compare,
+            sort_by_magnitude=True,
+            ascending=True,
+        )
+    else:
+        eigendecomp = eigendecomp_temp
+
     print(f"   Ground truth eigenvalues (first 10):")
     print(f"   Real: {eigendecomp['eigenvalues_real'][:10]}")
     print(f"   Imag: {eigendecomp['eigenvalues_imag'][:10]}")
 
     # Sample transitions from replay buffer
     print(f"\n2. Sampling {test_args.num_samples} transitions from replay buffer...")
-    transition_counts = np.zeros((num_states, num_states), dtype=np.int64)
+    # Use JAX array for efficient vectorized counting
+    transition_counts = jnp.zeros((num_states, num_states), dtype=jnp.int32)
 
     num_batches = (test_args.num_samples + test_args.batch_size - 1) // test_args.batch_size
     total_samples = 0
@@ -119,13 +138,15 @@ def test_sampling_distribution(test_args: TestArgs):
         batch = replay_buffer.sample(test_args.batch_size, discount=test_args.gamma)
 
         # Extract state indices
-        state_indices = np.array(batch.obs)
-        next_state_indices = np.array(batch.next_obs)
+        state_indices = jnp.array(batch.obs)
+        next_state_indices = jnp.array(batch.next_obs)
 
-        # Count transitions
-        for s, s_next in zip(state_indices, next_state_indices):
-            transition_counts[s, s_next] += 1
-            total_samples += 1
+        # Vectorized counting (like in src/data_collection.py)
+        transition_counts = transition_counts.at[state_indices, next_state_indices].add(1)
+        total_samples += len(state_indices)
+
+    # Convert back to numpy for remaining operations
+    transition_counts = np.array(transition_counts)
 
     print(f"   Total samples collected: {total_samples}")
     print(f"   Transition matrix sparsity: {np.sum(transition_counts > 0) / (num_states * num_states):.4f}")
