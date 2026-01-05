@@ -300,6 +300,46 @@ def test_sampling_distribution(test_args: TestArgs):
     print(f"   Right eigenvectors (real): {frob_right_real:.6f} (flipped: {frob_right_real_flipped:.6f})")
     print(f"   Left eigenvectors (real):  {frob_left_real:.6f} (flipped: {frob_left_real_flipped:.6f})")
 
+    # Check biorthogonality and normalization
+    print(f"\n   Biorthogonality and normalization checks:")
+
+    # Ground truth biorthogonality: ψ^T φ should = I
+    gt_biorth_real = gt_left_real.T @ gt_right_real
+    gt_biorth_diag_real = np.diag(gt_biorth_real)
+    gt_biorth_offdiag_real = gt_biorth_real - np.diag(gt_biorth_diag_real)
+    print(f"   Ground Truth:")
+    print(f"      Biorthogonality diagonal (should be ≈1): mean={gt_biorth_diag_real.mean():.6f}, std={gt_biorth_diag_real.std():.6f}")
+    print(f"      Biorthogonality off-diagonal (should be ≈0): mean={np.abs(gt_biorth_offdiag_real).mean():.6f}, max={np.abs(gt_biorth_offdiag_real).max():.6f}")
+
+    # Empirical biorthogonality
+    emp_biorth_real = emp_left_real.T @ emp_right_real
+    emp_biorth_diag_real = np.diag(emp_biorth_real)
+    emp_biorth_offdiag_real = emp_biorth_real - np.diag(emp_biorth_diag_real)
+    print(f"   Empirical:")
+    print(f"      Biorthogonality diagonal (should be ≈1): mean={emp_biorth_diag_real.mean():.6f}, std={emp_biorth_diag_real.std():.6f}")
+    print(f"      Biorthogonality off-diagonal (should be ≈0): mean={np.abs(emp_biorth_offdiag_real).mean():.6f}, max={np.abs(emp_biorth_offdiag_real).max():.6f}")
+
+    # Check right eigenvector norms
+    gt_right_norms = np.linalg.norm(gt_right_real, axis=0)
+    emp_right_norms = np.linalg.norm(emp_right_real, axis=0)
+    print(f"   Right eigenvector L2 norms:")
+    print(f"      Ground truth - mean: {gt_right_norms.mean():.6f}, std: {gt_right_norms.std():.6f}, range: [{gt_right_norms.min():.6f}, {gt_right_norms.max():.6f}]")
+    print(f"      Empirical - mean: {emp_right_norms.mean():.6f}, std: {emp_right_norms.std():.6f}, range: [{emp_right_norms.min():.6f}, {emp_right_norms.max():.6f}]")
+
+    # Check if normalizing helps matching
+    print(f"\n   Checking if normalization explains differences:")
+    # Normalize both to unit L2 norm
+    gt_right_normalized = gt_right_real / (gt_right_norms[None, :] + 1e-10)
+    emp_right_normalized = emp_right_real / (emp_right_norms[None, :] + 1e-10)
+
+    # Check first eigenvector after normalization
+    if num_eigenvectors_to_compare > 0:
+        cos_sim_normalized = np.abs(np.dot(gt_right_normalized[:, 0], emp_right_normalized[:, 0]))
+        error_normalized = np.linalg.norm(gt_right_normalized[:, 0] - emp_right_normalized[:, 0])
+        error_normalized_flipped = np.linalg.norm(gt_right_normalized[:, 0] + emp_right_normalized[:, 0])
+        print(f"      First eigenvector (after L2 normalization):")
+        print(f"         cos_sim: {cos_sim_normalized:.6f}, L2 error: {error_normalized:.6f}, L2 error (flipped): {error_normalized_flipped:.6f}")
+
     # Save results
     print(f"\n8. Saving results to {test_args.save_dir}...")
     save_dir = Path(test_args.save_dir)
