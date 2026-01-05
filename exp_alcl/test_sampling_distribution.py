@@ -48,8 +48,8 @@ class TestArgs:
     num_doors: int = 5
     door_seed: int = 42
 
-    # Number of eigenvectors to compare
-    num_eigenvectors: int = 10
+    # Number of eigenvectors to compare (None = all available)
+    num_eigenvectors: int | None = None
 
     # Misc
     seed: int = 42
@@ -69,6 +69,9 @@ def test_sampling_distribution(test_args: TestArgs):
 
     # Create environment and collect data using the same process as allo_complex.py
     # Convert TestArgs to Args for compatibility
+    # Use all eigenvectors if None specified
+    num_eig = test_args.num_eigenvectors if test_args.num_eigenvectors is not None else 10
+
     args = Args(
         env_type=test_args.env_type,
         max_episode_length=test_args.max_episode_length,
@@ -79,7 +82,7 @@ def test_sampling_distribution(test_args: TestArgs):
         num_doors=test_args.num_doors,
         door_seed=test_args.door_seed,
         seed=test_args.seed,
-        num_eigenvectors=test_args.num_eigenvectors,
+        num_eigenvectors=num_eig,
     )
 
     print("\n1. Creating environment and collecting data...")
@@ -90,9 +93,15 @@ def test_sampling_distribution(test_args: TestArgs):
 
     num_states = len(canonical_states)
     print(f"   Number of states: {num_states}")
-    print(f"   Ground truth eigenvalues (first {test_args.num_eigenvectors}):")
-    print(f"   Real: {eigendecomp['eigenvalues_real'][:test_args.num_eigenvectors]}")
-    print(f"   Imag: {eigendecomp['eigenvalues_imag'][:test_args.num_eigenvectors]}")
+
+    # Determine how many eigenvectors to compare
+    num_eigenvectors_to_compare = test_args.num_eigenvectors if test_args.num_eigenvectors is not None else num_states
+    num_eigenvectors_to_compare = min(num_eigenvectors_to_compare, num_states)
+
+    print(f"   Comparing {num_eigenvectors_to_compare} eigenvectors (out of {num_states} total states)")
+    print(f"   Ground truth eigenvalues (first 10):")
+    print(f"   Real: {eigendecomp['eigenvalues_real'][:10]}")
+    print(f"   Imag: {eigendecomp['eigenvalues_imag'][:10]}")
 
     # Sample transitions from replay buffer
     print(f"\n2. Sampling {test_args.num_samples} transitions from replay buffer...")
@@ -153,50 +162,51 @@ def test_sampling_distribution(test_args: TestArgs):
     print("\n5. Computing eigendecomposition of empirical Laplacian...")
     empirical_eigendecomp = compute_eigendecomposition(
         empirical_laplacian,
-        k=test_args.num_eigenvectors,
+        k=num_eigenvectors_to_compare,
         sort_by_magnitude=True,
         ascending=True,  # Smallest eigenvalues first
     )
 
-    print(f"   Empirical eigenvalues (first {test_args.num_eigenvectors}):")
-    print(f"   Real: {empirical_eigendecomp['eigenvalues_real'][:test_args.num_eigenvectors]}")
-    print(f"   Imag: {empirical_eigendecomp['eigenvalues_imag'][:test_args.num_eigenvectors]}")
+    print(f"   Empirical eigenvalues (first 10):")
+    print(f"   Real: {empirical_eigendecomp['eigenvalues_real'][:10]}")
+    print(f"   Imag: {empirical_eigendecomp['eigenvalues_imag'][:10]}")
 
     # Compare eigenvalues
     print("\n6. Comparing eigenvalues...")
-    gt_eigenvalues_real = eigendecomp['eigenvalues_real'][:test_args.num_eigenvectors]
-    gt_eigenvalues_imag = eigendecomp['eigenvalues_imag'][:test_args.num_eigenvectors]
-    emp_eigenvalues_real = empirical_eigendecomp['eigenvalues_real'][:test_args.num_eigenvectors]
-    emp_eigenvalues_imag = empirical_eigendecomp['eigenvalues_imag'][:test_args.num_eigenvectors]
+    gt_eigenvalues_real = eigendecomp['eigenvalues_real'][:num_eigenvectors_to_compare]
+    gt_eigenvalues_imag = eigendecomp['eigenvalues_imag'][:num_eigenvectors_to_compare]
+    emp_eigenvalues_real = empirical_eigendecomp['eigenvalues_real'][:num_eigenvectors_to_compare]
+    emp_eigenvalues_imag = empirical_eigendecomp['eigenvalues_imag'][:num_eigenvectors_to_compare]
 
     eigenvalue_error_real = np.abs(gt_eigenvalues_real - emp_eigenvalues_real)
     eigenvalue_error_imag = np.abs(gt_eigenvalues_imag - emp_eigenvalues_imag)
     eigenvalue_error_magnitude = np.sqrt(eigenvalue_error_real**2 + eigenvalue_error_imag**2)
 
-    print(f"   Eigenvalue error (magnitude):")
-    for i in range(test_args.num_eigenvectors):
+    print(f"   Eigenvalue error (magnitude) for first 10:")
+    for i in range(min(10, num_eigenvectors_to_compare)):
         print(f"      Eigenvector {i}: {eigenvalue_error_magnitude[i]:.6f}")
-    print(f"   Mean eigenvalue error: {eigenvalue_error_magnitude.mean():.6f}")
+    print(f"   Mean eigenvalue error (all {num_eigenvectors_to_compare}): {eigenvalue_error_magnitude.mean():.6f}")
+    print(f"   Max eigenvalue error: {eigenvalue_error_magnitude.max():.6f}")
 
     # Compare eigenvectors
     print("\n7. Comparing eigenvectors...")
 
     # Extract ground truth eigenvectors
-    gt_left_real = eigendecomp['left_eigenvectors_real'][:, :test_args.num_eigenvectors]
-    gt_left_imag = eigendecomp['left_eigenvectors_imag'][:, :test_args.num_eigenvectors]
-    gt_right_real = eigendecomp['right_eigenvectors_real'][:, :test_args.num_eigenvectors]
-    gt_right_imag = eigendecomp['right_eigenvectors_imag'][:, :test_args.num_eigenvectors]
+    gt_left_real = eigendecomp['left_eigenvectors_real'][:, :num_eigenvectors_to_compare]
+    gt_left_imag = eigendecomp['left_eigenvectors_imag'][:, :num_eigenvectors_to_compare]
+    gt_right_real = eigendecomp['right_eigenvectors_real'][:, :num_eigenvectors_to_compare]
+    gt_right_imag = eigendecomp['right_eigenvectors_imag'][:, :num_eigenvectors_to_compare]
 
     # Extract empirical eigenvectors
-    emp_left_real = empirical_eigendecomp['left_eigenvectors_real'][:, :test_args.num_eigenvectors]
-    emp_left_imag = empirical_eigendecomp['left_eigenvectors_imag'][:, :test_args.num_eigenvectors]
-    emp_right_real = empirical_eigendecomp['right_eigenvectors_real'][:, :test_args.num_eigenvectors]
-    emp_right_imag = empirical_eigendecomp['right_eigenvectors_imag'][:, :test_args.num_eigenvectors]
+    emp_left_real = empirical_eigendecomp['left_eigenvectors_real'][:, :num_eigenvectors_to_compare]
+    emp_left_imag = empirical_eigendecomp['left_eigenvectors_imag'][:, :num_eigenvectors_to_compare]
+    emp_right_real = empirical_eigendecomp['right_eigenvectors_real'][:, :num_eigenvectors_to_compare]
+    emp_right_imag = empirical_eigendecomp['right_eigenvectors_imag'][:, :num_eigenvectors_to_compare]
 
     # Compute cosine similarities for each eigenvector
     # For complex eigenvectors, we need to account for both real and imaginary parts
-    print("\n   Right eigenvector similarities:")
-    for i in range(test_args.num_eigenvectors):
+    print(f"\n   Right eigenvector similarities (first 10 of {num_eigenvectors_to_compare}):")
+    for i in range(min(10, num_eigenvectors_to_compare)):
         # Flatten to vectors
         gt_real_i = gt_right_real[:, i]
         gt_imag_i = gt_right_imag[:, i]
@@ -210,7 +220,7 @@ def test_sampling_distribution(test_args: TestArgs):
         )
         cos_sim_imag = np.abs(np.dot(gt_imag_i, emp_imag_i)) / (
             np.linalg.norm(gt_imag_i) * np.linalg.norm(emp_imag_i) + 1e-10
-        )
+        ) if np.linalg.norm(gt_imag_i) > 1e-10 else 1.0
 
         # L2 error
         error_real = np.linalg.norm(gt_real_i - emp_real_i)
@@ -222,10 +232,11 @@ def test_sampling_distribution(test_args: TestArgs):
 
         print(f"      Eigenvector {i}:")
         print(f"         Real part - cos_sim: {cos_sim_real:.6f}, L2 error: {error_real:.6f}, L2 error (flipped): {error_real_flipped:.6f}")
-        print(f"         Imag part - cos_sim: {cos_sim_imag:.6f}, L2 error: {error_imag:.6f}, L2 error (flipped): {error_imag_flipped:.6f}")
+        if np.linalg.norm(gt_imag_i) > 1e-10:
+            print(f"         Imag part - cos_sim: {cos_sim_imag:.6f}, L2 error: {error_imag:.6f}, L2 error (flipped): {error_imag_flipped:.6f}")
 
-    print("\n   Left eigenvector similarities:")
-    for i in range(test_args.num_eigenvectors):
+    print(f"\n   Left eigenvector similarities (first 10 of {num_eigenvectors_to_compare}):")
+    for i in range(min(10, num_eigenvectors_to_compare)):
         # Flatten to vectors
         gt_real_i = gt_left_real[:, i]
         gt_imag_i = gt_left_imag[:, i]
@@ -238,7 +249,7 @@ def test_sampling_distribution(test_args: TestArgs):
         )
         cos_sim_imag = np.abs(np.dot(gt_imag_i, emp_imag_i)) / (
             np.linalg.norm(gt_imag_i) * np.linalg.norm(emp_imag_i) + 1e-10
-        )
+        ) if np.linalg.norm(gt_imag_i) > 1e-10 else 1.0
 
         # L2 error
         error_real = np.linalg.norm(gt_real_i - emp_real_i)
@@ -250,7 +261,19 @@ def test_sampling_distribution(test_args: TestArgs):
 
         print(f"      Eigenvector {i}:")
         print(f"         Real part - cos_sim: {cos_sim_real:.6f}, L2 error: {error_real:.6f}, L2 error (flipped): {error_real_flipped:.6f}")
-        print(f"         Imag part - cos_sim: {cos_sim_imag:.6f}, L2 error: {error_imag:.6f}, L2 error (flipped): {error_imag_flipped:.6f}")
+        if np.linalg.norm(gt_imag_i) > 1e-10:
+            print(f"         Imag part - cos_sim: {cos_sim_imag:.6f}, L2 error: {error_imag:.6f}, L2 error (flipped): {error_imag_flipped:.6f}")
+
+    # Compute overall Frobenius norm for the eigenvector matrices
+    print(f"\n   Frobenius norm comparisons:")
+    print(f"   Context: Frobenius norm measures total element-wise difference across the matrix")
+    print(f"            For a {num_states}x{num_eigenvectors_to_compare} matrix, random vectors would have ||diff|| ≈ {np.sqrt(num_states * num_eigenvectors_to_compare):.1f}")
+    frob_right_real = np.linalg.norm(gt_right_real - emp_right_real, 'fro')
+    frob_right_real_flipped = np.linalg.norm(gt_right_real + emp_right_real, 'fro')
+    frob_left_real = np.linalg.norm(gt_left_real - emp_left_real, 'fro')
+    frob_left_real_flipped = np.linalg.norm(gt_left_real + emp_left_real, 'fro')
+    print(f"   Right eigenvectors (real): {frob_right_real:.6f} (flipped: {frob_right_real_flipped:.6f})")
+    print(f"   Left eigenvectors (real):  {frob_left_real:.6f} (flipped: {frob_left_real_flipped:.6f})")
 
     # Save results
     print(f"\n8. Saving results to {test_args.save_dir}...")
@@ -331,6 +354,73 @@ def test_sampling_distribution(test_args: TestArgs):
     plt.tight_layout()
     plt.savefig(save_dir / "transition_matrix_comparison.png", dpi=150, bbox_inches='tight')
     print(f"   Saved transition matrix comparison to {save_dir / 'transition_matrix_comparison.png'}")
+
+    # Plot spatial visualizations of eigenvectors on the grid
+    print("\n   Creating spatial visualizations of eigenvectors...")
+    num_to_visualize = min(6, num_eigenvectors_to_compare)  # Visualize first 6 eigenvectors
+
+    # Create grid positions from state_coords
+    grid_height = env.height
+    grid_width = env.width
+
+    for evec_idx in range(num_to_visualize):
+        fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+        fig.suptitle(f'Eigenvector {evec_idx} Spatial Visualization (λ ≈ {gt_eigenvalues_real[evec_idx]:.6f})', fontsize=14)
+
+        # Create grids for visualization
+        gt_right_grid = np.full((grid_height, grid_width), np.nan)
+        emp_right_grid = np.full((grid_height, grid_width), np.nan)
+        gt_left_grid = np.full((grid_height, grid_width), np.nan)
+        emp_left_grid = np.full((grid_height, grid_width), np.nan)
+
+        # Fill in the values for each canonical state
+        for state_idx, canon_state in enumerate(canonical_states):
+            y = canon_state // grid_width
+            x = canon_state % grid_width
+            gt_right_grid[y, x] = gt_right_real[state_idx, evec_idx]
+            emp_right_grid[y, x] = emp_right_real[state_idx, evec_idx]
+            gt_left_grid[y, x] = gt_left_real[state_idx, evec_idx]
+            emp_left_grid[y, x] = emp_left_real[state_idx, evec_idx]
+
+        # Determine color scale (use same scale for GT and empirical for comparison)
+        vmin_right = min(np.nanmin(gt_right_grid), np.nanmin(emp_right_grid))
+        vmax_right = max(np.nanmax(gt_right_grid), np.nanmax(emp_right_grid))
+        vmin_left = min(np.nanmin(gt_left_grid), np.nanmin(emp_left_grid))
+        vmax_left = max(np.nanmax(gt_left_grid), np.nanmax(emp_left_grid))
+
+        # Plot ground truth right eigenvector
+        im0 = axes[0, 0].imshow(gt_right_grid, cmap='RdBu_r', vmin=vmin_right, vmax=vmax_right)
+        axes[0, 0].set_title('Ground Truth Right Eigenvector (Real)')
+        axes[0, 0].set_xlabel('X')
+        axes[0, 0].set_ylabel('Y')
+        plt.colorbar(im0, ax=axes[0, 0])
+
+        # Plot empirical right eigenvector
+        im1 = axes[0, 1].imshow(emp_right_grid, cmap='RdBu_r', vmin=vmin_right, vmax=vmax_right)
+        axes[0, 1].set_title('Empirical Right Eigenvector (Real)')
+        axes[0, 1].set_xlabel('X')
+        axes[0, 1].set_ylabel('Y')
+        plt.colorbar(im1, ax=axes[0, 1])
+
+        # Plot ground truth left eigenvector
+        im2 = axes[1, 0].imshow(gt_left_grid, cmap='RdBu_r', vmin=vmin_left, vmax=vmax_left)
+        axes[1, 0].set_title('Ground Truth Left Eigenvector (Real)')
+        axes[1, 0].set_xlabel('X')
+        axes[1, 0].set_ylabel('Y')
+        plt.colorbar(im2, ax=axes[1, 0])
+
+        # Plot empirical left eigenvector
+        im3 = axes[1, 1].imshow(emp_left_grid, cmap='RdBu_r', vmin=vmin_left, vmax=vmax_left)
+        axes[1, 1].set_title('Empirical Left Eigenvector (Real)')
+        axes[1, 1].set_xlabel('X')
+        axes[1, 1].set_ylabel('Y')
+        plt.colorbar(im3, ax=axes[1, 1])
+
+        plt.tight_layout()
+        plt.savefig(save_dir / f"eigenvector_{evec_idx}_spatial.png", dpi=150, bbox_inches='tight')
+        plt.close()
+
+    print(f"   Saved spatial visualizations for {num_to_visualize} eigenvectors to {save_dir}")
 
     print("\n" + "="*80)
     print("TESTING COMPLETE")
