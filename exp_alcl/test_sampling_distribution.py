@@ -37,7 +37,9 @@ class TestArgs:
     num_samples: int = 1000000  # 1M samples should give good estimates
 
     # Environment and data collection parameters (inherit from allo_complex)
-    env_type: str = "room4"
+    env_type: str = "room4"  # 'room4', 'maze', 'spiral', 'obstacles', 'empty', or 'file'
+    env_file: str | None = None  # Path to environment text file (if env_type='file')
+    env_file_name: str | None = None  # Name of environment file in src/envs/txt/ (e.g., 'GridRoom-4')
     max_episode_length: int = 1000
     num_envs: int = 1000
     num_steps: int = 1000
@@ -74,6 +76,8 @@ def test_sampling_distribution(test_args: TestArgs):
 
     args = Args(
         env_type=test_args.env_type,
+        env_file=test_args.env_file,
+        env_file_name=test_args.env_file_name,
         max_episode_length=test_args.max_episode_length,
         num_envs=test_args.num_envs,
         num_steps=test_args.num_steps,
