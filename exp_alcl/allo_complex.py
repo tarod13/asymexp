@@ -404,12 +404,7 @@ class Args:
     step_size_duals_I: float = 0.0
     integral_decay: float = 0.99
     init_dual_diag: bool = False
-
-    # Regularization
-    graph_epsilon: float = 0.01
-    graph_variance_scale: float = 0.1
-    perturbation_type: str = 'none'  # 'exponential', 'squared', 'squared-null-grad', 'none'
-
+    
     # Logging and saving
     log_freq: int = 100
     plot_freq: int = 1000
@@ -1788,47 +1783,6 @@ def learn_eigenvectors(args):
             graph_products_imag = (psi_imag * (phi_imag-next_phi_imag)).mean(0, keepdims=True)
             graph_loss = ((graph_products_real - graph_products_imag)**2).sum()
 
-            # Compute representation variances (for perturbation, use right eigenvectors)
-            phi_real_centered = (phi_real - jnp.mean(phi_real, axis=0, keepdims=True))
-            phi_variances = (phi_real_centered ** 2).mean(0, keepdims=True)
-
-            delta = jnp.exp(-1 / args.graph_variance_scale)
-            if args.perturbation_type == 'squared-null-grad':
-                graph_perturbation = args.graph_epsilon * (
-                    ((phi_real_centered - 1) ** 2).mean(0, keepdims=True)
-                ).clip(0, 1)
-            elif args.perturbation_type == 'squared':
-                graph_perturbation = args.graph_epsilon * (
-                    ((jnp.absolute(phi_real_centered - 1) + delta) ** 2 - delta ** 2).mean(0, keepdims=True)
-                ).clip(0, 1)
-            elif args.perturbation_type == 'exponential':
-                graph_perturbation = args.graph_epsilon * (
-                    jnp.exp(-phi_variances / args.graph_variance_scale)
-                    - delta
-                ).clip(0, 1)
-            else:
-                graph_perturbation = jnp.zeros_like(phi_variances)
-            graph_perturbation = graph_perturbation.at[0, 0].set(0.0)
-            graph_loss = graph_loss + graph_perturbation.sum()
-
-            # Compute auxiliary metrics
-            norm_phi_real = (phi_real ** 2).mean(0, keepdims=True)
-            norm_phi_imag = (phi_imag ** 2).mean(0, keepdims=True)
-            norm_errors_left_real_1 = jnp.diag(error_matrix_left_real_1)
-            norm_errors_left_imag_1 = jnp.diag(error_matrix_left_imag_1)
-            distance_to_constraint_manifold_left = (error_matrix_left_real_1 ** 2).sum() + (error_matrix_left_imag_1 ** 2).sum()
-            distance_to_constraint_manifold_right = (error_matrix_right_real_1 ** 2).sum() + (error_matrix_right_imag_1 ** 2).sum()
-            norm_error_left = jnp.absolute(norm_errors_left_real_1).sum() + jnp.absolute(jnp.diag(norm_errors_left_imag_1)).sum()
-            norm_error_right = jnp.absolute(jnp.diag(error_matrix_right_real_1)).sum() + jnp.absolute(jnp.diag(error_matrix_right_imag_1)).sum()
-            total_norm_error = norm_error_left + norm_error_right
-            distance_to_constraint_manifold = distance_to_constraint_manifold_left + distance_to_constraint_manifold_right
-            error_left = jnp.absolute(error_matrix_left_real_1).sum() + jnp.absolute(error_matrix_left_imag_1).sum()
-            error_right = jnp.absolute(error_matrix_right_real_1).sum() + jnp.absolute(error_matrix_right_imag_1).sum()
-            total_error = error_left + error_right
-            two_component_error_left = jnp.absolute(error_matrix_left_real_1[:, :min(2, d)]).sum() + jnp.absolute(error_matrix_left_imag_1[:, :min(2, d)]).sum()
-            two_component_error_right = jnp.absolute(error_matrix_right_real_1[:, :min(2, d)]).sum() + jnp.absolute(error_matrix_right_imag_1[:, :min(2, d)]).sum()
-            total_two_component_error = two_component_error_left + two_component_error_right
-            
             # Total loss
             positive_loss = graph_loss + dual_loss_pos + barrier_loss_pos
             negative_loss = dual_loss_neg + barrier_loss_neg
@@ -1847,11 +1801,6 @@ def learn_eigenvectors(args):
                 'barrier_coef_left_imag': barrier_coefficients_left_imag[0, 0],
                 'barrier_coef_right_real': barrier_coefficients_right_real[0, 0],
                 'barrier_coef_right_imag': barrier_coefficients_right_imag[0, 0],
-                'total_norm_error': total_norm_error,
-                'total_error': total_error,
-                'total_two_component_error': total_two_component_error,
-                'distance_to_constraint_manifold': distance_to_constraint_manifold,
-                'distance_to_origin': norm_phi_real.sum() + norm_phi_imag.sum(),
             }
 
             # Add dual variables and errors to aux
@@ -1863,7 +1812,6 @@ def learn_eigenvectors(args):
                 # Combined eigenvalue estimate (sum of left and right duals)
                 aux[f'dual_real_{i}'] = -0.5 * (dual_variables_left_real[i, i] + dual_variables_right_real[i, i])
                 aux[f'dual_imag_{i}'] = -0.5 * (dual_variables_left_imag[i, i] + dual_variables_right_imag[i, i])
-                aux[f'graph_perturbation_{i}'] = graph_perturbation[0, i]
                 # Add diagonal errors for each eigenvector
                 aux[f'error_left_real_{i}'] = error_matrix_left_real_1[i, i]
                 aux[f'error_left_imag_{i}'] = error_matrix_left_imag_1[i, i]
