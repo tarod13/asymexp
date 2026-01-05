@@ -213,3 +213,4 @@ exp_irreversible_doors/results/
 **/results/*.png
 **/results/*.txt
 results/*
+sampling_test_results/
