@@ -399,10 +399,44 @@ def test_sampling_distribution(test_args: TestArgs):
     print(f"   Saved eigenvalue comparison to {save_dir / 'eigenvalue_comparison.png'}")
 
     # Plot transition matrix heatmaps
+    print("\n   Creating transition matrix visualizations...")
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
     # Ground truth
     gt_transition_matrix = np.eye(num_states) - laplacian_matrix
+
+    # Quantitative comparison of transition matrices
+    print("\n   Quantitative transition matrix comparison:")
+    matrix_diff = np.abs(gt_transition_matrix - empirical_transition_matrix)
+    print(f"      Element-wise absolute difference:")
+    print(f"         Mean: {matrix_diff.mean():.6f}")
+    print(f"         Std:  {matrix_diff.std():.6f}")
+    print(f"         Max:  {matrix_diff.max():.6f}")
+    print(f"         Median: {np.median(matrix_diff):.6f}")
+
+    # Frobenius norm
+    frob_norm_diff = np.linalg.norm(matrix_diff, 'fro')
+    frob_norm_gt = np.linalg.norm(gt_transition_matrix, 'fro')
+    frob_norm_emp = np.linalg.norm(empirical_transition_matrix, 'fro')
+    print(f"      Frobenius norms:")
+    print(f"         ||GT||_F: {frob_norm_gt:.6f}")
+    print(f"         ||Empirical||_F: {frob_norm_emp:.6f}")
+    print(f"         ||GT - Empirical||_F: {frob_norm_diff:.6f}")
+    print(f"         Relative error: {frob_norm_diff / frob_norm_gt:.6f}")
+
+    # Correlation
+    gt_flat = gt_transition_matrix.flatten()
+    emp_flat = empirical_transition_matrix.flatten()
+    correlation = np.corrcoef(gt_flat, emp_flat)[0, 1]
+    print(f"      Correlation coefficient: {correlation:.6f}")
+
+    # Count how many elements differ significantly
+    significant_diff_threshold = 0.01
+    num_significant_diffs = np.sum(matrix_diff > significant_diff_threshold)
+    total_elements = num_states * num_states
+    print(f"      Elements with |diff| > {significant_diff_threshold}: {num_significant_diffs} / {total_elements} ({100*num_significant_diffs/total_elements:.2f}%)")
+
+    # Plot ground truth
     im0 = axes[0].imshow(gt_transition_matrix, cmap='viridis', aspect='auto')
     axes[0].set_title('Ground Truth Transition Matrix')
     axes[0].set_xlabel('Next State')
@@ -419,6 +453,17 @@ def test_sampling_distribution(test_args: TestArgs):
     plt.tight_layout()
     plt.savefig(save_dir / "transition_matrix_comparison.png", dpi=150, bbox_inches='tight')
     print(f"   Saved transition matrix comparison to {save_dir / 'transition_matrix_comparison.png'}")
+
+    # Also save a difference heatmap
+    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    im = ax.imshow(matrix_diff, cmap='hot', aspect='auto')
+    ax.set_title('Transition Matrix Absolute Difference |GT - Empirical|')
+    ax.set_xlabel('Next State')
+    ax.set_ylabel('Current State')
+    plt.colorbar(im, ax=ax, label='Absolute Difference')
+    plt.tight_layout()
+    plt.savefig(save_dir / "transition_matrix_difference.png", dpi=150, bbox_inches='tight')
+    print(f"   Saved transition matrix difference to {save_dir / 'transition_matrix_difference.png'}")
 
     # Plot spatial visualizations of eigenvectors on the grid
     print("\n   Creating spatial visualizations of eigenvectors...")
