@@ -36,7 +36,8 @@ from exp_alcl.allo_complex import (
     plot_learning_curves,
     plot_dual_variable_evolution,
     plot_cosine_similarity_evolution,
-    plot_sampling_distribution
+    plot_sampling_distribution,
+    plot_all_duals_evolution
 )
 from exp_complex_basis.eigenvector_visualization import (
     visualize_multiple_eigenvectors,
@@ -433,6 +434,13 @@ def plot_learning_metrics(data, plots_dir):
         data['metrics_history'],
         str(plots_dir / "cosine_similarity_evolution.png"),
         num_eigenvectors=data['viz_metadata']['num_eigenvectors']
+    )
+
+    print("Plotting all duals evolution...")
+    plot_all_duals_evolution(
+        data['metrics_history'],
+        str(plots_dir / "all_duals_evolution.png"),
+        num_eigenvectors=min(6, data['viz_metadata']['num_eigenvectors'])
     )
 
 
