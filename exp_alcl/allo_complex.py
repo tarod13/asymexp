@@ -1870,6 +1870,13 @@ def learn_eigenvectors(args):
                                                  jnp.abs(error_matrix_right_real_1[:k_debug, :k_debug]).sum() + \
                                                  jnp.abs(error_matrix_right_imag_1[:k_debug, :k_debug]).sum()
 
+            # Distance to constraint manifold (same as total_norm_error)
+            aux['distance_to_constraint_manifold'] = aux['total_norm_error']
+
+            # Distance to origin (norm of eigenvector parameters)
+            aux['distance_to_origin'] = jnp.linalg.norm(psi_real) + jnp.linalg.norm(psi_imag) + \
+                                         jnp.linalg.norm(phi_real) + jnp.linalg.norm(phi_imag)
+
             return allo, (error_matrix_left_real_1, error_matrix_left_imag_1, error_matrix_right_real_1, error_matrix_right_imag_1, aux)
 
         # Compute loss and gradients
