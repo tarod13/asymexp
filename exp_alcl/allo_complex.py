@@ -129,13 +129,16 @@ def get_transition_matrix(
 def compute_successor_representation(
     transition_matrix: jnp.ndarray,
     gamma: float,
+    max_horizon: int = None,
 ) -> jnp.ndarray:
     """
-    Compute the successor representation SR_γ = (I - γP)^(-1).
+    Compute the successor representation SR_γ = (I - γP)^(-1) or finite-horizon version.
 
     Args:
         transition_matrix: Shape [num_states, num_states], stochastic transition matrix P
         gamma: Discount factor
+        max_horizon: If provided, compute finite-horizon SR_γ^(T) = Σ_{k=0}^{T} γ^k P^k
+                     Otherwise, compute infinite-horizon SR_γ = (I - γP)^(-1)
 
     Returns:
         Successor representation of shape [num_states, num_states]
@@ -143,8 +146,16 @@ def compute_successor_representation(
     num_states = transition_matrix.shape[0]
     identity = jnp.eye(num_states)
 
-    # SR_γ = (I - γP)^(-1)
-    sr_matrix = jnp.linalg.inv(identity - gamma * transition_matrix)
+    if max_horizon is None:
+        # Infinite-horizon: SR_γ = (I - γP)^(-1)
+        sr_matrix = jnp.linalg.inv(identity - gamma * transition_matrix)
+    else:
+        # Finite-horizon: SR_γ^(T) = Σ_{k=0}^{T} γ^k P^k
+        sr_matrix = identity.copy()
+        P_k = identity.copy()
+        for k in range(1, max_horizon + 1):
+            P_k = P_k @ transition_matrix
+            sr_matrix = sr_matrix + (gamma ** k) * P_k
 
     return sr_matrix
 
@@ -286,17 +297,24 @@ def compute_inverse_weighted_laplacian(
 def compute_nonsymmetric_laplacian(
     transition_matrix: jnp.ndarray,
     gamma: float,
+    delta: float = 0.0,
+    max_horizon: int = None,
 ) -> jnp.ndarray:
     """
-    Compute the non-symmetric Laplacian L = I - (1-γ)P·SR_γ.
+    Compute the non-symmetric Laplacian L = (1+δ)I - (1-γ)P·SR_γ.
 
     This definition matches what the episodic replay buffer approximates with
     geometric sampling (k >= 1). The transition matrix P applied to SR_γ gives
     the expected discounted future occupancy starting from the next state.
 
+    The δ parameter shifts eigenvalues away from zero, improving numerical stability.
+    With δ > 0, the smallest eigenvalue is δ instead of 0.
+
     Args:
         transition_matrix: Shape [num_states, num_states], stochastic transition matrix P
         gamma: Discount factor used in successor representation
+        delta: Eigenvalue shift parameter (default 0.0). Recommended: 0.1 for stability.
+        max_horizon: If provided, use finite-horizon SR_γ^(T) instead of infinite-horizon
 
     Returns:
         Non-symmetric Laplacian of shape [num_states, num_states]
@@ -304,11 +322,11 @@ def compute_nonsymmetric_laplacian(
     num_states = transition_matrix.shape[0]
     identity = jnp.eye(num_states)
 
-    # Compute successor representation SR_γ = (I - γP)^(-1)
-    sr_matrix = compute_successor_representation(transition_matrix, gamma)
+    # Compute successor representation (infinite or finite-horizon)
+    sr_matrix = compute_successor_representation(transition_matrix, gamma, max_horizon)
 
-    # Compute Laplacian: L = I - (1-γ)P·SR_γ (matches geometric sampling with k >= 1)
-    laplacian = identity - (1 - gamma) * (transition_matrix @ sr_matrix)
+    # Compute Laplacian: L = (1+δ)I - (1-γ)P·SR_γ
+    laplacian = (1 + delta) * identity - (1 - gamma) * (transition_matrix @ sr_matrix)
 
     return laplacian
 
@@ -392,6 +410,7 @@ class Args:
     batch_size: int = 256
     num_gradient_steps: int = 20000
     gamma: float = 0.2  # Discount factor for successor representation
+    delta: float = 0.1  # Eigenvalue shift parameter: L = (1+δ)I - M (improves numerical stability)
 
     # Episodic replay buffer
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
@@ -1269,10 +1288,10 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print(f"  Sampling prob std: {sampling_probs.std():.6f}")
 
     # Compute non-symmetric Laplacian for complex eigenvectors
-    print(f"\nComputing non-symmetric Laplacian with gamma={args.gamma}...")
-    print("  L = I - (1-γ)P·SR_γ (matches geometric sampling with k >= 1)")
+    print(f"\nComputing non-symmetric Laplacian with gamma={args.gamma}, delta={args.delta}...")
+    print(f"  L = (1+δ)I - (1-γ)P·SR_γ (matches geometric sampling with k >= 1)")
 
-    laplacian_matrix = compute_nonsymmetric_laplacian(transition_matrix, args.gamma)
+    laplacian_matrix = compute_nonsymmetric_laplacian(transition_matrix, args.gamma, delta=args.delta)
     eigendecomp = compute_eigendecomposition(
         laplacian_matrix,
         k=args.num_eigenvectors,
@@ -1325,7 +1344,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print(f"  Coordinate range: x=[{state_coords[:, 0].min():.3f}, {state_coords[:, 0].max():.3f}], "
           f"y=[{state_coords[:, 1].min():.3f}, {state_coords[:, 1].max():.3f}]")
 
-    return laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer
+    return laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer, transition_matrix
 
 
 def learn_eigenvectors(args):
@@ -1447,7 +1466,7 @@ def learn_eigenvectors(args):
     else:
         # Create environment and collect data (new run)
         env = create_gridworld_env(args)
-        laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
+        laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer, transition_matrix = collect_data_and_compute_eigenvectors(env, args)
 
         # Extract ground truth eigenvalues and eigenvectors (complex)
         gt_eigenvalues = eigendecomp['eigenvalues']  # Complex eigenvalues
@@ -1778,9 +1797,10 @@ def learn_eigenvectors(args):
             barrier_loss_neg = barrier_loss_neg_left + barrier_loss_neg_right
 
             # Compute graph drawing loss for complex eigenvectors
-            # E[(ψ_real(s)*(φ_real(s) - φ_real(s')) - ψ_imag(s)*(φ_imag(s) - φ_imag(s')))^2]
-            graph_products_real = (psi_real * (phi_real-next_phi_real)).mean(0, keepdims=True)
-            graph_products_imag = (psi_imag * (phi_imag-next_phi_imag)).mean(0, keepdims=True)
+            # E[(ψ_real(s)*((1+δ)φ_real(s) - φ_real(s')) - ψ_imag(s)*((1+δ)φ_imag(s) - φ_imag(s')))^2]
+            # The δ parameter shifts eigenvalues: L = (1+δ)I - M
+            graph_products_real = (psi_real * ((1+args.delta)*phi_real - next_phi_real)).mean(0, keepdims=True)
+            graph_products_imag = (psi_imag * ((1+args.delta)*phi_imag - next_phi_imag)).mean(0, keepdims=True)
             graph_loss = ((graph_products_real - graph_products_imag)**2).sum()
 
             # Total loss

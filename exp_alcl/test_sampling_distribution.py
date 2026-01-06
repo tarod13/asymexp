@@ -44,6 +44,7 @@ class TestArgs:
     num_envs: int = 1000
     num_steps: int = 1000
     gamma: float = 0.2
+    delta: float = 0.1  # Eigenvalue shift parameter: L = (1+δ)I - M
 
     # Irreversible doors
     use_doors: bool = False
@@ -87,6 +88,7 @@ def test_sampling_distribution(test_args: TestArgs):
         num_envs=test_args.num_envs,
         num_steps=test_args.num_steps,
         gamma=test_args.gamma,
+        delta=test_args.delta,
         use_doors=test_args.use_doors,
         num_doors=test_args.num_doors,
         door_seed=test_args.door_seed,
@@ -97,7 +99,7 @@ def test_sampling_distribution(test_args: TestArgs):
     print("\n1. Creating environment and collecting data...")
     env = create_gridworld_env(args)
 
-    laplacian_matrix, eigendecomp_temp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer = \
+    laplacian_matrix, eigendecomp_temp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer, transition_matrix = \
         collect_data_and_compute_eigenvectors(env, args)
 
     num_states = len(canonical_states)
@@ -173,11 +175,13 @@ def test_sampling_distribution(test_args: TestArgs):
     # Compute Laplacian from empirical transition matrix
     # IMPORTANT: The empirical transition matrix already contains the (1-γ) factor!
     # Sampling recovers (1-γ)*P*SR_γ, not P*SR_γ, due to the geometric distribution normalization
-    # Therefore: L = I - empirical_matrix (NOT I - (1-γ)*empirical_matrix)
+    # Therefore: L = (1+δ)I - empirical_matrix (NOT I - (1-γ)*empirical_matrix)
     print("\n4. Computing Laplacian from empirical transition matrix...")
     print("   NOTE: Empirical matrix represents (1-γ)*P*SR_γ (includes the (1-γ) factor)")
+    print(f"   Using delta={test_args.delta} for eigenvalue shift: L = (1+δ)I - M")
     gamma = test_args.gamma
-    empirical_laplacian = np.eye(num_states) - empirical_transition_matrix
+    delta = test_args.delta
+    empirical_laplacian = (1 + delta) * np.eye(num_states) - empirical_transition_matrix
 
     # Compute eigendecomposition of empirical Laplacian
     print("\n5. Computing eigendecomposition of empirical Laplacian...")
@@ -218,6 +222,71 @@ def test_sampling_distribution(test_args: TestArgs):
         print(f"      Min gap: {gt_eigenvalue_gaps.min():.6e}, Mean gap: {gt_eigenvalue_gaps.mean():.6e}")
         small_gaps = np.sum(gt_eigenvalue_gaps < 1e-6)
         print(f"      Number of nearly degenerate pairs (gap < 1e-6): {small_gaps}")
+
+    # Compute finite-horizon ground truth for comparison
+    print(f"\n   Computing finite-horizon ground truth...")
+    print(f"   Using max episode length: {test_args.max_episode_length}")
+    from exp_alcl.allo_complex import compute_nonsymmetric_laplacian
+
+    # Compute finite-horizon laplacian using the same transition matrix P
+    # but with truncated SR computation
+    laplacian_matrix_finite = compute_nonsymmetric_laplacian(
+        transition_matrix,
+        gamma=test_args.gamma,
+        delta=test_args.delta,
+        max_horizon=test_args.max_episode_length
+    )
+    laplacian_matrix_finite = np.array(laplacian_matrix_finite)
+
+    # Compute eigendecomposition of finite-horizon Laplacian
+    print(f"   Computing eigendecomposition of finite-horizon Laplacian...")
+    finite_eigendecomp = compute_eigendecomposition(
+        laplacian_matrix_finite,
+        k=num_eigenvectors_to_compare,
+        sort_by_magnitude=True,
+        ascending=True,
+    )
+
+    # Compare infinite vs finite-horizon ground truths
+    print(f"\n   Comparing infinite-horizon vs finite-horizon ground truths:")
+    matrix_diff_inf_finite = np.abs(np.array(laplacian_matrix) - laplacian_matrix_finite)
+    frob_diff_inf_finite = np.linalg.norm(matrix_diff_inf_finite, 'fro')
+    frob_inf = np.linalg.norm(np.array(laplacian_matrix), 'fro')
+    frob_finite = np.linalg.norm(laplacian_matrix_finite, 'fro')
+
+    print(f"      ||L_inf - L_finite||_F: {frob_diff_inf_finite:.6e}")
+    print(f"      ||L_inf||_F: {frob_inf:.6e}")
+    print(f"      ||L_finite||_F: {frob_finite:.6e}")
+    print(f"      Relative difference: {frob_diff_inf_finite / frob_inf:.6e}")
+
+    # Compare eigenvalues
+    finite_eigenvalues_real = finite_eigendecomp['eigenvalues_real'][:num_eigenvectors_to_compare]
+    finite_eigenvalues_imag = finite_eigendecomp['eigenvalues_imag'][:num_eigenvectors_to_compare]
+
+    eigenvalue_diff_inf_finite_real = np.abs(gt_eigenvalues_real - finite_eigenvalues_real)
+    eigenvalue_diff_inf_finite_imag = np.abs(gt_eigenvalues_imag - finite_eigenvalues_imag)
+    eigenvalue_diff_inf_finite_mag = np.sqrt(eigenvalue_diff_inf_finite_real**2 + eigenvalue_diff_inf_finite_imag**2)
+
+    print(f"      Eigenvalue differences (first 5):")
+    for i in range(min(5, num_eigenvectors_to_compare)):
+        print(f"         λ_{i}: inf={gt_eigenvalues_real[i]:.6f}+{gt_eigenvalues_imag[i]:.6f}i, "
+              f"finite={finite_eigenvalues_real[i]:.6f}+{finite_eigenvalues_imag[i]:.6f}i, "
+              f"diff={eigenvalue_diff_inf_finite_mag[i]:.6e}")
+    print(f"      Mean eigenvalue difference: {eigenvalue_diff_inf_finite_mag.mean():.6e}")
+
+    # Compute condition numbers
+    print(f"\n   Condition number analysis:")
+    # Condition number for non-symmetric matrices is ratio of largest to smallest singular value
+    gt_singular_values = np.linalg.svd(np.array(laplacian_matrix), compute_uv=False)
+    emp_singular_values = np.linalg.svd(empirical_laplacian, compute_uv=False)
+
+    gt_condition_number = gt_singular_values[0] / (gt_singular_values[-1] + 1e-10)
+    emp_condition_number = emp_singular_values[0] / (emp_singular_values[-1] + 1e-10)
+
+    print(f"      Ground truth Laplacian condition number: {gt_condition_number:.6e}")
+    print(f"      Empirical Laplacian condition number: {emp_condition_number:.6e}")
+    print(f"      GT singular values - max: {gt_singular_values[0]:.6e}, min: {gt_singular_values[-1]:.6e}")
+    print(f"      Emp singular values - max: {emp_singular_values[0]:.6e}, min: {emp_singular_values[-1]:.6e}")
 
     # Check sampling diversity
     print(f"\n   Sampling diversity analysis:")
