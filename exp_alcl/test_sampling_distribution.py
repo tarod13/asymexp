@@ -434,6 +434,28 @@ def test_sampling_distribution(test_args: TestArgs):
     # Ground truth
     gt_transition_matrix = np.eye(num_states) - laplacian_matrix
 
+    # First, let's extract the base P from ground truth for comparison
+    # Ground truth uses: (1-γ)P·SR_γ
+    # We can extract P by noting that it was computed from the original collected data
+    # Let's compute what the empirical P would be if we sampled only 1-step transitions
+    print(f"\n   Comparing how matrices are constructed:")
+
+    # The ground truth formula is: (1-γ)P·SR_γ where P and SR_γ are computed analytically
+    # Let's verify by computing it step by step
+    gt_P_SR = gt_transition_matrix / (1 - gamma)  # This should be P·SR_γ
+
+    # For empirical, if we divide by (1-γ), we should also get something close to P·SR_γ
+    # But empirical is already normalized, so it should already BE (1-γ)P·SR_γ
+
+    # Let's check if the issue is the (1-γ) factor
+    print(f"      Ground truth represents: (1-γ)P·SR_γ")
+    print(f"      Ground truth sum: {gt_transition_matrix.sum():.6f} (should be ≈ {num_states:.0f})")
+    print(f"      Ground truth row sums: min={gt_transition_matrix.sum(axis=1).min():.6f}, max={gt_transition_matrix.sum(axis=1).max():.6f}")
+
+    print(f"      Empirical represents: (should also be (1-γ)P·SR_γ)")
+    print(f"      Empirical sum: {empirical_transition_matrix.sum():.6f} (should be ≈ {num_states:.0f})")
+    print(f"      Empirical row sums: min={empirical_transition_matrix.sum(axis=1).min():.6f}, max={empirical_transition_matrix.sum(axis=1).max():.6f}")
+
     # Quantitative comparison of transition matrices
     print("\n   Quantitative transition matrix comparison:")
     matrix_diff = np.abs(gt_transition_matrix - empirical_transition_matrix)
