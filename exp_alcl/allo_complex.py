@@ -544,9 +544,12 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
     axes[1, 1].grid(True, alpha=0.3)
 
     # Plot 6: Total errors
-    axes[1, 2].plot(steps, [m['total_error'] for m in metrics_history], label='Total')
-    axes[1, 2].plot(steps, [m['total_norm_error'] for m in metrics_history], label='Norm')
-    axes[1, 2].plot(steps, [m['total_two_component_error'] for m in metrics_history], label='First 2')
+    if 'total_error' in metrics_history[0]:
+        axes[1, 2].plot(steps, [m['total_error'] for m in metrics_history], label='Total')
+    if 'total_norm_error' in metrics_history[0]:
+        axes[1, 2].plot(steps, [m['total_norm_error'] for m in metrics_history], label='Norm')
+    if 'total_two_component_error' in metrics_history[0]:
+        axes[1, 2].plot(steps, [m['total_two_component_error'] for m in metrics_history], label='First 2')
     axes[1, 2].set_xlabel('Gradient Step')
     axes[1, 2].set_ylabel('Error')
     axes[1, 2].set_title('Orthogonality Errors')
@@ -600,18 +603,26 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
     axes[3, 0].grid(True, alpha=0.3)
 
     # Plot 11: Distance to constraint manifold
-    axes[3, 1].plot(steps, [m['distance_to_constraint_manifold'] for m in metrics_history])
-    axes[3, 1].set_xlabel('Gradient Step')
-    axes[3, 1].set_ylabel('Distance')
-    axes[3, 1].set_title('Distance to Constraint Manifold')
-    axes[3, 1].grid(True, alpha=0.3)
+    if 'distance_to_constraint_manifold' in metrics_history[0]:
+        axes[3, 1].plot(steps, [m['distance_to_constraint_manifold'] for m in metrics_history])
+        axes[3, 1].set_xlabel('Gradient Step')
+        axes[3, 1].set_ylabel('Distance')
+        axes[3, 1].set_title('Distance to Constraint Manifold')
+        axes[3, 1].grid(True, alpha=0.3)
+    else:
+        axes[3, 1].text(0.5, 0.5, 'Metric not available', ha='center', va='center', transform=axes[3, 1].transAxes)
+        axes[3, 1].set_title('Distance to Constraint Manifold')
 
     # Plot 12: Distance to origin
-    axes[3, 2].plot(steps, [m['distance_to_origin'] for m in metrics_history])
-    axes[3, 2].set_xlabel('Gradient Step')
-    axes[3, 2].set_ylabel('Distance')
-    axes[3, 2].set_title('Distance to Origin')
-    axes[3, 2].grid(True, alpha=0.3)
+    if 'distance_to_origin' in metrics_history[0]:
+        axes[3, 2].plot(steps, [m['distance_to_origin'] for m in metrics_history])
+        axes[3, 2].set_xlabel('Gradient Step')
+        axes[3, 2].set_ylabel('Distance')
+        axes[3, 2].set_title('Distance to Origin')
+        axes[3, 2].grid(True, alpha=0.3)
+    else:
+        axes[3, 2].text(0.5, 0.5, 'Metric not available', ha='center', va='center', transform=axes[3, 2].transAxes)
+        axes[3, 2].set_title('Distance to Origin')
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
