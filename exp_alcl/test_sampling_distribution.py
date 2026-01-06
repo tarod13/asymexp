@@ -154,19 +154,15 @@ def test_sampling_distribution(test_args: TestArgs):
     # Normalize to get empirical transition matrix
     print("\n3. Reconstructing empirical transition matrix...")
     # Each row should sum to the number of times that state was visited as source
-    row_sums = transition_counts.sum(axis=1, keepdims=True)
+    # Use same normalization as ground truth: clip to 1e-8 for numerical stability
+    transition_counts_clipped = np.clip(transition_counts, 1e-8, None)
+    row_sums = transition_counts_clipped.sum(axis=1, keepdims=True)
+    empirical_transition_matrix = transition_counts_clipped / row_sums
 
-    # Avoid division by zero
-    empirical_transition_matrix = np.zeros_like(transition_counts, dtype=np.float64)
-    nonzero_rows = row_sums.flatten() > 0
-    empirical_transition_matrix[nonzero_rows] = (
-        transition_counts[nonzero_rows] / row_sums[nonzero_rows]
-    )
-
-    # Check if any states were never sampled as source
-    unsampled_states = np.where(~nonzero_rows)[0]
+    # Check if any states were never sampled as source (before clipping)
+    unsampled_states = np.where(transition_counts.sum(axis=1) == 0)[0]
     if len(unsampled_states) > 0:
-        print(f"   WARNING: {len(unsampled_states)} states never sampled as source states")
+        print(f"   WARNING: {len(unsampled_states)} states never sampled as source states (before clipping)")
         print(f"   Unsampled state indices: {unsampled_states[:10]}..." if len(unsampled_states) > 10 else f"   Unsampled state indices: {unsampled_states}")
 
     # Verify row sums (should be 1 or 0)

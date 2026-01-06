@@ -120,8 +120,8 @@ def get_transition_matrix(
         transition_matrix = transition_counts
 
     if make_stochastic:
-        row_sums = jnp.sum(transition_matrix.clip(1), axis=1, keepdims=True)
-        transition_matrix = transition_matrix.clip(1) / row_sums
+        row_sums = jnp.sum(transition_matrix.clip(1e-8), axis=1, keepdims=True)
+        transition_matrix = transition_matrix.clip(1e-8) / row_sums
 
     return transition_matrix
 
