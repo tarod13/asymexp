@@ -213,6 +213,35 @@ def test_sampling_distribution(test_args: TestArgs):
     print(f"   Mean eigenvalue error (all {num_eigenvectors_to_compare}): {eigenvalue_error_magnitude.mean():.6f}")
     print(f"   Max eigenvalue error: {eigenvalue_error_magnitude.max():.6f}")
 
+    # Check for eigenvalue degeneracy
+    print(f"\n   Eigenvalue degeneracy analysis:")
+    gt_eigenvalue_magnitudes = np.abs(gt_eigenvalues_real + 1j*gt_eigenvalues_imag)
+    if num_eigenvectors_to_compare > 1:
+        gt_eigenvalue_gaps = np.diff(gt_eigenvalue_magnitudes)
+        print(f"      Ground truth eigenvalue gaps (first 10): {gt_eigenvalue_gaps[:10]}")
+        print(f"      Min gap: {gt_eigenvalue_gaps.min():.6e}, Mean gap: {gt_eigenvalue_gaps.mean():.6e}")
+        small_gaps = np.sum(gt_eigenvalue_gaps < 1e-6)
+        print(f"      Number of nearly degenerate pairs (gap < 1e-6): {small_gaps}")
+
+    # Check sampling diversity
+    print(f"\n   Sampling diversity analysis:")
+    transition_lengths = []
+    # Sample a batch to analyze transition lengths
+    sample_batch = replay_buffer.sample(10000, discount=test_args.gamma)
+    state_indices_sample = np.array(sample_batch.obs)
+    next_state_indices_sample = np.array(sample_batch.next_obs)
+
+    # Estimate transition lengths (this is approximate - we don't have ground truth)
+    # Count self-transitions as potential indicator of longer paths
+    self_transitions = np.sum(state_indices_sample == next_state_indices_sample)
+    print(f"      Self-transitions (may indicate absorbing states or long loops): {self_transitions} / 10000 ({100*self_transitions/10000:.2f}%)")
+
+    # Check transition count distribution
+    unique_counts = np.unique(transition_counts[transition_counts > 0])
+    print(f"      Transition count distribution (non-zero):")
+    print(f"         Min: {unique_counts.min()}, Max: {unique_counts.max()}, Median: {np.median(unique_counts):.0f}")
+    print(f"         Number of unique (s,s') pairs observed: {np.sum(transition_counts > 0)}")
+
     # Compare eigenvectors
     print("\n7. Comparing eigenvectors...")
 
