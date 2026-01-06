@@ -151,11 +151,27 @@ def compute_successor_representation(
         sr_matrix = jnp.linalg.inv(identity - gamma * transition_matrix)
     else:
         # Finite-horizon: SR_γ^(T) = Σ_{k=0}^{T} γ^k P^k
-        sr_matrix = identity.copy()
-        P_k = identity.copy()
-        for k in range(1, max_horizon + 1):
-            P_k = P_k @ transition_matrix
-            sr_matrix = sr_matrix + (gamma ** k) * P_k
+        # Using closed form: SR_γ^(T) = (I - γ^{T+1} P^{T+1})(I - γP)^{-1}
+        # This is O(log T) vs O(T) for naive iteration!
+
+        # Compute P^{T+1} using repeated squaring (binary exponentiation)
+        P_power = transition_matrix.copy()
+        power = max_horizon + 1
+        result = identity.copy()
+
+        # Binary exponentiation: O(log T) matrix multiplications
+        while power > 0:
+            if power % 2 == 1:
+                result = result @ P_power
+            P_power = P_power @ P_power
+            power //= 2
+
+        P_T_plus_1 = result
+
+        # Apply finite geometric series formula
+        # SR_γ^(T) = (I - γ^{T+1} P^{T+1})(I - γP)^{-1}
+        gamma_power = gamma ** (max_horizon + 1)
+        sr_matrix = (identity - gamma_power * P_T_plus_1) @ jnp.linalg.inv(identity - gamma * transition_matrix)
 
     return sr_matrix
 
