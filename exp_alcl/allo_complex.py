@@ -1853,6 +1853,23 @@ def learn_eigenvectors(args):
                     aux[f'error_right_real_{i}_{j}'] = error_matrix_right_real_1[i, j]
                     aux[f'error_right_imag_{i}_{j}'] = error_matrix_right_imag_1[i, j]
 
+            # Compute total errors for monitoring
+            total_error_left_real = jnp.abs(error_matrix_left_real_1).sum()
+            total_error_left_imag = jnp.abs(error_matrix_left_imag_1).sum()
+            total_error_right_real = jnp.abs(error_matrix_right_real_1).sum()
+            total_error_right_imag = jnp.abs(error_matrix_right_imag_1).sum()
+
+            aux['total_error'] = total_error_left_real + total_error_left_imag + total_error_right_real + total_error_right_imag
+            aux['total_norm_error'] = jnp.linalg.norm(error_matrix_left_real_1, 'fro') + jnp.linalg.norm(error_matrix_left_imag_1, 'fro') + \
+                                       jnp.linalg.norm(error_matrix_right_real_1, 'fro') + jnp.linalg.norm(error_matrix_right_imag_1, 'fro')
+
+            # Error for first two eigenvectors (useful for debugging)
+            k_debug = min(2, args.num_eigenvectors)
+            aux['total_two_component_error'] = jnp.abs(error_matrix_left_real_1[:k_debug, :k_debug]).sum() + \
+                                                 jnp.abs(error_matrix_left_imag_1[:k_debug, :k_debug]).sum() + \
+                                                 jnp.abs(error_matrix_right_real_1[:k_debug, :k_debug]).sum() + \
+                                                 jnp.abs(error_matrix_right_imag_1[:k_debug, :k_debug]).sum()
+
             return allo, (error_matrix_left_real_1, error_matrix_left_imag_1, error_matrix_right_real_1, error_matrix_right_imag_1, aux)
 
         # Compute loss and gradients
