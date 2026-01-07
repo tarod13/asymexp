@@ -120,8 +120,8 @@ def get_transition_matrix(
         transition_matrix = transition_counts
 
     if make_stochastic:
-        row_sums = jnp.sum(transition_matrix.clip(1), axis=1, keepdims=True)
-        transition_matrix = transition_matrix.clip(1) / row_sums
+        row_sums = jnp.sum(transition_matrix.clip(1e-8), axis=1, keepdims=True)
+        transition_matrix = transition_matrix.clip(1e-8) / row_sums
 
     return transition_matrix
 
@@ -129,13 +129,16 @@ def get_transition_matrix(
 def compute_successor_representation(
     transition_matrix: jnp.ndarray,
     gamma: float,
+    max_horizon: int = None,
 ) -> jnp.ndarray:
     """
-    Compute the successor representation SR_γ = (I - γP)^(-1).
+    Compute the successor representation SR_γ = (I - γP)^(-1) or finite-horizon version.
 
     Args:
         transition_matrix: Shape [num_states, num_states], stochastic transition matrix P
         gamma: Discount factor
+        max_horizon: If provided, compute finite-horizon SR_γ^(T) = Σ_{k=0}^{T} γ^k P^k
+                     Otherwise, compute infinite-horizon SR_γ = (I - γP)^(-1)
 
     Returns:
         Successor representation of shape [num_states, num_states]
@@ -143,8 +146,20 @@ def compute_successor_representation(
     num_states = transition_matrix.shape[0]
     identity = jnp.eye(num_states)
 
-    # SR_γ = (I - γP)^(-1)
-    sr_matrix = jnp.linalg.inv(identity - gamma * transition_matrix)
+    if max_horizon is None:
+        # Infinite-horizon: SR_γ = (I - γP)^(-1)
+        sr_matrix = jnp.linalg.inv(identity - gamma * transition_matrix)
+    else:
+        # Finite-horizon: SR_γ^(T) = Σ_{k=0}^{T} γ^k P^k
+        # Using closed form: SR_γ^(T) = (I - γP)^{-1}(I - γ^{T+1}P^{T+1})
+        # (Derived by multiplying both sides on the left by (I - γP))
+
+        # Compute P^{T+1} using built-in matrix power (uses efficient algorithm)
+        P_T_plus_1 = jnp.linalg.matrix_power(transition_matrix, max_horizon + 1)
+
+        # Apply finite geometric series formula (left multiplication is mathematically correct)
+        gamma_power = gamma ** (max_horizon + 1)
+        sr_matrix = jnp.linalg.inv(identity - gamma * transition_matrix) @ (identity - gamma_power * P_T_plus_1)
 
     return sr_matrix
 
@@ -286,17 +301,24 @@ def compute_inverse_weighted_laplacian(
 def compute_nonsymmetric_laplacian(
     transition_matrix: jnp.ndarray,
     gamma: float,
+    delta: float = 0.0,
+    max_horizon: int = None,
 ) -> jnp.ndarray:
     """
-    Compute the non-symmetric Laplacian L = I - (1-γ)P·SR_γ.
+    Compute the non-symmetric Laplacian L = (1+δ)I - (1-γ)P·SR_γ.
 
     This definition matches what the episodic replay buffer approximates with
     geometric sampling (k >= 1). The transition matrix P applied to SR_γ gives
     the expected discounted future occupancy starting from the next state.
 
+    The δ parameter shifts eigenvalues away from zero, improving numerical stability.
+    With δ > 0, the smallest eigenvalue is δ instead of 0.
+
     Args:
         transition_matrix: Shape [num_states, num_states], stochastic transition matrix P
         gamma: Discount factor used in successor representation
+        delta: Eigenvalue shift parameter (default 0.0). Recommended: 0.1 for stability.
+        max_horizon: If provided, use finite-horizon SR_γ^(T) instead of infinite-horizon
 
     Returns:
         Non-symmetric Laplacian of shape [num_states, num_states]
@@ -304,11 +326,11 @@ def compute_nonsymmetric_laplacian(
     num_states = transition_matrix.shape[0]
     identity = jnp.eye(num_states)
 
-    # Compute successor representation SR_γ = (I - γP)^(-1)
-    sr_matrix = compute_successor_representation(transition_matrix, gamma)
+    # Compute successor representation (infinite or finite-horizon)
+    sr_matrix = compute_successor_representation(transition_matrix, gamma, max_horizon)
 
-    # Compute Laplacian: L = I - (1-γ)P·SR_γ (matches geometric sampling with k >= 1)
-    laplacian = identity - (1 - gamma) * (transition_matrix @ sr_matrix)
+    # Compute Laplacian: L = (1+δ)I - (1-γ)P·SR_γ
+    laplacian = (1 + delta) * identity - (1 - gamma) * (transition_matrix @ sr_matrix)
 
     return laplacian
 
@@ -371,11 +393,11 @@ class Args:
     env_type: str = "room4"  # 'room4', 'maze', 'spiral', 'obstacles', 'empty', or 'file'
     env_file: str | None = None  # Path to environment text file (if env_type='file')
     env_file_name: str | None = None  # Name of environment file in src/envs/txt/ (e.g., 'GridRoom-4')
-    max_episode_length: int = 1000
+    max_episode_length: int = 2
 
     # Data collection
-    num_envs: int = 1000
-    num_steps: int = 1000
+    num_envs: int = 500000
+    num_steps: int = 2
 
     # Irreversible doors
     use_doors: bool = False
@@ -392,15 +414,16 @@ class Args:
     batch_size: int = 256
     num_gradient_steps: int = 20000
     gamma: float = 0.2  # Discount factor for successor representation
+    delta: float = 0.1  # Eigenvalue shift parameter: L = (1+δ)I - M (improves numerical stability)
 
     # Episodic replay buffer
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
 
     # Augmented Lagrangian parameters
-    duals_initial_val: float = -2.0
-    barrier_initial_val: float = 0.5
-    max_barrier_coefs: float = 0.5
-    step_size_duals: float = 1.0
+    duals_initial_val: float = 0.0
+    barrier_initial_val: float = 5.0
+    max_barrier_coefs: float = 5.0
+    step_size_duals: float = 0.0
     step_size_duals_I: float = 0.0
     integral_decay: float = 0.99
     init_dual_diag: bool = False
@@ -521,9 +544,12 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
     axes[1, 1].grid(True, alpha=0.3)
 
     # Plot 6: Total errors
-    axes[1, 2].plot(steps, [m['total_error'] for m in metrics_history], label='Total')
-    axes[1, 2].plot(steps, [m['total_norm_error'] for m in metrics_history], label='Norm')
-    axes[1, 2].plot(steps, [m['total_two_component_error'] for m in metrics_history], label='First 2')
+    if 'total_error' in metrics_history[0]:
+        axes[1, 2].plot(steps, [m['total_error'] for m in metrics_history], label='Total')
+    if 'total_norm_error' in metrics_history[0]:
+        axes[1, 2].plot(steps, [m['total_norm_error'] for m in metrics_history], label='Norm')
+    if 'total_two_component_error' in metrics_history[0]:
+        axes[1, 2].plot(steps, [m['total_two_component_error'] for m in metrics_history], label='First 2')
     axes[1, 2].set_xlabel('Gradient Step')
     axes[1, 2].set_ylabel('Error')
     axes[1, 2].set_title('Orthogonality Errors')
@@ -577,18 +603,26 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
     axes[3, 0].grid(True, alpha=0.3)
 
     # Plot 11: Distance to constraint manifold
-    axes[3, 1].plot(steps, [m['distance_to_constraint_manifold'] for m in metrics_history])
-    axes[3, 1].set_xlabel('Gradient Step')
-    axes[3, 1].set_ylabel('Distance')
-    axes[3, 1].set_title('Distance to Constraint Manifold')
-    axes[3, 1].grid(True, alpha=0.3)
+    if 'distance_to_constraint_manifold' in metrics_history[0]:
+        axes[3, 1].plot(steps, [m['distance_to_constraint_manifold'] for m in metrics_history])
+        axes[3, 1].set_xlabel('Gradient Step')
+        axes[3, 1].set_ylabel('Distance')
+        axes[3, 1].set_title('Distance to Constraint Manifold')
+        axes[3, 1].grid(True, alpha=0.3)
+    else:
+        axes[3, 1].text(0.5, 0.5, 'Metric not available', ha='center', va='center', transform=axes[3, 1].transAxes)
+        axes[3, 1].set_title('Distance to Constraint Manifold')
 
     # Plot 12: Distance to origin
-    axes[3, 2].plot(steps, [m['distance_to_origin'] for m in metrics_history])
-    axes[3, 2].set_xlabel('Gradient Step')
-    axes[3, 2].set_ylabel('Distance')
-    axes[3, 2].set_title('Distance to Origin')
-    axes[3, 2].grid(True, alpha=0.3)
+    if 'distance_to_origin' in metrics_history[0]:
+        axes[3, 2].plot(steps, [m['distance_to_origin'] for m in metrics_history])
+        axes[3, 2].set_xlabel('Gradient Step')
+        axes[3, 2].set_ylabel('Distance')
+        axes[3, 2].set_title('Distance to Origin')
+        axes[3, 2].grid(True, alpha=0.3)
+    else:
+        axes[3, 2].text(0.5, 0.5, 'Metric not available', ha='center', va='center', transform=axes[3, 2].transAxes)
+        axes[3, 2].set_title('Distance to Origin')
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -1269,10 +1303,10 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print(f"  Sampling prob std: {sampling_probs.std():.6f}")
 
     # Compute non-symmetric Laplacian for complex eigenvectors
-    print(f"\nComputing non-symmetric Laplacian with gamma={args.gamma}...")
-    print("  L = I - (1-γ)P·SR_γ (matches geometric sampling with k >= 1)")
+    print(f"\nComputing non-symmetric Laplacian with gamma={args.gamma}, delta={args.delta}...")
+    print(f"  L = (1+δ)I - (1-γ)P·SR_γ (matches geometric sampling with k >= 1)")
 
-    laplacian_matrix = compute_nonsymmetric_laplacian(transition_matrix, args.gamma)
+    laplacian_matrix = compute_nonsymmetric_laplacian(transition_matrix, args.gamma, delta=args.delta)
     eigendecomp = compute_eigendecomposition(
         laplacian_matrix,
         k=args.num_eigenvectors,
@@ -1325,7 +1359,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print(f"  Coordinate range: x=[{state_coords[:, 0].min():.3f}, {state_coords[:, 0].max():.3f}], "
           f"y=[{state_coords[:, 1].min():.3f}, {state_coords[:, 1].max():.3f}]")
 
-    return laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer
+    return laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer, transition_matrix
 
 
 def learn_eigenvectors(args):
@@ -1447,7 +1481,7 @@ def learn_eigenvectors(args):
     else:
         # Create environment and collect data (new run)
         env = create_gridworld_env(args)
-        laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
+        laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer, transition_matrix = collect_data_and_compute_eigenvectors(env, args)
 
         # Extract ground truth eigenvalues and eigenvectors (complex)
         gt_eigenvalues = eigendecomp['eigenvalues']  # Complex eigenvalues
@@ -1778,9 +1812,10 @@ def learn_eigenvectors(args):
             barrier_loss_neg = barrier_loss_neg_left + barrier_loss_neg_right
 
             # Compute graph drawing loss for complex eigenvectors
-            # E[(ψ_real(s)*(φ_real(s) - φ_real(s')) - ψ_imag(s)*(φ_imag(s) - φ_imag(s')))^2]
-            graph_products_real = (psi_real * (phi_real-next_phi_real)).mean(0, keepdims=True)
-            graph_products_imag = (psi_imag * (phi_imag-next_phi_imag)).mean(0, keepdims=True)
+            # E[(ψ_real(s)*((1+δ)φ_real(s) - φ_real(s')) - ψ_imag(s)*((1+δ)φ_imag(s) - φ_imag(s')))^2]
+            # The δ parameter shifts eigenvalues: L = (1+δ)I - M
+            graph_products_real = (psi_real * ((1+args.delta)*phi_real - next_phi_real)).mean(0, keepdims=True)
+            graph_products_imag = (psi_imag * ((1+args.delta)*phi_imag - next_phi_imag)).mean(0, keepdims=True)
             graph_loss = ((graph_products_real - graph_products_imag)**2).sum()
 
             # Total loss
@@ -1828,6 +1863,30 @@ def learn_eigenvectors(args):
                     aux[f'error_left_imag_{i}_{j}'] = error_matrix_left_imag_1[i, j]
                     aux[f'error_right_real_{i}_{j}'] = error_matrix_right_real_1[i, j]
                     aux[f'error_right_imag_{i}_{j}'] = error_matrix_right_imag_1[i, j]
+
+            # Compute total errors for monitoring
+            total_error_left_real = jnp.abs(error_matrix_left_real_1).sum()
+            total_error_left_imag = jnp.abs(error_matrix_left_imag_1).sum()
+            total_error_right_real = jnp.abs(error_matrix_right_real_1).sum()
+            total_error_right_imag = jnp.abs(error_matrix_right_imag_1).sum()
+
+            aux['total_error'] = total_error_left_real + total_error_left_imag + total_error_right_real + total_error_right_imag
+            aux['total_norm_error'] = jnp.linalg.norm(error_matrix_left_real_1, 'fro') + jnp.linalg.norm(error_matrix_left_imag_1, 'fro') + \
+                                       jnp.linalg.norm(error_matrix_right_real_1, 'fro') + jnp.linalg.norm(error_matrix_right_imag_1, 'fro')
+
+            # Error for first two eigenvectors (useful for debugging)
+            k_debug = min(2, args.num_eigenvectors)
+            aux['total_two_component_error'] = jnp.abs(error_matrix_left_real_1[:k_debug, :k_debug]).sum() + \
+                                                 jnp.abs(error_matrix_left_imag_1[:k_debug, :k_debug]).sum() + \
+                                                 jnp.abs(error_matrix_right_real_1[:k_debug, :k_debug]).sum() + \
+                                                 jnp.abs(error_matrix_right_imag_1[:k_debug, :k_debug]).sum()
+
+            # Distance to constraint manifold (same as total_norm_error)
+            aux['distance_to_constraint_manifold'] = aux['total_norm_error']
+
+            # Distance to origin (norm of eigenvector parameters)
+            aux['distance_to_origin'] = jnp.linalg.norm(psi_real) + jnp.linalg.norm(psi_imag) + \
+                                         jnp.linalg.norm(phi_real) + jnp.linalg.norm(phi_imag)
 
             return allo, (error_matrix_left_real_1, error_matrix_left_imag_1, error_matrix_right_real_1, error_matrix_right_imag_1, aux)
 

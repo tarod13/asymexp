@@ -474,33 +474,39 @@ def plot_final_comparison(data, plots_dir):
 
     viz_meta = data['viz_metadata']
 
+    # Determine which eigenvector to plot
+    # If only 1 eigenvector available, use index 0; otherwise use index 1 (skip constant)
+    num_eigenvectors = data['gt_right_real'].shape[1]
+    evec_idx = 0 if num_eigenvectors == 1 else 1
+    evec_label = evec_idx
+
     # Compare right eigenvectors (real parts)
     fig, axes = plt.subplots(1, 2, figsize=(12, 8))
 
-    # Plot first ground truth right eigenvector (real part, skip constant eigenvector 0)
+    # Plot ground truth right eigenvector (real part)
     visualize_eigenvector_on_grid(
-        eigenvector_idx=1,
-        eigenvector_values=data['gt_right_real'][:, 1],
+        eigenvector_idx=evec_label,
+        eigenvector_values=data['gt_right_real'][:, evec_idx],
         canonical_states=viz_meta['canonical_states'],
         grid_width=viz_meta['grid_width'],
         grid_height=viz_meta['grid_height'],
         portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        title='Ground Truth Right Eigenvector 1 (Real)',
+        title=f'Ground Truth Right Eigenvector {evec_label} (Real)',
         ax=axes[0],
         cmap='RdBu_r',
         show_colorbar=True,
         wall_color='gray'
     )
 
-    # Plot first learned right eigenvector (real part)
+    # Plot learned right eigenvector (real part)
     visualize_eigenvector_on_grid(
-        eigenvector_idx=1,
-        eigenvector_values=data['final_learned']['right_real'][:, 1],
+        eigenvector_idx=evec_label,
+        eigenvector_values=data['final_learned']['right_real'][:, evec_idx],
         canonical_states=viz_meta['canonical_states'],
         grid_width=viz_meta['grid_width'],
         grid_height=viz_meta['grid_height'],
         portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        title='Learned Right Feature 1 (Real)',
+        title=f'Learned Right Feature {evec_label} (Real)',
         ax=axes[1],
         cmap='RdBu_r',
         show_colorbar=True,
@@ -514,30 +520,30 @@ def plot_final_comparison(data, plots_dir):
     # Compare left eigenvectors (real parts)
     fig, axes = plt.subplots(1, 2, figsize=(12, 8))
 
-    # Plot first ground truth left eigenvector (real part)
+    # Plot ground truth left eigenvector (real part)
     visualize_eigenvector_on_grid(
-        eigenvector_idx=1,
-        eigenvector_values=data['gt_left_real'][:, 1],
+        eigenvector_idx=evec_label,
+        eigenvector_values=data['gt_left_real'][:, evec_idx],
         canonical_states=viz_meta['canonical_states'],
         grid_width=viz_meta['grid_width'],
         grid_height=viz_meta['grid_height'],
         portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        title='Ground Truth Left Eigenvector 1 (Real)',
+        title=f'Ground Truth Left Eigenvector {evec_label} (Real)',
         ax=axes[0],
         cmap='RdBu_r',
         show_colorbar=True,
         wall_color='gray'
     )
 
-    # Plot first learned left eigenvector (real part)
+    # Plot learned left eigenvector (real part)
     visualize_eigenvector_on_grid(
-        eigenvector_idx=1,
-        eigenvector_values=data['final_learned']['left_real'][:, 1],
+        eigenvector_idx=evec_label,
+        eigenvector_values=data['final_learned']['left_real'][:, evec_idx],
         canonical_states=viz_meta['canonical_states'],
         grid_width=viz_meta['grid_width'],
         grid_height=viz_meta['grid_height'],
         portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        title='Learned Left Feature 1 (Real)',
+        title=f'Learned Left Feature {evec_label} (Real)',
         ax=axes[1],
         cmap='RdBu_r',
         show_colorbar=True,
