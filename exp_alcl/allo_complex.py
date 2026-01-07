@@ -393,11 +393,11 @@ class Args:
     env_type: str = "room4"  # 'room4', 'maze', 'spiral', 'obstacles', 'empty', or 'file'
     env_file: str | None = None  # Path to environment text file (if env_type='file')
     env_file_name: str | None = None  # Name of environment file in src/envs/txt/ (e.g., 'GridRoom-4')
-    max_episode_length: int = 1000
+    max_episode_length: int = 2
 
     # Data collection
-    num_envs: int = 1000
-    num_steps: int = 1000
+    num_envs: int = 500000
+    num_steps: int = 2
 
     # Irreversible doors
     use_doors: bool = False
@@ -420,10 +420,10 @@ class Args:
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
 
     # Augmented Lagrangian parameters
-    duals_initial_val: float = -2.0
-    barrier_initial_val: float = 0.5
-    max_barrier_coefs: float = 0.5
-    step_size_duals: float = 1.0
+    duals_initial_val: float = 0.0
+    barrier_initial_val: float = 5.0
+    max_barrier_coefs: float = 5.0
+    step_size_duals: float = 0.0
     step_size_duals_I: float = 0.0
     integral_decay: float = 0.99
     init_dual_diag: bool = False
