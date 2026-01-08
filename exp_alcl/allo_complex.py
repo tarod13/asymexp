@@ -960,6 +960,171 @@ def compute_complex_cosine_similarities(
     return similarities
 
 
+def compute_complex_cosine_similarities_with_normalization(
+    learned_left_real: jnp.ndarray,
+    learned_left_imag: jnp.ndarray,
+    learned_right_real: jnp.ndarray,
+    learned_right_imag: jnp.ndarray,
+    gt_left_real: jnp.ndarray,
+    gt_left_imag: jnp.ndarray,
+    gt_right_real: jnp.ndarray,
+    gt_right_imag: jnp.ndarray,
+    sampling_probs: jnp.ndarray,
+) -> Dict[str, float]:
+    """
+    Compute cosine similarities with proper normalization for adjoint eigenvectors.
+
+    The learned left eigenvectors correspond to eigenvectors of the adjoint with respect
+    to the inner product determined by the replay buffer state distribution D.
+
+    Normalization procedure:
+    1. For RIGHT eigenvectors:
+       - Find component with largest magnitude
+       - Divide by that component (fixes arbitrary phase)
+       - Normalize to unit norm
+
+    2. For LEFT eigenvectors:
+       - Multiply by the largest component from corresponding right eigenvector
+       - Multiply by the norm of the corresponding right eigenvector (before normalization)
+       - Scale each entry by the stationary state distribution (to convert from adjoint)
+
+    This ensures proper comparison between learned and ground truth eigenvectors while
+    accounting for:
+    - Arbitrary complex scaling freedom
+    - Adjoint vs. true left eigenvector relationship
+
+    Args:
+        learned_left_real: Learned left eigenvector real parts [num_states, num_eigenvectors]
+        learned_left_imag: Learned left eigenvector imaginary parts [num_states, num_eigenvectors]
+        learned_right_real: Learned right eigenvector real parts [num_states, num_eigenvectors]
+        learned_right_imag: Learned right eigenvector imaginary parts [num_states, num_eigenvectors]
+        gt_left_real: Ground truth left eigenvector real parts [num_states, num_eigenvectors]
+        gt_left_imag: Ground truth left eigenvector imaginary parts [num_states, num_eigenvectors]
+        gt_right_real: Ground truth right eigenvector real parts [num_states, num_eigenvectors]
+        gt_right_imag: Ground truth right eigenvector imaginary parts [num_states, num_eigenvectors]
+        sampling_probs: State distribution probabilities [num_states]
+
+    Returns:
+        Dictionary containing cosine similarities for left and right eigenvectors
+    """
+    num_components = learned_right_real.shape[1]
+    num_states = learned_right_real.shape[0]
+
+    # Normalize right eigenvectors
+    normalized_right_real = jnp.zeros_like(learned_right_real)
+    normalized_right_imag = jnp.zeros_like(learned_right_imag)
+    normalized_left_real = jnp.zeros_like(learned_left_real)
+    normalized_left_imag = jnp.zeros_like(learned_left_imag)
+
+    for i in range(num_components):
+        # Step 1: Process right eigenvectors
+        right_r = learned_right_real[:, i]
+        right_i = learned_right_imag[:, i]
+
+        # Find component with largest magnitude
+        magnitudes = jnp.sqrt(right_r**2 + right_i**2)
+        max_idx = jnp.argmax(magnitudes)
+        max_component_real = right_r[max_idx]
+        max_component_imag = right_i[max_idx]
+
+        # Complex division: divide by max component
+        # (a + bi) / (c + di) = [(ac + bd) + i(bc - ad)] / (c^2 + d^2)
+        denom = max_component_real**2 + max_component_imag**2 + 1e-10
+        scaled_right_real = (right_r * max_component_real + right_i * max_component_imag) / denom
+        scaled_right_imag = (right_i * max_component_real - right_r * max_component_imag) / denom
+
+        # Normalize to unit norm
+        right_norm = jnp.sqrt(jnp.sum(scaled_right_real**2 + scaled_right_imag**2))
+        normalized_right_real = normalized_right_real.at[:, i].set(scaled_right_real / (right_norm + 1e-10))
+        normalized_right_imag = normalized_right_imag.at[:, i].set(scaled_right_imag / (right_norm + 1e-10))
+
+        # Step 2: Process left eigenvectors (complementary normalization)
+        left_r = learned_left_real[:, i]
+        left_i = learned_left_imag[:, i]
+
+        # Compute the original norm of the right eigenvector (before normalization)
+        original_right_norm = jnp.sqrt(jnp.sum(right_r**2 + right_i**2))
+
+        # Multiply by max component (conjugate for complex multiplication)
+        # (a + bi) * (c + di) = (ac - bd) + i(ad + bc)
+        scaled_left_real = (left_r * max_component_real - left_i * max_component_imag)
+        scaled_left_imag = (left_r * max_component_imag + left_i * max_component_real)
+
+        # Multiply by the original norm of the right eigenvector
+        scaled_left_real = scaled_left_real * original_right_norm
+        scaled_left_imag = scaled_left_imag * original_right_norm
+
+        # Scale each entry by the stationary state distribution
+        # This converts from adjoint eigenvectors to true left eigenvectors
+        scaled_left_real = scaled_left_real * sampling_probs
+        scaled_left_imag = scaled_left_imag * sampling_probs
+
+        normalized_left_real = normalized_left_real.at[:, i].set(scaled_left_real)
+        normalized_left_imag = normalized_left_imag.at[:, i].set(scaled_left_imag)
+
+    # Similarly normalize ground truth eigenvectors
+    gt_normalized_right_real = jnp.zeros_like(gt_right_real)
+    gt_normalized_right_imag = jnp.zeros_like(gt_right_imag)
+    gt_normalized_left_real = jnp.zeros_like(gt_left_real)
+    gt_normalized_left_imag = jnp.zeros_like(gt_left_imag)
+
+    for i in range(num_components):
+        # Process ground truth right eigenvectors
+        right_r = gt_right_real[:, i]
+        right_i = gt_right_imag[:, i]
+
+        magnitudes = jnp.sqrt(right_r**2 + right_i**2)
+        max_idx = jnp.argmax(magnitudes)
+        max_component_real = right_r[max_idx]
+        max_component_imag = right_i[max_idx]
+
+        denom = max_component_real**2 + max_component_imag**2 + 1e-10
+        scaled_right_real = (right_r * max_component_real + right_i * max_component_imag) / denom
+        scaled_right_imag = (right_i * max_component_real - right_r * max_component_imag) / denom
+
+        right_norm = jnp.sqrt(jnp.sum(scaled_right_real**2 + scaled_right_imag**2))
+        gt_normalized_right_real = gt_normalized_right_real.at[:, i].set(scaled_right_real / (right_norm + 1e-10))
+        gt_normalized_right_imag = gt_normalized_right_imag.at[:, i].set(scaled_right_imag / (right_norm + 1e-10))
+
+        # Process ground truth left eigenvectors
+        left_r = gt_left_real[:, i]
+        left_i = gt_left_imag[:, i]
+
+        original_right_norm = jnp.sqrt(jnp.sum(right_r**2 + right_i**2))
+
+        scaled_left_real = (left_r * max_component_real - left_i * max_component_imag)
+        scaled_left_imag = (left_r * max_component_imag + left_i * max_component_real)
+
+        scaled_left_real = scaled_left_real * original_right_norm
+        scaled_left_imag = scaled_left_imag * original_right_norm
+
+        scaled_left_real = scaled_left_real * sampling_probs
+        scaled_left_imag = scaled_left_imag * sampling_probs
+
+        gt_normalized_left_real = gt_normalized_left_real.at[:, i].set(scaled_left_real)
+        gt_normalized_left_imag = gt_normalized_left_imag.at[:, i].set(scaled_left_imag)
+
+    # Compute cosine similarities using the normalized eigenvectors
+    left_sims = compute_complex_cosine_similarities(
+        normalized_left_real, normalized_left_imag,
+        gt_normalized_left_real, gt_normalized_left_imag,
+        prefix="left_"
+    )
+
+    right_sims = compute_complex_cosine_similarities(
+        normalized_right_real, normalized_right_imag,
+        gt_normalized_right_real, gt_normalized_right_imag,
+        prefix="right_"
+    )
+
+    # Combine results
+    result = {}
+    result.update(left_sims)
+    result.update(right_sims)
+
+    return result
+
+
 def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_eigenvectors: int = None):
     """
     Plot the evolution of cosine similarities between learned and ground truth eigenvectors.
@@ -2158,23 +2323,20 @@ def learn_eigenvectors(args):
             # Compute learned eigenvectors on all states for cosine similarity
             features_dict = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
 
-            # Compute complex cosine similarities for BOTH left and right eigenvectors
-            # Left eigenvectors (φ)
-            cosine_sims_left = compute_complex_cosine_similarities(
-                learned_real=features_dict['left_real'],
-                learned_imag=features_dict['left_imag'],
-                gt_real=gt_left_real,
-                gt_imag=gt_left_imag,
-                prefix="left_"
-            )
-
-            # Right eigenvectors (ψ)
-            cosine_sims_right = compute_complex_cosine_similarities(
-                learned_real=features_dict['right_real'],
-                learned_imag=features_dict['right_imag'],
-                gt_real=gt_right_real,
-                gt_imag=gt_right_imag,
-                prefix="right_"
+            # Compute complex cosine similarities with proper normalization
+            # This accounts for:
+            # 1. Arbitrary complex scaling of eigenvectors
+            # 2. Adjoint vs. true left eigenvector relationship (via sampling distribution)
+            cosine_sims = compute_complex_cosine_similarities_with_normalization(
+                learned_left_real=features_dict['left_real'],
+                learned_left_imag=features_dict['left_imag'],
+                learned_right_real=features_dict['right_real'],
+                learned_right_imag=features_dict['right_imag'],
+                gt_left_real=gt_left_real,
+                gt_left_imag=gt_left_imag,
+                gt_right_real=gt_right_real,
+                gt_right_imag=gt_right_imag,
+                sampling_probs=sampling_probs
             )
 
             # Store metrics
@@ -2189,16 +2351,14 @@ def learn_eigenvectors(args):
                 metrics_dict[k] = float(v.item())
 
             # Add cosine similarities to metrics (both left and right)
-            for k, v in cosine_sims_left.items():
-                metrics_dict[k] = v
-            for k, v in cosine_sims_right.items():
+            for k, v in cosine_sims.items():
                 metrics_dict[k] = v
 
             metrics_history.append(metrics_dict)
 
             if gradient_step % (args.log_freq * 10) == 0:
-                left_sim = cosine_sims_left['left_cosine_sim_avg']
-                right_sim = cosine_sims_right['right_cosine_sim_avg']
+                left_sim = cosine_sims['left_cosine_sim_avg']
+                right_sim = cosine_sims['right_cosine_sim_avg']
                 print(f"Step {gradient_step}: loss={allo.item():.4f}, "
                       f"total_error={metrics['total_error'].item():.4f}, "
                       f"left_sim={left_sim:.4f}, right_sim={right_sim:.4f}")
