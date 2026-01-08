@@ -2569,42 +2569,108 @@ def learn_eigenvectors(args):
     np.save(results_dir / "final_learned_right_real_normalized.npy", np.array(final_normalized_features['right_real']))
     np.save(results_dir / "final_learned_right_imag_normalized.npy", np.array(final_normalized_features['right_imag']))
 
-    # Optionally create final comparison plot
+    # Optionally create final comparison plots
     if args.plot_during_training:
-        fig, axes = plt.subplots(1, 2, figsize=(12, 8))
+        # Determine which eigenvector to plot (skip constant eigenvector 0 if multiple exist)
+        evec_idx = 0 if args.num_eigenvectors == 1 else 1
 
-        # Plot first ground truth right eigenvector (real part, skip constant eigenvector 0)
+        # Create 3-column comparison: Ground Truth | Raw | Normalized
+        # Right eigenvectors (real part)
+        fig, axes = plt.subplots(1, 3, figsize=(18, 8))
+
         visualize_eigenvector_on_grid(
-            eigenvector_idx=1,
-            eigenvector_values=np.array(gt_right_real[:, 1]),
+            eigenvector_idx=evec_idx,
+            eigenvector_values=np.array(gt_right_real[:, evec_idx]),
             canonical_states=canonical_states,
             grid_width=env.width,
             grid_height=env.height,
             portals=door_markers if door_markers else None,
-            title='Ground Truth Right Eigenvector 1 (Real)',
+            title=f'Ground Truth Right {evec_idx} (Real)',
             ax=axes[0],
             cmap='RdBu_r',
             show_colorbar=True,
             wall_color='gray'
         )
 
-        # Plot first learned feature (right eigenvector, real part)
         visualize_eigenvector_on_grid(
-            eigenvector_idx=1,
-            eigenvector_values=np.array(final_features_dict['right_real'][:, 1]),
+            eigenvector_idx=evec_idx,
+            eigenvector_values=np.array(final_features_dict['right_real'][:, evec_idx]),
             canonical_states=canonical_states,
             grid_width=env.width,
             grid_height=env.height,
             portals=door_markers if door_markers else None,
-            title='Learned Right Eigenvector 1 (Real)',
+            title=f'Raw Learned Right {evec_idx} (Real)',
             ax=axes[1],
             cmap='RdBu_r',
             show_colorbar=True,
             wall_color='gray'
         )
 
+        visualize_eigenvector_on_grid(
+            eigenvector_idx=evec_idx,
+            eigenvector_values=np.array(final_normalized_features['right_real'][:, evec_idx]),
+            canonical_states=canonical_states,
+            grid_width=env.width,
+            grid_height=env.height,
+            portals=door_markers if door_markers else None,
+            title=f'Normalized Learned Right {evec_idx} (Real)',
+            ax=axes[2],
+            cmap='RdBu_r',
+            show_colorbar=True,
+            wall_color='gray'
+        )
+
         plt.tight_layout()
-        plt.savefig(plots_dir / "final_comparison.png", dpi=300, bbox_inches='tight')
+        plt.savefig(plots_dir / "final_comparison_right.png", dpi=300, bbox_inches='tight')
+        plt.close()
+
+        # Left eigenvectors (real part)
+        fig, axes = plt.subplots(1, 3, figsize=(18, 8))
+
+        visualize_eigenvector_on_grid(
+            eigenvector_idx=evec_idx,
+            eigenvector_values=np.array(gt_left_real[:, evec_idx]),
+            canonical_states=canonical_states,
+            grid_width=env.width,
+            grid_height=env.height,
+            portals=door_markers if door_markers else None,
+            title=f'Ground Truth Left {evec_idx} (Real)',
+            ax=axes[0],
+            cmap='RdBu_r',
+            show_colorbar=True,
+            wall_color='gray'
+        )
+
+        visualize_eigenvector_on_grid(
+            eigenvector_idx=evec_idx,
+            eigenvector_values=np.array(final_features_dict['left_real'][:, evec_idx]),
+            canonical_states=canonical_states,
+            grid_width=env.width,
+            grid_height=env.height,
+            portals=door_markers if door_markers else None,
+            title=f'Raw Learned Left {evec_idx} (Real)',
+            ax=axes[1],
+            cmap='RdBu_r',
+            show_colorbar=True,
+            wall_color='gray'
+        )
+
+        visualize_eigenvector_on_grid(
+            eigenvector_idx=evec_idx,
+            eigenvector_values=np.array(final_normalized_features['left_real'][:, evec_idx]),
+            canonical_states=canonical_states,
+            grid_width=env.width,
+            grid_height=env.height,
+            portals=door_markers if door_markers else None,
+            title=f'Normalized Learned Left {evec_idx} (Real)',
+            ax=axes[2],
+            cmap='RdBu_r',
+            show_colorbar=True,
+            wall_color='gray'
+        )
+
+        plt.tight_layout()
+        plt.savefig(plots_dir / "final_comparison_left.png", dpi=300, bbox_inches='tight')
         plt.close()
 
     print(f"\nData exported. Use generate_plots_complex.py to create visualizations.")

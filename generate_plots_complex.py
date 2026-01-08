@@ -562,8 +562,9 @@ def plot_final_comparison(data, plots_dir):
 
     # Compare right eigenvectors (real parts)
     fig, axes = plt.subplots(1, num_cols, figsize=(6 * num_cols, 8))
-    if num_cols == 2:
-        axes = [axes[0], axes[1]]  # Ensure axes is always a list
+    # Ensure axes is iterable even with single column (though we always have 2 or 3)
+    if num_cols == 1:
+        axes = [axes]
 
     # Plot ground truth right eigenvector (real part)
     visualize_eigenvector_on_grid(
@@ -617,8 +618,9 @@ def plot_final_comparison(data, plots_dir):
 
     # Compare left eigenvectors (real parts)
     fig, axes = plt.subplots(1, num_cols, figsize=(6 * num_cols, 8))
-    if num_cols == 2:
-        axes = [axes[0], axes[1]]  # Ensure axes is always a list
+    # Ensure axes is iterable even with single column (though we always have 2 or 3)
+    if num_cols == 1:
+        axes = [axes]
 
     # Plot ground truth left eigenvector (real part)
     visualize_eigenvector_on_grid(
