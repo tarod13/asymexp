@@ -37,7 +37,8 @@ from exp_alcl.allo_complex import (
     plot_dual_variable_evolution,
     plot_cosine_similarity_evolution,
     plot_sampling_distribution,
-    plot_all_duals_evolution
+    plot_all_duals_evolution,
+    normalize_eigenvectors_for_comparison
 )
 from exp_complex_basis.eigenvector_visualization import (
     visualize_multiple_eigenvectors,
@@ -116,6 +117,80 @@ def load_data(results_dir):
         final_learned = None
         print("Warning: final_learned_*.npy files not found")
 
+    # Load or compute normalized eigenvectors for final learned
+    final_learned_normalized = None
+    if final_learned is not None:
+        # Try to load pre-computed normalized eigenvectors
+        final_left_real_norm_file = results_dir / "final_learned_left_real_normalized.npy"
+        final_left_imag_norm_file = results_dir / "final_learned_left_imag_normalized.npy"
+        final_right_real_norm_file = results_dir / "final_learned_right_real_normalized.npy"
+        final_right_imag_norm_file = results_dir / "final_learned_right_imag_normalized.npy"
+
+        if (final_left_real_norm_file.exists() and final_left_imag_norm_file.exists() and
+            final_right_real_norm_file.exists() and final_right_imag_norm_file.exists()):
+            final_learned_normalized = {
+                'left_real': np.load(final_left_real_norm_file),
+                'left_imag': np.load(final_left_imag_norm_file),
+                'right_real': np.load(final_right_real_norm_file),
+                'right_imag': np.load(final_right_imag_norm_file),
+            }
+            print("Loaded pre-computed normalized eigenvectors")
+        elif sampling_probs is not None:
+            # Compute on-the-fly if sampling distribution is available
+            print("Computing normalized eigenvectors on-the-fly...")
+            import jax.numpy as jnp
+            final_learned_normalized = normalize_eigenvectors_for_comparison(
+                left_real=jnp.array(final_learned['left_real']),
+                left_imag=jnp.array(final_learned['left_imag']),
+                right_real=jnp.array(final_learned['right_real']),
+                right_imag=jnp.array(final_learned['right_imag']),
+                sampling_probs=jnp.array(sampling_probs)
+            )
+            # Convert back to numpy arrays
+            final_learned_normalized = {
+                'left_real': np.array(final_learned_normalized['left_real']),
+                'left_imag': np.array(final_learned_normalized['left_imag']),
+                'right_real': np.array(final_learned_normalized['right_real']),
+                'right_imag': np.array(final_learned_normalized['right_imag']),
+            }
+        else:
+            print("Warning: Cannot compute normalized eigenvectors (sampling_probs not found)")
+
+    # Load or compute normalized eigenvectors for latest learned
+    latest_learned_normalized = None
+    if latest_learned is not None:
+        # Try to load pre-computed normalized eigenvectors
+        latest_left_real_norm_file = results_dir / "latest_learned_left_real_normalized.npy"
+        latest_left_imag_norm_file = results_dir / "latest_learned_left_imag_normalized.npy"
+        latest_right_real_norm_file = results_dir / "latest_learned_right_real_normalized.npy"
+        latest_right_imag_norm_file = results_dir / "latest_learned_right_imag_normalized.npy"
+
+        if (latest_left_real_norm_file.exists() and latest_left_imag_norm_file.exists() and
+            latest_right_real_norm_file.exists() and latest_right_imag_norm_file.exists()):
+            latest_learned_normalized = {
+                'left_real': np.load(latest_left_real_norm_file),
+                'left_imag': np.load(latest_left_imag_norm_file),
+                'right_real': np.load(latest_right_real_norm_file),
+                'right_imag': np.load(latest_right_imag_norm_file),
+            }
+        elif sampling_probs is not None:
+            # Compute on-the-fly if sampling distribution is available
+            import jax.numpy as jnp
+            latest_learned_normalized = normalize_eigenvectors_for_comparison(
+                left_real=jnp.array(latest_learned['left_real']),
+                left_imag=jnp.array(latest_learned['left_imag']),
+                right_real=jnp.array(latest_learned['right_real']),
+                right_imag=jnp.array(latest_learned['right_imag']),
+                sampling_probs=jnp.array(sampling_probs)
+            )
+            # Convert back to numpy arrays
+            latest_learned_normalized = {
+                'left_real': np.array(latest_learned_normalized['left_real']),
+                'left_imag': np.array(latest_learned_normalized['left_imag']),
+                'right_real': np.array(latest_learned_normalized['right_real']),
+                'right_imag': np.array(latest_learned_normalized['right_imag']),
+            }
+
     return {
         'viz_metadata': viz_metadata,
         'gt_eigenvalues': gt_eigenvalues,
@@ -129,6 +204,8 @@ def load_data(results_dir):
         'metrics_history': metrics_history,
         'latest_learned': latest_learned,
         'final_learned': final_learned,
+        'latest_learned_normalized': latest_learned_normalized,
+        'final_learned_normalized': final_learned_normalized,
         'results_dir': results_dir,
     }
 
@@ -465,7 +542,7 @@ def plot_sampling_dist(data, plots_dir):
 
 
 def plot_final_comparison(data, plots_dir):
-    """Generate final comparison plots (ground truth vs learned)."""
+    """Generate final comparison plots (ground truth vs raw vs normalized)."""
     if data['final_learned'] is None:
         print("Skipping final comparison (final learned data not available)")
         return
@@ -480,8 +557,14 @@ def plot_final_comparison(data, plots_dir):
     evec_idx = 0 if num_eigenvectors == 1 else 1
     evec_label = evec_idx
 
+    # Determine number of columns based on availability of normalized eigenvectors
+    num_cols = 3 if data['final_learned_normalized'] is not None else 2
+
     # Compare right eigenvectors (real parts)
-    fig, axes = plt.subplots(1, 2, figsize=(12, 8))
+    fig, axes = plt.subplots(1, num_cols, figsize=(6 * num_cols, 8))
+    # Ensure axes is iterable even with single column (though we always have 2 or 3)
+    if num_cols == 1:
+        axes = [axes]
 
     # Plot ground truth right eigenvector (real part)
     visualize_eigenvector_on_grid(
@@ -498,7 +581,7 @@ def plot_final_comparison(data, plots_dir):
         wall_color='gray'
     )
 
-    # Plot learned right eigenvector (real part)
+    # Plot raw learned right eigenvector (real part)
     visualize_eigenvector_on_grid(
         eigenvector_idx=evec_label,
         eigenvector_values=data['final_learned']['right_real'][:, evec_idx],
@@ -506,19 +589,38 @@ def plot_final_comparison(data, plots_dir):
         grid_width=viz_meta['grid_width'],
         grid_height=viz_meta['grid_height'],
         portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        title=f'Learned Right Feature {evec_label} (Real)',
+        title=f'Raw Learned Right {evec_label} (Real)',
         ax=axes[1],
         cmap='RdBu_r',
         show_colorbar=True,
         wall_color='gray'
     )
 
+    # Plot normalized learned right eigenvector if available
+    if num_cols == 3:
+        visualize_eigenvector_on_grid(
+            eigenvector_idx=evec_label,
+            eigenvector_values=data['final_learned_normalized']['right_real'][:, evec_idx],
+            canonical_states=viz_meta['canonical_states'],
+            grid_width=viz_meta['grid_width'],
+            grid_height=viz_meta['grid_height'],
+            portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
+            title=f'Normalized Learned Right {evec_label} (Real)',
+            ax=axes[2],
+            cmap='RdBu_r',
+            show_colorbar=True,
+            wall_color='gray'
+        )
+
     plt.tight_layout()
     plt.savefig(plots_dir / "final_comparison_right_real.png", dpi=300, bbox_inches='tight')
     plt.close()
 
     # Compare left eigenvectors (real parts)
-    fig, axes = plt.subplots(1, 2, figsize=(12, 8))
+    fig, axes = plt.subplots(1, num_cols, figsize=(6 * num_cols, 8))
+    # Ensure axes is iterable even with single column (though we always have 2 or 3)
+    if num_cols == 1:
+        axes = [axes]
 
     # Plot ground truth left eigenvector (real part)
     visualize_eigenvector_on_grid(
@@ -535,7 +637,7 @@ def plot_final_comparison(data, plots_dir):
         wall_color='gray'
     )
 
-    # Plot learned left eigenvector (real part)
+    # Plot raw learned left eigenvector (real part)
     visualize_eigenvector_on_grid(
         eigenvector_idx=evec_label,
         eigenvector_values=data['final_learned']['left_real'][:, evec_idx],
@@ -543,12 +645,28 @@ def plot_final_comparison(data, plots_dir):
         grid_width=viz_meta['grid_width'],
         grid_height=viz_meta['grid_height'],
         portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        title=f'Learned Left Feature {evec_label} (Real)',
+        title=f'Raw Learned Left {evec_label} (Real)',
         ax=axes[1],
         cmap='RdBu_r',
         show_colorbar=True,
         wall_color='gray'
     )
+
+    # Plot normalized learned left eigenvector if available
+    if num_cols == 3:
+        visualize_eigenvector_on_grid(
+            eigenvector_idx=evec_label,
+            eigenvector_values=data['final_learned_normalized']['left_real'][:, evec_idx],
+            canonical_states=viz_meta['canonical_states'],
+            grid_width=viz_meta['grid_width'],
+            grid_height=viz_meta['grid_height'],
+            portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
+            title=f'Normalized Learned Left {evec_label} (Real)',
+            ax=axes[2],
+            cmap='RdBu_r',
+            show_colorbar=True,
+            wall_color='gray'
+        )
 
     plt.tight_layout()
     plt.savefig(plots_dir / "final_comparison_left_real.png", dpi=300, bbox_inches='tight')
