@@ -420,13 +420,9 @@ class Args:
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
 
     # Augmented Lagrangian parameters
-    duals_initial_val: float = 0.0
-    barrier_initial_val: float = 5.0
-    max_barrier_coefs: float = 5.0
-    step_size_duals: float = 0.0
-    step_size_duals_I: float = 0.0
-    integral_decay: float = 0.99
-    init_dual_diag: bool = False
+    duals_initial_val: float = -2.0
+    barrier_coef: float = 2.0
+    step_size_duals: float = 1.0
     
     # Logging and saving
     log_freq: int = 100
@@ -536,7 +532,6 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
 
     # Plot 5: Barrier loss
     axes[1, 1].plot(steps, [m['barrier_loss'] for m in metrics_history], label='Positive')
-    axes[1, 1].plot(steps, [m['barrier_loss_neg'] for m in metrics_history], label='Negative')
     axes[1, 1].set_xlabel('Gradient Step')
     axes[1, 1].set_ylabel('Barrier Loss')
     axes[1, 1].set_title('Barrier Losses')
@@ -589,18 +584,6 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
     axes[2, 2].set_ylabel('Error')
     axes[2, 2].legend(fontsize=8)
     axes[2, 2].grid(True, alpha=0.3)
-
-    # Row 4: Barrier coefficients and distance metrics
-    # Plot 10: Barrier coefficients
-    axes[3, 0].plot(steps, [m['barrier_coef_left_real'] for m in metrics_history], label='Left Real')
-    axes[3, 0].plot(steps, [m['barrier_coef_left_imag'] for m in metrics_history], label='Left Imag')
-    axes[3, 0].plot(steps, [m['barrier_coef_right_real'] for m in metrics_history], label='Right Real')
-    axes[3, 0].plot(steps, [m['barrier_coef_right_imag'] for m in metrics_history], label='Right Imag')
-    axes[3, 0].set_xlabel('Gradient Step')
-    axes[3, 0].set_ylabel('Coefficient')
-    axes[3, 0].set_title('Barrier Coefficients')
-    axes[3, 0].legend(fontsize=8)
-    axes[3, 0].grid(True, alpha=0.3)
 
     # Plot 11: Distance to constraint manifold
     if 'distance_to_constraint_manifold' in metrics_history[0]:
@@ -1748,33 +1731,13 @@ def learn_eigenvectors(args):
     # Create masks for different parameter groups
     encoder_mask = {
         'encoder': True,
-        'duals_left_real': False,
-        'duals_left_imag': False,
-        'barrier_coefs_left_real': False,
-        'barrier_coefs_left_imag': False,
-        'error_integral_left_real': False,
-        'error_integral_left_imag': False,
-        'duals_right_real': False,
-        'duals_right_imag': False,
-        'barrier_coefs_right_real': False,
-        'barrier_coefs_right_imag': False,
-        'error_integral_right_real': False,
-        'error_integral_right_imag': False,
+        'duals_real': False,
+        'duals_imag': False,
     }
     other_mask = {
         'encoder': False,
-        'duals_left_real': True,
-        'duals_left_imag': True,
-        'barrier_coefs_left_real': True,
-        'barrier_coefs_left_imag': True,
-        'error_integral_left_real': False,
-        'error_integral_left_imag': False,
-        'duals_right_real': True,
-        'duals_right_imag': True,
-        'barrier_coefs_right_real': True,
-        'barrier_coefs_right_imag': True,
-        'error_integral_right_real': False,
-        'error_integral_right_imag': False,
+        'duals_real': True,
+        'duals_imag': True,
     }
 
     tx = optax.chain(
@@ -1808,30 +1771,13 @@ def learn_eigenvectors(args):
         encoder_state = encoder_state.replace(opt_state=opt_state_optimized)
         print("Restored encoder state from checkpoint (optimized for device)")
     else:
-        # Initialize fresh
-        # Initialize dual variables
-        if args.init_dual_diag:
-            initial_dual_mask = jnp.eye(args.num_eigenvectors)
-        else:
-            initial_dual_mask = jnp.ones((args.num_eigenvectors, args.num_eigenvectors))
-
         # Create dummy input for initialization
         dummy_input = state_coords[:1]  # (1, 2)
 
         initial_params = {
             'encoder': encoder.init(encoder_key, dummy_input),
-            'duals_left_real': jnp.tril(args.duals_initial_val * initial_dual_mask),
-            'duals_left_imag': jnp.tril(args.duals_initial_val * initial_dual_mask),
-            'duals_right_real': jnp.tril(args.duals_initial_val * initial_dual_mask),
-            'duals_right_imag': jnp.tril(args.duals_initial_val * initial_dual_mask),
-            'barrier_coefs_left_real': jnp.tril(args.barrier_initial_val * jnp.ones((1, 1))),
-            'barrier_coefs_left_imag': jnp.tril(args.barrier_initial_val * jnp.ones((1, 1))),
-            'barrier_coefs_right_real': jnp.tril(args.barrier_initial_val * jnp.ones((1, 1))),
-            'barrier_coefs_right_imag': jnp.tril(args.barrier_initial_val * jnp.ones((1, 1))),
-            'error_integral_left_real': jnp.zeros((args.num_eigenvectors, args.num_eigenvectors)),
-            'error_integral_left_imag': jnp.zeros((args.num_eigenvectors, args.num_eigenvectors)),
-            'error_integral_right_real': jnp.zeros((args.num_eigenvectors, args.num_eigenvectors)),
-            'error_integral_right_imag': jnp.zeros((args.num_eigenvectors, args.num_eigenvectors)),
+            'duals_real': jnp.ones((args.num_eigenvectors,)),
+            'duals_imag': jnp.ones((args.num_eigenvectors,)),
         }
 
         encoder_state = TrainState.create(
@@ -1878,42 +1824,33 @@ def learn_eigenvectors(args):
             n = phi_real.shape[0]
 
             # Get duals
-            dual_variables_left_real = params['duals_left_real']
-            dual_variables_left_imag = params['duals_left_imag']
-            dual_variables_right_real = params['duals_right_real']
-            dual_variables_right_imag = params['duals_right_imag']
-            barrier_coefficients_left_real = params['barrier_coefs_left_real']
-            barrier_coefficients_left_imag = params['barrier_coefs_left_imag']
-            barrier_coefficients_right_real = params['barrier_coefs_right_real']
-            barrier_coefficients_right_imag = params['barrier_coefs_right_imag']
-            diagonal_duals_left_real = jnp.diag(dual_variables_left_real)
-            diagonal_duals_left_imag = jnp.diag(dual_variables_left_imag)
-            diagonal_duals_right_real = jnp.diag(dual_variables_right_real)
-            diagonal_duals_right_imag = jnp.diag(dual_variables_right_imag)
+            duals_real = params['duals_real']
+            duals_imag = params['duals_imag']
+            
             # Eigenvalue sum is the sum of left and right duals (averaged)
-            eigenvalue_sum_real = -0.5 * (diagonal_duals_left_real + diagonal_duals_right_real).sum()
-            eigenvalue_sum_imag = -0.5 * (diagonal_duals_left_imag + diagonal_duals_right_imag).sum()
+            eigenvalue_sum_real = duals_real.sum()
+            eigenvalue_sum_imag = duals_imag.sum()
 
-            # Compute biorthogonality inner products: ψ^T φ
-            # Real part: Re(ψ^T φ) = ψ_real^T φ_real - ψ_imag^T φ_imag
-            inner_product_left_real_1 = (jnp.einsum('ij,ik->jk', psi_real, jax.lax.stop_gradient(phi_real)) -
+            # Compute biorthogonality inner products: <ψ, φ>
+            # Real part: Re(<ψ, φ>) = ψ_real^T φ_real + ψ_imag^T φ_imag
+            inner_product_left_real_1 = (jnp.einsum('ij,ik->jk', psi_real, jax.lax.stop_gradient(phi_real)) +
                                    jnp.einsum('ij,ik->jk', psi_imag, jax.lax.stop_gradient(phi_imag))) / n
-            inner_product_left_real_2 = (jnp.einsum('ij,ik->jk', psi_real_2, jax.lax.stop_gradient(phi_real_2)) -
+            inner_product_left_real_2 = (jnp.einsum('ij,ik->jk', psi_real_2, jax.lax.stop_gradient(phi_real_2)) +
                                    jnp.einsum('ij,ik->jk', psi_imag_2, jax.lax.stop_gradient(phi_imag_2))) / n
-            # Imaginary part: Im(ψ^T φ) = ψ_real^T φ_imag + ψ_imag^T φ_real
-            inner_product_left_imag_1 = (jnp.einsum('ij,ik->jk', psi_real, jax.lax.stop_gradient(phi_imag)) +
+            # Imaginary part: Im(<ψ, φ>) = ψ_real^T φ_imag - ψ_imag^T φ_real
+            inner_product_left_imag_1 = (jnp.einsum('ij,ik->jk', psi_real, jax.lax.stop_gradient(phi_imag)) -
                                    jnp.einsum('ij,ik->jk', psi_imag, jax.lax.stop_gradient(phi_real))) / n
-            inner_product_left_imag_2 = (jnp.einsum('ij,ik->jk', psi_real_2, jax.lax.stop_gradient(phi_imag_2)) +
+            inner_product_left_imag_2 = (jnp.einsum('ij,ik->jk', psi_real_2, jax.lax.stop_gradient(phi_imag_2)) -
                                    jnp.einsum('ij,ik->jk', psi_imag_2, jax.lax.stop_gradient(phi_real_2))) / n
             
             # Same for right eigenvectors
-            inner_product_right_real_1 = (jnp.einsum('ij,ik->jk', phi_real, jax.lax.stop_gradient(psi_real)) -
+            inner_product_right_real_1 = (jnp.einsum('ij,ik->jk', phi_real, jax.lax.stop_gradient(psi_real)) +
                                     jnp.einsum('ij,ik->jk', phi_imag, jax.lax.stop_gradient(psi_imag))) / n
-            inner_product_right_real_2 = (jnp.einsum('ij,ik->jk', phi_real_2, jax.lax.stop_gradient(psi_real_2)) -
+            inner_product_right_real_2 = (jnp.einsum('ij,ik->jk', phi_real_2, jax.lax.stop_gradient(psi_real_2)) +
                                     jnp.einsum('ij,ik->jk', phi_imag_2, jax.lax.stop_gradient(psi_imag_2))) / n
-            inner_product_right_imag_1 = (jnp.einsum('ij,ik->jk', phi_real, jax.lax.stop_gradient(psi_imag)) +
+            inner_product_right_imag_1 = -(jnp.einsum('ij,ik->jk', phi_real, jax.lax.stop_gradient(psi_imag)) +
                                     jnp.einsum('ij,ik->jk', phi_imag, jax.lax.stop_gradient(psi_real))) / n
-            inner_product_right_imag_2 = (jnp.einsum('ij,ik->jk', phi_real_2, jax.lax.stop_gradient(psi_imag_2)) +
+            inner_product_right_imag_2 = -(jnp.einsum('ij,ik->jk', phi_real_2, jax.lax.stop_gradient(psi_imag_2)) +
                                     jnp.einsum('ij,ik->jk', phi_imag_2, jax.lax.stop_gradient(psi_real_2))) / n
 
             # Biorthogonality error matrices
@@ -1929,79 +1866,43 @@ def learn_eigenvectors(args):
             error_matrix_right_imag_1 = jnp.tril(inner_product_right_imag_1)
             error_matrix_right_imag_2 = jnp.tril(inner_product_right_imag_2)
 
+            # Norm errors
+            norm_errors_real = jnp.diag(error_matrix_left_real_1)
+            norm_errors_imag = jnp.diag(error_matrix_left_imag_1)
+
             # Compute dual loss (for real part constraint)
-            dual_loss_pos_real = (
-                jax.lax.stop_gradient(dual_variables_left_real)
-                * error_matrix_left_real_1
-                + jax.lax.stop_gradient(dual_variables_right_real)
-                * error_matrix_right_real_1
-            ).sum()
-
-            error_integral_left_real = params['error_integral_left_real']
-            error_integral_right_real = params['error_integral_right_real']
-
-            dual_loss_P_left_real = jax.lax.stop_gradient(args.step_size_duals * error_matrix_left_real_1)
-            dual_loss_I_left_real = args.step_size_duals_I * jax.lax.stop_gradient(error_integral_left_real)
-            dual_loss_neg_left_real = -(dual_variables_left_real * (dual_loss_P_left_real + dual_loss_I_left_real)).sum()
-
-            dual_loss_P_right_real = jax.lax.stop_gradient(args.step_size_duals * error_matrix_right_real_1)
-            dual_loss_I_right_real = args.step_size_duals_I * jax.lax.stop_gradient(error_integral_right_real)
-            dual_loss_neg_right_real = -(dual_variables_right_real * (dual_loss_P_right_real + dual_loss_I_right_real)).sum()
+            dual_loss_pos_real = -(jax.lax.stop_gradient(duals_real) * norm_errors_real).sum()
+            dual_loss_neg_real = args.step_size_duals * (jax.lax.stop_gradient(duals_real) * norm_errors_real).sum()
 
             # Compute dual loss (for imaginary part constraint)
-            dual_loss_pos_imag = (
-                jax.lax.stop_gradient(dual_variables_left_imag)
-                * error_matrix_left_imag_1
-                + jax.lax.stop_gradient(dual_variables_right_imag)
-                * error_matrix_right_imag_1
-            ).sum()
-
-            error_integral_left_imag = params['error_integral_left_imag']
-            error_integral_right_imag = params['error_integral_right_imag']
-
-            dual_loss_P_left_imag = jax.lax.stop_gradient(args.step_size_duals * error_matrix_left_imag_1)
-            dual_loss_I_left_imag = args.step_size_duals_I * jax.lax.stop_gradient(error_integral_left_imag)
-            dual_loss_neg_left_imag = -(dual_variables_left_imag * (dual_loss_P_left_imag + dual_loss_I_left_imag)).sum()
-
-            dual_loss_P_right_imag = jax.lax.stop_gradient(args.step_size_duals * error_matrix_right_imag_1)
-            dual_loss_I_right_imag = args.step_size_duals_I * jax.lax.stop_gradient(error_integral_right_imag)
-            dual_loss_neg_right_imag = -(dual_variables_right_imag * (dual_loss_P_right_imag + dual_loss_I_right_imag)).sum()
+            dual_loss_pos_imag = -(jax.lax.stop_gradient(duals_imag) * norm_errors_imag).sum()
+            dual_loss_neg_imag = args.step_size_duals * (jax.lax.stop_gradient(duals_imag) * norm_errors_imag).sum()
 
             dual_loss_pos = dual_loss_pos_real + dual_loss_pos_imag
-            dual_loss_neg_left = dual_loss_neg_left_real + dual_loss_neg_left_imag
-            dual_loss_neg_right = dual_loss_neg_right_real + dual_loss_neg_right_imag
-            dual_loss_neg = dual_loss_neg_left + dual_loss_neg_right
+            dual_loss_neg = dual_loss_neg_real + dual_loss_neg_imag
 
             # Compute barrier loss (for real part constraint)
             quadratic_error_matrix_left_real = 2 * error_matrix_left_real_1 * jax.lax.stop_gradient(error_matrix_left_real_2)
             quadratic_error_left_real = quadratic_error_matrix_left_real.sum()
-            barrier_loss_pos_left_real = jax.lax.stop_gradient(barrier_coefficients_left_real[0, 0]) * quadratic_error_left_real
-            barrier_loss_neg_left_real = -barrier_coefficients_left_real[0, 0] * jax.lax.stop_gradient(jnp.absolute(quadratic_error_left_real))
-
+            barrier_loss_left_real = args.barrier_coef * quadratic_error_left_real
+            
             quadratic_error_matrix_right_real = 2 * error_matrix_right_real_1 * jax.lax.stop_gradient(error_matrix_right_real_2)
             quadratic_error_right_real = quadratic_error_matrix_right_real.sum()
-            barrier_loss_pos_right_real = jax.lax.stop_gradient(barrier_coefficients_right_real[0, 0]) * quadratic_error_right_real
-            barrier_loss_neg_right_real = -barrier_coefficients_right_real[0, 0] * jax.lax.stop_gradient(jnp.absolute(quadratic_error_right_real))
+            barrier_loss_right_real = args.barrier_coef * quadratic_error_right_real
 
             # Compute barrier loss (for imaginary part constraint)
             quadratic_error_matrix_left_imag = 2 * error_matrix_left_imag_1 * jax.lax.stop_gradient(error_matrix_left_imag_2)
             quadratic_error_left_imag = quadratic_error_matrix_left_imag.sum()
-            barrier_loss_pos_left_imag = jax.lax.stop_gradient(barrier_coefficients_left_imag[0, 0]) * quadratic_error_left_imag
-            barrier_loss_neg_left_imag = -barrier_coefficients_left_imag[0, 0] * jax.lax.stop_gradient(jnp.absolute(quadratic_error_left_imag))
-
+            barrier_loss_left_imag = args.barrier_coef * quadratic_error_left_imag
+            
             quadratic_error_matrix_right_imag = 2 * error_matrix_right_imag_1 * jax.lax.stop_gradient(error_matrix_right_imag_2)
             quadratic_error_right_imag = quadratic_error_matrix_right_imag.sum()
-            barrier_loss_pos_right_imag = jax.lax.stop_gradient(barrier_coefficients_right_imag[0, 0]) * quadratic_error_right_imag
-            barrier_loss_neg_right_imag = -barrier_coefficients_right_imag[0, 0] * jax.lax.stop_gradient(jnp.absolute(quadratic_error_right_imag))
+            barrier_loss_right_imag = args.barrier_coef * quadratic_error_right_imag
+            
+            barrier_loss_left = barrier_loss_left_real + barrier_loss_left_imag
+            barrier_loss_right = barrier_loss_right_real + barrier_loss_right_imag
 
-            barrier_loss_pos_left = barrier_loss_pos_left_real + barrier_loss_pos_left_imag
-            barrier_loss_neg_left = barrier_loss_neg_left_real + barrier_loss_neg_left_imag
-
-            barrier_loss_pos_right = barrier_loss_pos_right_real + barrier_loss_pos_right_imag
-            barrier_loss_neg_right = barrier_loss_neg_right_real + barrier_loss_neg_right_imag
-
-            barrier_loss_pos = barrier_loss_pos_left + barrier_loss_pos_right
-            barrier_loss_neg = barrier_loss_neg_left + barrier_loss_neg_right
+            barrier_loss = barrier_loss_left + barrier_loss_right
 
             # Compute graph drawing loss for complex eigenvectors
             # E[(ψ_real(s)*((1+δ)φ_real(s) - φ_real(s')) - ψ_imag(s)*((1+δ)φ_imag(s) - φ_imag(s')))^2]
@@ -2011,8 +1912,8 @@ def learn_eigenvectors(args):
             graph_loss = ((graph_products_real - graph_products_imag)**2).sum()
 
             # Total loss
-            positive_loss = graph_loss + dual_loss_pos + barrier_loss_pos
-            negative_loss = dual_loss_neg + barrier_loss_neg
+            positive_loss = graph_loss + dual_loss_pos + barrier_loss
+            negative_loss = dual_loss_neg
             allo = positive_loss + negative_loss
 
             # Auxiliary metrics
@@ -2020,25 +1921,14 @@ def learn_eigenvectors(args):
                 'graph_loss': graph_loss,
                 'dual_loss': dual_loss_pos,
                 'dual_loss_neg': dual_loss_neg,
-                'barrier_loss': barrier_loss_pos,
-                'barrier_loss_neg': barrier_loss_neg,
                 'approx_eigenvalue_sum_real': eigenvalue_sum_real,
                 'approx_eigenvalue_sum_imag': eigenvalue_sum_imag,
-                'barrier_coef_left_real': barrier_coefficients_left_real[0, 0],
-                'barrier_coef_left_imag': barrier_coefficients_left_imag[0, 0],
-                'barrier_coef_right_real': barrier_coefficients_right_real[0, 0],
-                'barrier_coef_right_imag': barrier_coefficients_right_imag[0, 0],
             }
 
             # Add dual variables and errors to aux
             for i in range(min(11, args.num_eigenvectors)):
-                aux[f'dual_left_real_{i}'] = dual_variables_left_real[i, i]
-                aux[f'dual_left_imag_{i}'] = dual_variables_left_imag[i, i]
-                aux[f'dual_right_real_{i}'] = dual_variables_right_real[i, i]
-                aux[f'dual_right_imag_{i}'] = dual_variables_right_imag[i, i]
-                # Combined eigenvalue estimate (sum of left and right duals)
-                aux[f'dual_real_{i}'] = -0.5 * (dual_variables_left_real[i, i] + dual_variables_right_real[i, i])
-                aux[f'dual_imag_{i}'] = -0.5 * (dual_variables_left_imag[i, i] + dual_variables_right_imag[i, i])
+                aux[f'dual_real_{i}'] = duals_real[i, i]
+                aux[f'dual_imag_{i}'] = duals_imag[i, i]
                 # Add diagonal errors for each eigenvector
                 aux[f'error_left_real_{i}'] = error_matrix_left_real_1[i, i]
                 aux[f'error_left_imag_{i}'] = error_matrix_left_imag_1[i, i]
@@ -2046,10 +1936,8 @@ def learn_eigenvectors(args):
                 aux[f'error_right_imag_{i}'] = error_matrix_right_imag_1[i, i]
 
                 for j in range(0, min(2, i)):
-                    aux[f'dual_left_real_{i}_{j}'] = dual_variables_left_real[i, j]
-                    aux[f'dual_left_imag_{i}_{j}'] = dual_variables_left_imag[i, j]
-                    aux[f'dual_right_real_{i}_{j}'] = dual_variables_right_real[i, j]
-                    aux[f'dual_right_imag_{i}_{j}'] = dual_variables_right_imag[i, j]
+                    aux[f'dual_real_{i}_{j}'] = duals_real[i, j]
+                    aux[f'dual_imag_{i}_{j}'] = duals_imag[i, j]
                     # Add off-diagonal errors
                     aux[f'error_left_real_{i}_{j}'] = error_matrix_left_real_1[i, j]
                     aux[f'error_left_imag_{i}_{j}'] = error_matrix_left_imag_1[i, j]
@@ -2080,28 +1968,16 @@ def learn_eigenvectors(args):
             aux['distance_to_origin'] = jnp.linalg.norm(psi_real) + jnp.linalg.norm(psi_imag) + \
                                          jnp.linalg.norm(phi_real) + jnp.linalg.norm(phi_imag)
 
-            return allo, (error_matrix_left_real_1, error_matrix_left_imag_1, error_matrix_right_real_1, error_matrix_right_imag_1, aux)
+            return allo, aux
 
         # Compute loss and gradients
-        (allo, (error_matrix_left_real, error_matrix_left_imag, error_matrix_right_real, error_matrix_right_imag, aux)), grads = jax.value_and_grad(
+        (allo, aux), grads = jax.value_and_grad(
             encoder_loss, has_aux=True)(encoder_state.params)
 
         # Apply optimizer updates
         updates, new_opt_state = encoder_state.tx.update(
             grads, encoder_state.opt_state, encoder_state.params)
         new_params = optax.apply_updates(encoder_state.params, updates)
-
-        # Perform custom integral update with the error matrix
-        new_params['error_integral_left_real'] = args.integral_decay * new_params['error_integral_left_real'] + error_matrix_left_real
-        new_params['error_integral_left_imag'] = args.integral_decay * new_params['error_integral_left_imag'] + error_matrix_left_imag
-        new_params['error_integral_right_real'] = args.integral_decay * new_params['error_integral_right_real'] + error_matrix_right_real
-        new_params['error_integral_right_imag'] = args.integral_decay * new_params['error_integral_right_imag'] + error_matrix_right_imag
-
-        # Clip the barrier coefficients
-        new_params['barrier_coefs_left_real'] = jnp.clip(new_params['barrier_coefs_left_real'], 0, args.max_barrier_coefs)
-        new_params['barrier_coefs_left_imag'] = jnp.clip(new_params['barrier_coefs_left_imag'], 0, args.max_barrier_coefs)
-        new_params['barrier_coefs_right_real'] = jnp.clip(new_params['barrier_coefs_right_real'], 0, args.max_barrier_coefs)
-        new_params['barrier_coefs_right_imag'] = jnp.clip(new_params['barrier_coefs_right_imag'], 0, args.max_barrier_coefs)
 
         # Create new state
         new_encoder_state = encoder_state.replace(
