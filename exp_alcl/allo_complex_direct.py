@@ -279,8 +279,9 @@ def main(args: Args):
 
     # Get canonical (free) states from base environment
     canonical_states = get_canonical_free_states(env)
-    num_states = len(canonical_states)
-    print(f"Number of free states: {num_states} (out of {env.width * env.height} total)")
+    num_canonical = len(canonical_states)
+    num_states = env.width * env.height  # Full state space including walls
+    print(f"Number of free states: {num_canonical} (out of {num_states} total)")
 
     # Add doors if requested
     data_env = env
@@ -300,17 +301,21 @@ def main(args: Args):
 
     # Collect transition data
     print("\nCollecting transition data...")
-    transition_counts, episodes, metrics = collect_transition_counts_and_episodes(
+    transition_counts_full, episodes, metrics = collect_transition_counts_and_episodes(
         env=data_env,
         num_envs=args.num_envs,
         num_steps=args.num_steps,
-        num_states=num_states,
+        num_states=num_states,  # Pass full state space size
         seed=args.seed,
     )
 
     print(f"Collected {metrics['total_transitions']} transitions.")
+
+    # Extract canonical state subspace from full transition counts
+    transition_counts = transition_counts_full[jnp.ix_(canonical_states, jnp.arange(4), canonical_states)]
+
     print(f"\nTransition data:")
-    print(f"  Number of canonical states: {num_states}")
+    print(f"  Number of canonical states: {num_canonical}")
     print(f"  Transition counts shape: {transition_counts.shape}")
 
     # Create full-to-canonical state mapping
@@ -426,16 +431,16 @@ def main(args: Args):
         )
 
     # Initialize eigenvector matrices directly
-    # Shape: (num_states, num_eigenvectors)
+    # Shape: (num_canonical, num_eigenvectors)
     print("\nInitializing eigenvector matrices...")
 
     # Initialize with small random values
     init_scale = 0.01
     initial_params = {
-        'left_real': init_scale * jax.random.normal(encoder_key, (num_states, args.num_eigenvectors)),
-        'left_imag': init_scale * jax.random.normal(jax.random.split(encoder_key)[0], (num_states, args.num_eigenvectors)),
-        'right_real': init_scale * jax.random.normal(jax.random.split(encoder_key)[1], (num_states, args.num_eigenvectors)),
-        'right_imag': init_scale * jax.random.normal(jax.random.split(jax.random.split(encoder_key)[1])[0], (num_states, args.num_eigenvectors)),
+        'left_real': init_scale * jax.random.normal(encoder_key, (num_canonical, args.num_eigenvectors)),
+        'left_imag': init_scale * jax.random.normal(jax.random.split(encoder_key)[0], (num_canonical, args.num_eigenvectors)),
+        'right_real': init_scale * jax.random.normal(jax.random.split(encoder_key)[1], (num_canonical, args.num_eigenvectors)),
+        'right_imag': init_scale * jax.random.normal(jax.random.split(jax.random.split(encoder_key)[1])[0], (num_canonical, args.num_eigenvectors)),
         'duals_real': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
         'duals_imag': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
     }
@@ -460,7 +465,7 @@ def main(args: Args):
         tx=sgd_tx,
     )
 
-    print(f"  Initialized matrices with shape: ({num_states}, {args.num_eigenvectors})")
+    print(f"  Initialized matrices with shape: ({num_canonical}, {args.num_eigenvectors})")
     print(f"  Using SGD optimizer with learning rate: {args.learning_rate}")
 
     # Define the update function
