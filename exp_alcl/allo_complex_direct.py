@@ -491,6 +491,94 @@ def main(args: Args):
     print(f"  Initialized matrices with shape: ({num_canonical}, {args.num_eigenvectors})")
     print(f"  Using SGD optimizer with learning rate: {args.learning_rate}")
 
+    # Define JIT-compiled cosine similarity computation
+    @jax.jit
+    def compute_cosine_similarities(params, gt_left_real, gt_left_imag, gt_right_real, gt_right_imag, sampling_probs):
+        """Compute cosine similarities between learned and ground truth eigenvectors."""
+        learned_left_real = params['left_real']
+        learned_left_imag = params['left_imag']
+        learned_right_real = params['right_real']
+        learned_right_imag = params['right_imag']
+
+        num_eigenvectors = learned_left_real.shape[1]
+
+        # Normalize learned eigenvectors similar to original implementation
+        # For right eigenvectors: normalize by largest magnitude component
+        right_sims = []
+        for i in range(num_eigenvectors):
+            u_real = learned_right_real[:, i]
+            u_imag = learned_right_imag[:, i]
+            v_real = gt_right_real[:, i]
+            v_imag = gt_right_imag[:, i]
+
+            # Find component with largest magnitude for learned
+            magnitudes = jnp.sqrt(u_real**2 + u_imag**2)
+            max_idx = jnp.argmax(magnitudes)
+            scale_real = u_real[max_idx]
+            scale_imag = u_imag[max_idx]
+            scale_norm = jnp.sqrt(scale_real**2 + scale_imag**2)
+
+            # Normalize: divide by (scale_real + i*scale_imag)
+            # Division: (a + ib) / (c + id) = [(ac+bd) + i(bc-ad)] / (c²+d²)
+            norm_real = (u_real * scale_real + u_imag * scale_imag) / (scale_norm**2 + 1e-10)
+            norm_imag = (u_imag * scale_real - u_real * scale_imag) / (scale_norm**2 + 1e-10)
+
+            # Complex inner product: <conj(u), v>
+            inner_real = jnp.dot(norm_real, v_real) + jnp.dot(norm_imag, v_imag)
+            inner_imag = jnp.dot(norm_real, v_imag) - jnp.dot(norm_imag, v_real)
+
+            # Norms
+            u_norm = jnp.sqrt(jnp.dot(norm_real, norm_real) + jnp.dot(norm_imag, norm_imag))
+            v_norm = jnp.sqrt(jnp.dot(v_real, v_real) + jnp.dot(v_imag, v_imag))
+
+            # Cosine similarity (absolute value of real part)
+            cos_real = inner_real / (u_norm * v_norm + 1e-10)
+            right_sims.append(jnp.abs(cos_real))
+
+        # For left eigenvectors: weight by sampling distribution and take conjugate
+        left_sims = []
+        for i in range(num_eigenvectors):
+            u_real = learned_left_real[:, i]
+            u_imag = learned_left_imag[:, i]
+            v_real = gt_left_real[:, i]
+            v_imag = gt_left_imag[:, i]
+
+            # Weight by sqrt of sampling distribution
+            sqrt_d = jnp.sqrt(sampling_probs)
+            u_real_weighted = u_real * sqrt_d
+            u_imag_weighted = u_imag * sqrt_d
+            v_real_weighted = v_real * sqrt_d
+            v_imag_weighted = v_imag * sqrt_d
+
+            # Find component with largest magnitude
+            magnitudes = jnp.sqrt(u_real_weighted**2 + u_imag_weighted**2)
+            max_idx = jnp.argmax(magnitudes)
+            scale_real = u_real_weighted[max_idx]
+            scale_imag = u_imag_weighted[max_idx]
+            scale_norm = jnp.sqrt(scale_real**2 + scale_imag**2)
+
+            # Normalize
+            norm_real = (u_real_weighted * scale_real + u_imag_weighted * scale_imag) / (scale_norm**2 + 1e-10)
+            norm_imag = (u_imag_weighted * scale_real - u_real_weighted * scale_imag) / (scale_norm**2 + 1e-10)
+
+            # Take complex conjugate (flip imaginary sign)
+            norm_real_conj = norm_real
+            norm_imag_conj = -norm_imag
+
+            # Complex inner product
+            inner_real = jnp.dot(norm_real_conj, v_real_weighted) + jnp.dot(norm_imag_conj, v_imag_weighted)
+            inner_imag = jnp.dot(norm_real_conj, v_imag_weighted) - jnp.dot(norm_imag_conj, v_real_weighted)
+
+            # Norms
+            u_norm = jnp.sqrt(jnp.dot(norm_real, norm_real) + jnp.dot(norm_imag, norm_imag))
+            v_norm = jnp.sqrt(jnp.dot(v_real_weighted, v_real_weighted) + jnp.dot(v_imag_weighted, v_imag_weighted))
+
+            # Cosine similarity
+            cos_real = inner_real / (u_norm * v_norm + 1e-10)
+            left_sims.append(jnp.abs(cos_real))
+
+        return jnp.mean(jnp.array(left_sims)), jnp.mean(jnp.array(right_sims))
+
     # Define the update function
     @jax.jit
     def update_step(state, state_indices, next_state_indices, state_indices_2):
@@ -735,6 +823,14 @@ def main(args: Args):
 
         # Log metrics
         if step % args.log_freq == 0:
+            # Compute cosine similarities
+            left_cosine_sim, right_cosine_sim = compute_cosine_similarities(
+                train_state.params,
+                gt_left_real, gt_left_imag,
+                gt_right_real, gt_right_imag,
+                sampling_probs
+            )
+
             metrics_dict = {
                 'gradient_step': step,
                 'allo': float(aux['allo']),
@@ -745,6 +841,8 @@ def main(args: Args):
                 'dual_loss': float(aux['dual_loss']),
                 'l1_constraint_error': float(aux['l1_constraint_error']),
                 'grad_norm': float(aux['grad_norm']),
+                'left_cosine_sim_avg': float(left_cosine_sim),
+                'right_cosine_sim_avg': float(right_cosine_sim),
             }
             metrics_history.append(metrics_dict)
 
@@ -753,7 +851,8 @@ def main(args: Args):
             tqdm.write(
                 f"Step {step}: allo={aux['allo']:.4f}, graph={aux['graph_loss']:.4f}, "
                 f"barrier_biortho={aux['barrier_biortho']:.4f}, barrier_norm={aux['barrier_norm']:.4f}, "
-                f"l1_error={aux['l1_constraint_error']:.4f}"
+                f"l1_error={aux['l1_constraint_error']:.4f}, "
+                f"left_sim={left_cosine_sim:.4f}, right_sim={right_cosine_sim:.4f}"
             )
 
         # Save checkpoint
