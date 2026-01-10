@@ -1822,6 +1822,8 @@ def learn_eigenvectors(args):
             phi_real_2 = features_2['right_real']
             phi_imag_2 = features_2['right_imag']
 
+            next_psi_real = next_features['left_real']
+            next_psi_imag = next_features['left_imag']
             next_phi_real = next_features['right_real']
             next_phi_imag = next_features['right_imag']
 
@@ -1885,25 +1887,12 @@ def learn_eigenvectors(args):
 
             # Compute right eigenvector norms: <phi, phi>
             # For complex vectors: <phi, phi> = phi_real^T phi_real + phi_imag^T phi_imag
-            phi_norms_real_1 = (jnp.einsum('ij,ij->j', phi_real, phi_real) +
-                                jnp.einsum('ij,ij->j', phi_imag, phi_imag)) / n
-            phi_norms_real_2 = (jnp.einsum('ij,ij->j', phi_real_2, phi_real_2) +
-                                jnp.einsum('ij,ij->j', phi_imag_2, phi_imag_2)) / n
+            phi_norms_real_1 = jnp.log((phi_real**2 + phi_imag**2).mean(0)+1e-6).clip(max=10)
+            phi_norms_real_2 = jnp.log((phi_real_2**2 + phi_imag_2**2).mean(0)+1e-6).clip(max=10)
 
-            # Norm constraint errors: <phi, phi> - 1 = 0
-            norm_errors_right_real_1 = phi_norms_real_1 - 1.0
-            norm_errors_right_real_2 = phi_norms_real_2 - 1.0
-
-            # For the imaginary part of the norm, it should be zero
-            # Im(<phi, phi>) = phi_real^T phi_imag - phi_imag^T phi_real = 0
-            # (This is automatically zero for Hermitian inner product, but we track it separately)
-            phi_norms_imag_1 = (jnp.einsum('ij,ij->j', phi_real, phi_imag) -
-                                jnp.einsum('ij,ij->j', phi_imag, phi_real)) / n
-            phi_norms_imag_2 = (jnp.einsum('ij,ij->j', phi_real_2, phi_imag_2) -
-                                jnp.einsum('ij,ij->j', phi_imag_2, phi_real_2)) / n
-
-            norm_errors_right_imag_1 = phi_norms_imag_1
-            norm_errors_right_imag_2 = phi_norms_imag_2
+            # Norm constraint errors: log(<phi, phi>) = log(1) = 0
+            norm_errors_right_1 = phi_norms_real_1
+            norm_errors_right_2 = phi_norms_real_2
 
             # Total dual loss (only for left eigenvector biorthogonality)
             dual_loss_pos = dual_loss_pos_real + dual_loss_pos_imag
@@ -1931,22 +1920,35 @@ def learn_eigenvectors(args):
             barrier_loss_right = barrier_loss_right_real + barrier_loss_right_imag
 
             # Compute barrier loss for right eigenvector norm constraints
-            # Real part: 2 * (||phi||^2 - 1)_1 * (||phi||^2 - 1)_2
-            quadratic_error_norm_right_real = 2 * norm_errors_right_real_1 * jax.lax.stop_gradient(norm_errors_right_real_2)
-            barrier_loss_norm_right_real = args.barrier_coef * quadratic_error_norm_right_real.sum()
+            quadratic_error_norm_right = 2 * norm_errors_right_1 * jax.lax.stop_gradient(norm_errors_right_2)
+            barrier_loss_norm_right = args.barrier_coef * quadratic_error_norm_right.sum()
 
-            # Imaginary part: 2 * Im(<phi, phi>)_1 * Im(<phi, phi>)_2
-            quadratic_error_norm_right_imag = 2 * norm_errors_right_imag_1 * jax.lax.stop_gradient(norm_errors_right_imag_2)
-            barrier_loss_norm_right_imag = args.barrier_coef * quadratic_error_norm_right_imag.sum()
-
-            barrier_loss = barrier_loss_left + barrier_loss_right + barrier_loss_norm_right_real + barrier_loss_norm_right_imag
+            
+            barrier_loss = barrier_loss_left + barrier_loss_right + barrier_loss_norm_right
 
             # Compute graph drawing loss for complex eigenvectors
             # E[(ψ_real(s)*((1+δ)φ_real(s) - φ_real(s')) + ψ_imag(s)*((1+δ)φ_imag(s) - φ_imag(s')))^2]
             # The δ parameter shifts eigenvalues: L = (1+δ)I - M
-            graph_products_real = (psi_real * ((1+args.delta)*phi_real - next_phi_real)).mean(0, keepdims=True)
-            graph_products_imag = (psi_imag * ((1+args.delta)*phi_imag - next_phi_imag)).mean(0, keepdims=True)
-            graph_loss = ((graph_products_real + graph_products_imag)**2).sum()
+            graph_products_real = (
+                jax.lax.stop_gradient(psi_real) 
+                * ((1+args.delta)*phi_real - next_phi_real)
+            ).mean(0, keepdims=True)
+            graph_products_imag = (
+                jax.lax.stop_gradient(psi_imag) 
+                * ((1+args.delta)*phi_imag - next_phi_imag)
+            ).mean(0, keepdims=True)
+            graph_products_real_reverse = (
+                jax.lax.stop_gradient(next_phi_real) 
+                * ((1+args.delta)*next_psi_real - psi_real)
+                ).mean(0, keepdims=True)
+            graph_products_imag_reverse = (
+                jax.lax.stop_gradient(next_phi_imag) 
+                * ((1+args.delta)*next_psi_imag - psi_imag)
+            ).mean(0, keepdims=True)
+
+            graph_loss_direct = ((graph_products_real + graph_products_imag)**2).sum()
+            graph_loss_reverse = ((graph_products_real_reverse + graph_products_imag_reverse)**2).sum()
+            graph_loss = graph_loss_direct + graph_loss_reverse
 
             # Total loss
             positive_loss = graph_loss + dual_loss_pos + barrier_loss
@@ -1976,8 +1978,7 @@ def learn_eigenvectors(args):
                 aux[f'error_right_imag_{i}'] = error_matrix_right_imag_1[i, i]
 
                 # Add norm constraint errors for right eigenvectors
-                aux[f'error_norm_right_real_{i}'] = norm_errors_right_real_1[i]
-                aux[f'error_norm_right_imag_{i}'] = norm_errors_right_imag_1[i]
+                aux[f'error_norm_right_{i}'] = norm_errors_right_1[i]
 
                 # Note: Off-diagonal duals no longer exist in simplified algorithm
                 # Only track off-diagonal errors
