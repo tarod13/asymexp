@@ -306,7 +306,6 @@ def main(args: Args):
         num_steps=args.num_steps,
         num_states=num_states,
         seed=args.seed,
-        use_tqdm=True,
     )
 
     print(f"\nTransition data:")
