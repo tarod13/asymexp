@@ -420,7 +420,7 @@ class Args:
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
 
     # Augmented Lagrangian parameters
-    duals_initial_val: float = -2.0
+    duals_initial_val: float = 2.0
     barrier_coef: float = 2.0
     step_size_duals: float = 1.0
     
@@ -1844,9 +1844,9 @@ def learn_eigenvectors(args):
                                     jnp.einsum('ij,ik->jk', phi_imag, jax.lax.stop_gradient(psi_imag))) / n
             inner_product_right_real_2 = (jnp.einsum('ij,ik->jk', phi_real_2, jax.lax.stop_gradient(psi_real_2)) +
                                     jnp.einsum('ij,ik->jk', phi_imag_2, jax.lax.stop_gradient(psi_imag_2))) / n
-            inner_product_right_imag_1 = -(jnp.einsum('ij,ik->jk', phi_real, jax.lax.stop_gradient(psi_imag)) +
+            inner_product_right_imag_1 = (-jnp.einsum('ij,ik->jk', phi_real, jax.lax.stop_gradient(psi_imag)) +
                                     jnp.einsum('ij,ik->jk', phi_imag, jax.lax.stop_gradient(psi_real))) / n
-            inner_product_right_imag_2 = -(jnp.einsum('ij,ik->jk', phi_real_2, jax.lax.stop_gradient(psi_imag_2)) +
+            inner_product_right_imag_2 = (-jnp.einsum('ij,ik->jk', phi_real_2, jax.lax.stop_gradient(psi_imag_2)) +
                                     jnp.einsum('ij,ik->jk', phi_imag_2, jax.lax.stop_gradient(psi_real_2))) / n
 
             # Biorthogonality error matrices
@@ -1868,11 +1868,11 @@ def learn_eigenvectors(args):
 
             # Compute dual loss (for real part constraint)
             dual_loss_pos_real = -(jax.lax.stop_gradient(duals_real) * norm_errors_real).sum()
-            dual_loss_neg_real = args.step_size_duals * (jax.lax.stop_gradient(duals_real) * norm_errors_real).sum()
+            dual_loss_neg_real = args.step_size_duals * (duals_real * jax.lax.stop_gradient(norm_errors_real)).sum()
 
             # Compute dual loss (for imaginary part constraint)
             dual_loss_pos_imag = -(jax.lax.stop_gradient(duals_imag) * norm_errors_imag).sum()
-            dual_loss_neg_imag = args.step_size_duals * (jax.lax.stop_gradient(duals_imag) * norm_errors_imag).sum()
+            dual_loss_neg_imag = args.step_size_duals * (duals_imag * jax.lax.stop_gradient(norm_errors_imag)).sum()
 
             dual_loss_pos = dual_loss_pos_real + dual_loss_pos_imag
             dual_loss_neg = dual_loss_neg_real + dual_loss_neg_imag
@@ -1901,11 +1901,11 @@ def learn_eigenvectors(args):
             barrier_loss = barrier_loss_left + barrier_loss_right
 
             # Compute graph drawing loss for complex eigenvectors
-            # E[(ψ_real(s)*((1+δ)φ_real(s) - φ_real(s')) - ψ_imag(s)*((1+δ)φ_imag(s) - φ_imag(s')))^2]
+            # E[(ψ_real(s)*((1+δ)φ_real(s) - φ_real(s')) + ψ_imag(s)*((1+δ)φ_imag(s) - φ_imag(s')))^2]
             # The δ parameter shifts eigenvalues: L = (1+δ)I - M
             graph_products_real = (psi_real * ((1+args.delta)*phi_real - next_phi_real)).mean(0, keepdims=True)
             graph_products_imag = (psi_imag * ((1+args.delta)*phi_imag - next_phi_imag)).mean(0, keepdims=True)
-            graph_loss = ((graph_products_real - graph_products_imag)**2).sum()
+            graph_loss = ((graph_products_real + graph_products_imag)**2).sum()
 
             # Total loss
             positive_loss = graph_loss + dual_loss_pos + barrier_loss
