@@ -605,7 +605,10 @@ def main(args: Args):
             quadratic_error_norm_right = 2 * norm_errors_right_1 * jax.lax.stop_gradient(norm_errors_right_2)
             barrier_loss_norm_right = args.barrier_coef * quadratic_error_norm_right.sum()
 
-            barrier_loss = barrier_loss_left + barrier_loss_right + barrier_loss_norm_right
+            # Separate barrier terms for logging
+            barrier_biortho = barrier_loss_left + barrier_loss_right
+            barrier_norm = barrier_loss_norm_right
+            barrier_loss = barrier_biortho + barrier_norm
 
             # Compute graph drawing loss for complex eigenvectors
             graph_products_real = (
@@ -630,16 +633,19 @@ def main(args: Args):
             graph_loss = graph_loss_direct + graph_loss_reverse
 
             # Total loss
-            positive_loss = graph_loss + dual_loss_pos + barrier_loss
+            allo = graph_loss + dual_loss_pos + barrier_loss  # Augmented Lagrangian objective
             negative_loss = dual_loss_neg
-            total_loss = positive_loss + negative_loss
+            total_loss = allo + negative_loss
 
             # Auxiliary metrics
             aux = {
+                'allo': allo,
                 'graph_loss': graph_loss,
                 'dual_loss': dual_loss_pos,
                 'dual_loss_neg': dual_loss_neg,
                 'barrier_loss': barrier_loss,
+                'barrier_biortho': barrier_biortho,
+                'barrier_norm': barrier_norm,
                 'approx_eigenvalue_sum_real': eigenvalue_sum_real,
                 'approx_eigenvalue_sum_imag': eigenvalue_sum_imag,
             }
@@ -666,7 +672,7 @@ def main(args: Args):
             total_error_right_real = jnp.abs(error_matrix_right_real_1).sum()
             total_error_right_imag = jnp.abs(error_matrix_right_imag_1).sum()
 
-            aux['total_error'] = total_error_left_real + total_error_left_imag + total_error_right_real + total_error_right_imag
+            aux['l1_constraint_error'] = total_error_left_real + total_error_left_imag + total_error_right_real + total_error_right_imag
             aux['total_norm_error'] = jnp.linalg.norm(error_matrix_left_real_1, 'fro') + jnp.linalg.norm(error_matrix_left_imag_1, 'fro') + \
                                        jnp.linalg.norm(error_matrix_right_real_1, 'fro') + jnp.linalg.norm(error_matrix_right_imag_1, 'fro')
 
@@ -731,11 +737,13 @@ def main(args: Args):
         if step % args.log_freq == 0:
             metrics_dict = {
                 'gradient_step': step,
-                'loss': float(loss),
+                'allo': float(aux['allo']),
                 'graph_loss': float(aux['graph_loss']),
                 'barrier_loss': float(aux['barrier_loss']),
+                'barrier_biortho': float(aux['barrier_biortho']),
+                'barrier_norm': float(aux['barrier_norm']),
                 'dual_loss': float(aux['dual_loss']),
-                'total_error': float(aux['total_error']),
+                'l1_constraint_error': float(aux['l1_constraint_error']),
                 'grad_norm': float(aux['grad_norm']),
             }
             metrics_history.append(metrics_dict)
@@ -743,8 +751,9 @@ def main(args: Args):
         # Print metrics
         if step % args.log_freq == 0:
             tqdm.write(
-                f"Step {step}: loss={loss:.4f}, graph={aux['graph_loss']:.4f}, "
-                f"barrier={aux['barrier_loss']:.4f}, error={aux['total_error']:.4f}"
+                f"Step {step}: allo={aux['allo']:.4f}, graph={aux['graph_loss']:.4f}, "
+                f"barrier_biortho={aux['barrier_biortho']:.4f}, barrier_norm={aux['barrier_norm']:.4f}, "
+                f"l1_error={aux['l1_constraint_error']:.4f}"
             )
 
         # Save checkpoint
