@@ -1784,8 +1784,6 @@ def learn_eigenvectors(args):
             'encoder': encoder.init(encoder_key, dummy_input),
             'duals_real': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
             'duals_imag': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
-            'duals_right_real': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
-            'duals_right_imag': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
         }
 
         encoder_state = TrainState.create(
@@ -1834,8 +1832,6 @@ def learn_eigenvectors(args):
             # Get duals
             duals_real = params['duals_real']  # For left eigenvector biorthogonality
             duals_imag = params['duals_imag']  # For left eigenvector biorthogonality
-            duals_right_real = params['duals_right_real']  # For right eigenvector norm
-            duals_right_imag = params['duals_right_imag']  # For right eigenvector norm
 
             # Eigenvalue sum is the sum of left and right duals (averaged)
             eigenvalue_sum_real = duals_real.sum()
@@ -1909,16 +1905,9 @@ def learn_eigenvectors(args):
             norm_errors_right_imag_1 = phi_norms_imag_1
             norm_errors_right_imag_2 = phi_norms_imag_2
 
-            # Compute dual loss for right eigenvectors (for norm constraint)
-            dual_loss_pos_right_real = -(jax.lax.stop_gradient(duals_right_real) * norm_errors_right_real_1).sum()
-            dual_loss_neg_right_real = args.step_size_duals * (duals_right_real * jax.lax.stop_gradient(norm_errors_right_real_1)).sum()
-
-            dual_loss_pos_right_imag = -(jax.lax.stop_gradient(duals_right_imag) * norm_errors_right_imag_1).sum()
-            dual_loss_neg_right_imag = args.step_size_duals * (duals_right_imag * jax.lax.stop_gradient(norm_errors_right_imag_1)).sum()
-
-            # Total dual loss
-            dual_loss_pos = dual_loss_pos_real + dual_loss_pos_imag + dual_loss_pos_right_real + dual_loss_pos_right_imag
-            dual_loss_neg = dual_loss_neg_real + dual_loss_neg_imag + dual_loss_neg_right_real + dual_loss_neg_right_imag
+            # Total dual loss (only for left eigenvector biorthogonality)
+            dual_loss_pos = dual_loss_pos_real + dual_loss_pos_imag
+            dual_loss_neg = dual_loss_neg_real + dual_loss_neg_imag
 
             # Compute barrier loss (for real part constraint)
             quadratic_error_matrix_left_real = 2 * error_matrix_left_real_1 * jax.lax.stop_gradient(error_matrix_left_real_2)
@@ -1979,9 +1968,6 @@ def learn_eigenvectors(args):
                 # Left eigenvector duals (for biorthogonality)
                 aux[f'dual_real_{i}'] = duals_real[i]
                 aux[f'dual_imag_{i}'] = duals_imag[i]
-                # Right eigenvector duals (for norm constraint)
-                aux[f'dual_right_real_{i}'] = duals_right_real[i]
-                aux[f'dual_right_imag_{i}'] = duals_right_imag[i]
 
                 # Add diagonal errors for each eigenvector (biorthogonality)
                 aux[f'error_left_real_{i}'] = error_matrix_left_real_1[i, i]
