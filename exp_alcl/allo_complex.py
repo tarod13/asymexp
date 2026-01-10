@@ -420,7 +420,7 @@ class Args:
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
 
     # Augmented Lagrangian parameters
-    duals_initial_val: float = -2.0
+    duals_initial_val: float = 2.0
     barrier_coef: float = 2.0
     step_size_duals: float = 1.0
     
@@ -531,11 +531,10 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
     axes[1, 0].grid(True, alpha=0.3)
 
     # Plot 5: Barrier loss
-    axes[1, 1].plot(steps, [m['barrier_loss'] for m in metrics_history], label='Positive')
+    axes[1, 1].plot(steps, [m['barrier_loss'] for m in metrics_history])
     axes[1, 1].set_xlabel('Gradient Step')
     axes[1, 1].set_ylabel('Barrier Loss')
-    axes[1, 1].set_title('Barrier Losses')
-    axes[1, 1].legend()
+    axes[1, 1].set_title('Barrier Loss (Fixed Coefficient)')
     axes[1, 1].grid(True, alpha=0.3)
 
     # Plot 6: Total errors
@@ -584,6 +583,17 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
     axes[2, 2].set_ylabel('Error')
     axes[2, 2].legend(fontsize=8)
     axes[2, 2].grid(True, alpha=0.3)
+
+    # Plot 10: Right imag diagonal errors (moved to row 4, col 0)
+    axes[3, 0].set_title('Right Imag Diagonal Errors')
+    for i in range(min(5, 11)):
+        key = f'error_right_imag_{i}'
+        if key in metrics_history[0]:
+            axes[3, 0].plot(steps, [m[key] for m in metrics_history], label=f'ev{i}', alpha=0.7)
+    axes[3, 0].set_xlabel('Gradient Step')
+    axes[3, 0].set_ylabel('Error')
+    axes[3, 0].legend(fontsize=8)
+    axes[3, 0].grid(True, alpha=0.3)
 
     # Plot 11: Distance to constraint manifold
     if 'distance_to_constraint_manifold' in metrics_history[0]:
@@ -1187,7 +1197,10 @@ def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_
 
 def plot_all_duals_evolution(metrics_history: Dict, save_path: str, num_eigenvectors: int = 6):
     """
-    Plot comprehensive dual variable evolution showing left, right, and combined duals.
+    Plot dual variable evolution for diagonal norm constraints.
+
+    After simplification, we only track diagonal dual variables (norm constraints)
+    for real and imaginary parts.
 
     Args:
         metrics_history: List of metric dictionaries
@@ -1198,7 +1211,7 @@ def plot_all_duals_evolution(metrics_history: Dict, save_path: str, num_eigenvec
 
     # Create a large figure with subplots for each eigenvector
     fig, axes = plt.subplots(num_eigenvectors, 2, figsize=(16, 4*num_eigenvectors))
-    fig.suptitle('Dual Variables Evolution (All Components)', fontsize=16)
+    fig.suptitle('Dual Variables Evolution (Diagonal Norms)', fontsize=16)
 
     if num_eigenvectors == 1:
         axes = axes.reshape(1, -1)
@@ -1207,45 +1220,28 @@ def plot_all_duals_evolution(metrics_history: Dict, save_path: str, num_eigenvec
         # Left column: Real parts
         ax_real = axes[i, 0]
 
-        # Plot left, right, and combined real duals
-        if f'dual_left_real_{i}' in metrics_history[0]:
-            dual_left_real = [m[f'dual_left_real_{i}'] for m in metrics_history]
-            ax_real.plot(steps, dual_left_real, label='Left', alpha=0.7, linewidth=1.5)
-
-        if f'dual_right_real_{i}' in metrics_history[0]:
-            dual_right_real = [m[f'dual_right_real_{i}'] for m in metrics_history]
-            ax_real.plot(steps, dual_right_real, label='Right', alpha=0.7, linewidth=1.5)
-
         if f'dual_real_{i}' in metrics_history[0]:
-            dual_combined_real = [m[f'dual_real_{i}'] for m in metrics_history]
-            ax_real.plot(steps, dual_combined_real, label='Combined (Eigenvalue)',
-                        linewidth=2.5, linestyle='--', color='black')
+            dual_real = [m[f'dual_real_{i}'] for m in metrics_history]
+            ax_real.plot(steps, dual_real, label='Dual (Real)',
+                        linewidth=2.0, color='blue')
 
         ax_real.set_xlabel('Gradient Step')
         ax_real.set_ylabel('Dual Value (Real)')
-        ax_real.set_title(f'Eigenvector {i} - Real Part Duals')
+        ax_real.set_title(f'Eigenvector {i} - Real Part Dual')
         ax_real.legend()
         ax_real.grid(True, alpha=0.3)
 
         # Right column: Imaginary parts
         ax_imag = axes[i, 1]
 
-        if f'dual_left_imag_{i}' in metrics_history[0]:
-            dual_left_imag = [m[f'dual_left_imag_{i}'] for m in metrics_history]
-            ax_imag.plot(steps, dual_left_imag, label='Left', alpha=0.7, linewidth=1.5)
-
-        if f'dual_right_imag_{i}' in metrics_history[0]:
-            dual_right_imag = [m[f'dual_right_imag_{i}'] for m in metrics_history]
-            ax_imag.plot(steps, dual_right_imag, label='Right', alpha=0.7, linewidth=1.5)
-
         if f'dual_imag_{i}' in metrics_history[0]:
-            dual_combined_imag = [m[f'dual_imag_{i}'] for m in metrics_history]
-            ax_imag.plot(steps, dual_combined_imag, label='Combined (Eigenvalue)',
-                        linewidth=2.5, linestyle='--', color='black')
+            dual_imag = [m[f'dual_imag_{i}'] for m in metrics_history]
+            ax_imag.plot(steps, dual_imag, label='Dual (Imag)',
+                        linewidth=2.0, color='red')
 
         ax_imag.set_xlabel('Gradient Step')
         ax_imag.set_ylabel('Dual Value (Imag)')
-        ax_imag.set_title(f'Eigenvector {i} - Imaginary Part Duals')
+        ax_imag.set_title(f'Eigenvector {i} - Imaginary Part Dual')
         ax_imag.legend()
         ax_imag.grid(True, alpha=0.3)
 
@@ -1776,8 +1772,8 @@ def learn_eigenvectors(args):
 
         initial_params = {
             'encoder': encoder.init(encoder_key, dummy_input),
-            'duals_real': jnp.ones((args.num_eigenvectors,)),
-            'duals_imag': jnp.ones((args.num_eigenvectors,)),
+            'duals_real': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
+            'duals_imag': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
         }
 
         encoder_state = TrainState.create(
@@ -1848,9 +1844,9 @@ def learn_eigenvectors(args):
                                     jnp.einsum('ij,ik->jk', phi_imag, jax.lax.stop_gradient(psi_imag))) / n
             inner_product_right_real_2 = (jnp.einsum('ij,ik->jk', phi_real_2, jax.lax.stop_gradient(psi_real_2)) +
                                     jnp.einsum('ij,ik->jk', phi_imag_2, jax.lax.stop_gradient(psi_imag_2))) / n
-            inner_product_right_imag_1 = -(jnp.einsum('ij,ik->jk', phi_real, jax.lax.stop_gradient(psi_imag)) +
+            inner_product_right_imag_1 = (-jnp.einsum('ij,ik->jk', phi_real, jax.lax.stop_gradient(psi_imag)) +
                                     jnp.einsum('ij,ik->jk', phi_imag, jax.lax.stop_gradient(psi_real))) / n
-            inner_product_right_imag_2 = -(jnp.einsum('ij,ik->jk', phi_real_2, jax.lax.stop_gradient(psi_imag_2)) +
+            inner_product_right_imag_2 = (-jnp.einsum('ij,ik->jk', phi_real_2, jax.lax.stop_gradient(psi_imag_2)) +
                                     jnp.einsum('ij,ik->jk', phi_imag_2, jax.lax.stop_gradient(psi_real_2))) / n
 
             # Biorthogonality error matrices
@@ -1872,11 +1868,11 @@ def learn_eigenvectors(args):
 
             # Compute dual loss (for real part constraint)
             dual_loss_pos_real = -(jax.lax.stop_gradient(duals_real) * norm_errors_real).sum()
-            dual_loss_neg_real = args.step_size_duals * (jax.lax.stop_gradient(duals_real) * norm_errors_real).sum()
+            dual_loss_neg_real = args.step_size_duals * (duals_real * jax.lax.stop_gradient(norm_errors_real)).sum()
 
             # Compute dual loss (for imaginary part constraint)
             dual_loss_pos_imag = -(jax.lax.stop_gradient(duals_imag) * norm_errors_imag).sum()
-            dual_loss_neg_imag = args.step_size_duals * (jax.lax.stop_gradient(duals_imag) * norm_errors_imag).sum()
+            dual_loss_neg_imag = args.step_size_duals * (duals_imag * jax.lax.stop_gradient(norm_errors_imag)).sum()
 
             dual_loss_pos = dual_loss_pos_real + dual_loss_pos_imag
             dual_loss_neg = dual_loss_neg_real + dual_loss_neg_imag
@@ -1905,11 +1901,11 @@ def learn_eigenvectors(args):
             barrier_loss = barrier_loss_left + barrier_loss_right
 
             # Compute graph drawing loss for complex eigenvectors
-            # E[(ψ_real(s)*((1+δ)φ_real(s) - φ_real(s')) - ψ_imag(s)*((1+δ)φ_imag(s) - φ_imag(s')))^2]
+            # E[(ψ_real(s)*((1+δ)φ_real(s) - φ_real(s')) + ψ_imag(s)*((1+δ)φ_imag(s) - φ_imag(s')))^2]
             # The δ parameter shifts eigenvalues: L = (1+δ)I - M
             graph_products_real = (psi_real * ((1+args.delta)*phi_real - next_phi_real)).mean(0, keepdims=True)
             graph_products_imag = (psi_imag * ((1+args.delta)*phi_imag - next_phi_imag)).mean(0, keepdims=True)
-            graph_loss = ((graph_products_real - graph_products_imag)**2).sum()
+            graph_loss = ((graph_products_real + graph_products_imag)**2).sum()
 
             # Total loss
             positive_loss = graph_loss + dual_loss_pos + barrier_loss
@@ -1921,24 +1917,24 @@ def learn_eigenvectors(args):
                 'graph_loss': graph_loss,
                 'dual_loss': dual_loss_pos,
                 'dual_loss_neg': dual_loss_neg,
+                'barrier_loss': barrier_loss,
                 'approx_eigenvalue_sum_real': eigenvalue_sum_real,
                 'approx_eigenvalue_sum_imag': eigenvalue_sum_imag,
             }
 
             # Add dual variables and errors to aux
             for i in range(min(11, args.num_eigenvectors)):
-                aux[f'dual_real_{i}'] = duals_real[i, i]
-                aux[f'dual_imag_{i}'] = duals_imag[i, i]
+                aux[f'dual_real_{i}'] = duals_real[i]
+                aux[f'dual_imag_{i}'] = duals_imag[i]
                 # Add diagonal errors for each eigenvector
                 aux[f'error_left_real_{i}'] = error_matrix_left_real_1[i, i]
                 aux[f'error_left_imag_{i}'] = error_matrix_left_imag_1[i, i]
                 aux[f'error_right_real_{i}'] = error_matrix_right_real_1[i, i]
                 aux[f'error_right_imag_{i}'] = error_matrix_right_imag_1[i, i]
 
+                # Note: Off-diagonal duals no longer exist in simplified algorithm
+                # Only track off-diagonal errors
                 for j in range(0, min(2, i)):
-                    aux[f'dual_real_{i}_{j}'] = duals_real[i, j]
-                    aux[f'dual_imag_{i}_{j}'] = duals_imag[i, j]
-                    # Add off-diagonal errors
                     aux[f'error_left_real_{i}_{j}'] = error_matrix_left_real_1[i, j]
                     aux[f'error_left_imag_{i}_{j}'] = error_matrix_left_imag_1[i, j]
                     aux[f'error_right_real_{i}_{j}'] = error_matrix_right_real_1[i, j]
