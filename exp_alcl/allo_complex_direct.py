@@ -199,6 +199,37 @@ class Args:
     exp_number: int = 0
 
 
+def get_canonical_free_states(env):
+    """
+    Get the canonical set of free (non-obstacle) states from the environment.
+
+    Args:
+        env: GridWorld environment
+
+    Returns:
+        canonical_states: Array of free state indices, sorted
+    """
+    width = env.width
+    height = env.height
+
+    # Get all state indices
+    all_states = set(range(width * height))
+
+    # Get obstacle state indices
+    obstacle_states = set()
+    if env.has_obstacles:
+        for obs in env.obstacles:
+            obs_x, obs_y = int(obs[0]), int(obs[1])
+            if 0 <= obs_x < width and 0 <= obs_y < height:
+                state_idx = obs_y * width + obs_x
+                obstacle_states.add(state_idx)
+
+    # Free states = all states - obstacles
+    free_states = sorted(all_states - obstacle_states)
+
+    return jnp.array(free_states, dtype=jnp.int32)
+
+
 def create_gridworld_env(args: Args):
     """Create a gridworld environment from text file or example."""
     if args.env_type == 'file':
@@ -246,6 +277,11 @@ def main(args: Args):
     # Create environment
     env = create_gridworld_env(args)
 
+    # Get canonical (free) states from base environment
+    canonical_states = get_canonical_free_states(env)
+    num_states = len(canonical_states)
+    print(f"Number of free states: {num_states} (out of {env.width * env.height} total)")
+
     # Add doors if requested
     data_env = env
     door_config = None
@@ -261,10 +297,6 @@ def main(args: Args):
         print(f"\nCreated {len(door_config['doors'])} irreversible doors:")
         for s_can, a_fwd, sp_can, a_rev in door_config['doors']:
             print(f"  Door: state {s_can} --({a_fwd})--> state {sp_can} (reverse {a_rev} blocked)")
-
-    # Get canonical states (non-wall states)
-    canonical_states = env.canonical_states
-    num_states = len(canonical_states)
 
     # Collect transition data
     print("\nCollecting transition data...")
