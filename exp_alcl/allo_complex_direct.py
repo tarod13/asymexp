@@ -311,17 +311,52 @@ def main(args: Args):
     print(f"\nTransition data:")
     print(f"  Number of canonical states: {num_states}")
     print(f"  Transition counts shape: {transition_counts.shape}")
-    print(f"  Number of episodes: {len(episodes)}")
 
-    # Create episodic replay buffer
-    max_time_offset = args.max_time_offset if args.max_time_offset is not None else args.num_steps
-    replay_buffer = EpisodicReplayBuffer(episodes, max_time_offset=max_time_offset)
-    print(f"  Replay buffer size: {len(replay_buffer)} transitions")
-    print(f"  Max time offset: {max_time_offset}")
+    # Create full-to-canonical state mapping
+    full_to_canonical = {int(full_idx): canon_idx for canon_idx, full_idx in enumerate(canonical_states)}
+
+    # Initialize replay buffer
+    max_valid_length = int(episodes['lengths'].max()) + 1
+    replay_buffer = EpisodicReplayBuffer(
+        max_episodes=args.num_envs,
+        max_episode_length=max_valid_length,
+        observation_type='canonical_state',
+        seed=args.seed
+    )
+
+    # Convert and add episodes to buffer
+    for ep_idx in range(args.num_envs):
+        episode_length = int(episodes['lengths'][ep_idx])
+        episode_obs_full = episodes['observations'][ep_idx, :episode_length + 1]
+        episode_terminals = episodes['terminals'][ep_idx, :episode_length + 1]
+
+        # Convert to canonical state indices
+        episode_obs_canonical = []
+        episode_terminals_canonical = []
+        for i, state_idx in enumerate(episode_obs_full):
+            state_idx = int(state_idx)
+            if state_idx in full_to_canonical:
+                episode_obs_canonical.append(full_to_canonical[state_idx])
+                episode_terminals_canonical.append(int(episode_terminals[i]))
+
+        # Add to buffer if it has at least 2 states
+        if len(episode_obs_canonical) >= 2:
+            obs_array = np.array(episode_obs_canonical, dtype=np.int32).reshape(-1, 1)
+            terminals_array = np.array(episode_terminals_canonical, dtype=np.int32)
+            episode_dict = {
+                'obs': obs_array,
+                'terminals': terminals_array,
+            }
+            replay_buffer.add_episode(episode_dict)
+
+    print(f"  Added {len(replay_buffer)} trajectory sequences to replay buffer")
 
     # Compute ground truth eigendecomposition
     print("\nComputing ground truth eigendecomposition...")
     transition_matrix = get_transition_matrix(transition_counts, make_stochastic=True)
+
+    # Use max_time_offset for eigendecomposition
+    max_time_offset = args.max_time_offset if args.max_time_offset is not None else args.num_steps
     laplacian = compute_nonsymmetric_laplacian(
         transition_matrix,
         gamma=args.gamma,
