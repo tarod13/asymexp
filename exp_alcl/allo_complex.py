@@ -81,14 +81,28 @@ class CoordinateEncoder(nn.Module):
             x = nn.Dense(self.hidden_dim)(x)
             x = nn.relu(x)
 
-        # Output layer - 4 × num_features for complex left and right eigenvectors
-        all_features = nn.Dense(4 * self.num_features)(x)
+        # Separate heads for each component with independent transformations
+        # Each head has at least one independent layer before the final prediction
 
-        # Split into 4 parts: left_real, left_imag, right_real, right_imag
-        left_real = all_features[:, :self.num_features]
-        left_imag = all_features[:, self.num_features:2*self.num_features]
-        right_real = all_features[:, 2*self.num_features:3*self.num_features]
-        right_imag = all_features[:, 3*self.num_features:]
+        # Left real head
+        left_real_hidden = nn.Dense(self.hidden_dim)(x)
+        left_real_hidden = nn.relu(left_real_hidden)
+        left_real = nn.Dense(self.num_features)(left_real_hidden)
+
+        # Left imaginary head
+        left_imag_hidden = nn.Dense(self.hidden_dim)(x)
+        left_imag_hidden = nn.relu(left_imag_hidden)
+        left_imag = nn.Dense(self.num_features)(left_imag_hidden)
+
+        # Right real head
+        right_real_hidden = nn.Dense(self.hidden_dim)(x)
+        right_real_hidden = nn.relu(right_real_hidden)
+        right_real = nn.Dense(self.num_features)(right_real_hidden)
+
+        # Right imaginary head
+        right_imag_hidden = nn.Dense(self.hidden_dim)(x)
+        right_imag_hidden = nn.relu(right_imag_hidden)
+        right_imag = nn.Dense(self.num_features)(right_imag_hidden)
 
         features_dict = {
             'left_real': left_real,
@@ -1073,8 +1087,9 @@ def compute_complex_cosine_similarities_with_normalization(
     """
     Compute cosine similarities with proper normalization for adjoint eigenvectors.
 
-    The learned left eigenvectors correspond to eigenvectors of the adjoint with respect
-    to the inner product determined by the replay buffer state distribution D.
+    The learned left eigenvectors (psi) correspond to complex conjugates of eigenvectors
+    of the adjoint with respect to the inner product determined by the replay buffer
+    state distribution D.
 
     Normalization procedure:
     1. For RIGHT eigenvectors:
@@ -1087,10 +1102,11 @@ def compute_complex_cosine_similarities_with_normalization(
        - Multiply by the norm of the corresponding right eigenvector (before normalization)
        - Scale each entry by the stationary state distribution (to convert from adjoint)
 
-    This ensures proper comparison between learned and ground truth eigenvectors while
-    accounting for:
-    - Arbitrary complex scaling freedom
-    - Adjoint vs. true left eigenvector relationship
+    Important: Ground truth eigenvectors are already normalized and should NOT be
+    normalized again. We only normalize the learned eigenvectors.
+
+    Also: Since learned psi are complex conjugates of adjoint eigenvectors, we use
+    the complex conjugate of learned psi when computing cosine similarities.
 
     Args:
         learned_left_real: Learned left eigenvector real parts [num_states, num_eigenvectors]
@@ -1106,7 +1122,7 @@ def compute_complex_cosine_similarities_with_normalization(
     Returns:
         Dictionary containing cosine similarities for left and right eigenvectors
     """
-    # Normalize learned eigenvectors
+    # Normalize learned eigenvectors only (ground truth is already normalized)
     learned_normalized = normalize_eigenvectors_for_comparison(
         left_real=learned_left_real,
         left_imag=learned_left_imag,
@@ -1115,25 +1131,19 @@ def compute_complex_cosine_similarities_with_normalization(
         sampling_probs=sampling_probs
     )
 
-    # Normalize ground truth eigenvectors
-    gt_normalized = normalize_eigenvectors_for_comparison(
-        left_real=gt_left_real,
-        left_imag=gt_left_imag,
-        right_real=gt_right_real,
-        right_imag=gt_right_imag,
-        sampling_probs=sampling_probs
-    )
-
-    # Compute cosine similarities using the normalized eigenvectors
+    # For left eigenvectors: use complex conjugate of learned psi
+    # Since psi = conj(adjoint eigenvector), we need conj(psi) = adjoint eigenvector
+    # To get complex conjugate, flip the sign of the imaginary part
     left_sims = compute_complex_cosine_similarities(
-        learned_normalized['left_real'], learned_normalized['left_imag'],
-        gt_normalized['left_real'], gt_normalized['left_imag'],
+        learned_normalized['left_real'], -learned_normalized['left_imag'],  # Complex conjugate
+        gt_left_real, gt_left_imag,  # Ground truth (already normalized)
         prefix="left_"
     )
 
+    # For right eigenvectors: use as is (no conjugate needed)
     right_sims = compute_complex_cosine_similarities(
         learned_normalized['right_real'], learned_normalized['right_imag'],
-        gt_normalized['right_real'], gt_normalized['right_imag'],
+        gt_right_real, gt_right_imag,  # Ground truth (already normalized)
         prefix="right_"
     )
 
@@ -1812,6 +1822,8 @@ def learn_eigenvectors(args):
             phi_real_2 = features_2['right_real']
             phi_imag_2 = features_2['right_imag']
 
+            next_psi_real = next_features['left_real']
+            next_psi_imag = next_features['left_imag']
             next_phi_real = next_features['right_real']
             next_phi_imag = next_features['right_imag']
 
@@ -1820,9 +1832,9 @@ def learn_eigenvectors(args):
             n = phi_real.shape[0]
 
             # Get duals
-            duals_real = params['duals_real']
-            duals_imag = params['duals_imag']
-            
+            duals_real = params['duals_real']  # For left eigenvector biorthogonality
+            duals_imag = params['duals_imag']  # For left eigenvector biorthogonality
+
             # Eigenvalue sum is the sum of left and right duals (averaged)
             eigenvalue_sum_real = duals_real.sum()
             eigenvalue_sum_imag = duals_imag.sum()
@@ -1862,18 +1874,27 @@ def learn_eigenvectors(args):
             error_matrix_right_imag_1 = jnp.tril(inner_product_right_imag_1)
             error_matrix_right_imag_2 = jnp.tril(inner_product_right_imag_2)
 
-            # Norm errors
+            # Norm errors for left eigenvectors (from biorthogonality)
             norm_errors_real = jnp.diag(error_matrix_left_real_1)
             norm_errors_imag = jnp.diag(error_matrix_left_imag_1)
 
-            # Compute dual loss (for real part constraint)
+            # Compute dual loss for left eigenvectors (for biorthogonality constraint)
             dual_loss_pos_real = -(jax.lax.stop_gradient(duals_real) * norm_errors_real).sum()
             dual_loss_neg_real = args.step_size_duals * (duals_real * jax.lax.stop_gradient(norm_errors_real)).sum()
 
-            # Compute dual loss (for imaginary part constraint)
             dual_loss_pos_imag = -(jax.lax.stop_gradient(duals_imag) * norm_errors_imag).sum()
             dual_loss_neg_imag = args.step_size_duals * (duals_imag * jax.lax.stop_gradient(norm_errors_imag)).sum()
 
+            # Compute right eigenvector norms: <phi, phi>
+            # For complex vectors: <phi, phi> = phi_real^T phi_real + phi_imag^T phi_imag
+            phi_norms_real_1 = jnp.log((phi_real**2 + phi_imag**2).mean(0)+1e-6).clip(max=10)
+            phi_norms_real_2 = jnp.log((phi_real_2**2 + phi_imag_2**2).mean(0)+1e-6).clip(max=10)
+
+            # Norm constraint errors: log(<phi, phi>) = log(1) = 0
+            norm_errors_right_1 = phi_norms_real_1
+            norm_errors_right_2 = phi_norms_real_2
+
+            # Total dual loss (only for left eigenvector biorthogonality)
             dual_loss_pos = dual_loss_pos_real + dual_loss_pos_imag
             dual_loss_neg = dual_loss_neg_real + dual_loss_neg_imag
 
@@ -1890,22 +1911,44 @@ def learn_eigenvectors(args):
             quadratic_error_matrix_left_imag = 2 * error_matrix_left_imag_1 * jax.lax.stop_gradient(error_matrix_left_imag_2)
             quadratic_error_left_imag = quadratic_error_matrix_left_imag.sum()
             barrier_loss_left_imag = args.barrier_coef * quadratic_error_left_imag
-            
+
             quadratic_error_matrix_right_imag = 2 * error_matrix_right_imag_1 * jax.lax.stop_gradient(error_matrix_right_imag_2)
             quadratic_error_right_imag = quadratic_error_matrix_right_imag.sum()
             barrier_loss_right_imag = args.barrier_coef * quadratic_error_right_imag
-            
+
             barrier_loss_left = barrier_loss_left_real + barrier_loss_left_imag
             barrier_loss_right = barrier_loss_right_real + barrier_loss_right_imag
 
-            barrier_loss = barrier_loss_left + barrier_loss_right
+            # Compute barrier loss for right eigenvector norm constraints
+            quadratic_error_norm_right = 2 * norm_errors_right_1 * jax.lax.stop_gradient(norm_errors_right_2)
+            barrier_loss_norm_right = args.barrier_coef * quadratic_error_norm_right.sum()
+
+            
+            barrier_loss = barrier_loss_left + barrier_loss_right + barrier_loss_norm_right
 
             # Compute graph drawing loss for complex eigenvectors
             # E[(ψ_real(s)*((1+δ)φ_real(s) - φ_real(s')) + ψ_imag(s)*((1+δ)φ_imag(s) - φ_imag(s')))^2]
             # The δ parameter shifts eigenvalues: L = (1+δ)I - M
-            graph_products_real = (psi_real * ((1+args.delta)*phi_real - next_phi_real)).mean(0, keepdims=True)
-            graph_products_imag = (psi_imag * ((1+args.delta)*phi_imag - next_phi_imag)).mean(0, keepdims=True)
-            graph_loss = ((graph_products_real + graph_products_imag)**2).sum()
+            graph_products_real = (
+                jax.lax.stop_gradient(psi_real) 
+                * ((1+args.delta)*phi_real - next_phi_real)
+            ).mean(0, keepdims=True)
+            graph_products_imag = (
+                jax.lax.stop_gradient(psi_imag) 
+                * ((1+args.delta)*phi_imag - next_phi_imag)
+            ).mean(0, keepdims=True)
+            graph_products_real_reverse = (
+                jax.lax.stop_gradient(next_phi_real) 
+                * ((1+args.delta)*next_psi_real - psi_real)
+                ).mean(0, keepdims=True)
+            graph_products_imag_reverse = (
+                jax.lax.stop_gradient(next_phi_imag) 
+                * ((1+args.delta)*next_psi_imag - psi_imag)
+            ).mean(0, keepdims=True)
+
+            graph_loss_direct = ((graph_products_real + graph_products_imag)**2).sum()
+            graph_loss_reverse = ((graph_products_real_reverse + graph_products_imag_reverse)**2).sum()
+            graph_loss = graph_loss_direct + graph_loss_reverse
 
             # Total loss
             positive_loss = graph_loss + dual_loss_pos + barrier_loss
@@ -1924,13 +1967,18 @@ def learn_eigenvectors(args):
 
             # Add dual variables and errors to aux
             for i in range(min(11, args.num_eigenvectors)):
+                # Left eigenvector duals (for biorthogonality)
                 aux[f'dual_real_{i}'] = duals_real[i]
                 aux[f'dual_imag_{i}'] = duals_imag[i]
-                # Add diagonal errors for each eigenvector
+
+                # Add diagonal errors for each eigenvector (biorthogonality)
                 aux[f'error_left_real_{i}'] = error_matrix_left_real_1[i, i]
                 aux[f'error_left_imag_{i}'] = error_matrix_left_imag_1[i, i]
                 aux[f'error_right_real_{i}'] = error_matrix_right_real_1[i, i]
                 aux[f'error_right_imag_{i}'] = error_matrix_right_imag_1[i, i]
+
+                # Add norm constraint errors for right eigenvectors
+                aux[f'error_norm_right_{i}'] = norm_errors_right_1[i]
 
                 # Note: Off-diagonal duals no longer exist in simplified algorithm
                 # Only track off-diagonal errors
