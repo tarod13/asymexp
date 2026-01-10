@@ -308,6 +308,7 @@ def main(args: Args):
         seed=args.seed,
     )
 
+    print(f"Collected {metrics['total_transitions']} transitions.")
     print(f"\nTransition data:")
     print(f"  Number of canonical states: {num_states}")
     print(f"  Transition counts shape: {transition_counts.shape}")
