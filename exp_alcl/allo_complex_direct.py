@@ -708,14 +708,7 @@ def main(args: Args):
     print("\nStarting training...")
     start_time = time.time()
 
-    metrics_history = {
-        'loss': [],
-        'graph_loss': [],
-        'barrier_loss': [],
-        'dual_loss': [],
-        'total_error': [],
-        'grad_norm': [],
-    }
+    metrics_history = []
 
     for step in tqdm(range(args.num_gradient_steps)):
         # Sample batches
@@ -736,12 +729,16 @@ def main(args: Args):
 
         # Log metrics
         if step % args.log_freq == 0:
-            metrics_history['loss'].append(float(loss))
-            metrics_history['graph_loss'].append(float(aux['graph_loss']))
-            metrics_history['barrier_loss'].append(float(aux['barrier_loss']))
-            metrics_history['dual_loss'].append(float(aux['dual_loss']))
-            metrics_history['total_error'].append(float(aux['total_error']))
-            metrics_history['grad_norm'].append(float(aux['grad_norm']))
+            metrics_dict = {
+                'gradient_step': step,
+                'loss': float(loss),
+                'graph_loss': float(aux['graph_loss']),
+                'barrier_loss': float(aux['barrier_loss']),
+                'dual_loss': float(aux['dual_loss']),
+                'total_error': float(aux['total_error']),
+                'grad_norm': float(aux['grad_norm']),
+            }
+            metrics_history.append(metrics_dict)
 
         # Print metrics
         if step % args.log_freq == 0:
