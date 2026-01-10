@@ -241,7 +241,7 @@ def main(args: Args):
     np.random.seed(args.seed)
 
     key = jax.random.PRNGKey(args.seed)
-    data_key, encoder_key = jax.random.split(key)
+    encoder_key = key
 
     # Create environment
     env = create_gridworld_env(args)
@@ -262,19 +262,20 @@ def main(args: Args):
         for s_can, a_fwd, sp_can, a_rev in door_config['doors']:
             print(f"  Door: state {s_can} --({a_fwd})--> state {sp_can} (reverse {a_rev} blocked)")
 
-    # Collect transition data
-    print("\nCollecting transition data...")
-    transition_counts, episodes = collect_transition_counts_and_episodes(
-        env=data_env,
-        num_envs=args.num_envs,
-        num_steps=args.num_steps,
-        key=data_key,
-        use_tqdm=True,
-    )
-
     # Get canonical states (non-wall states)
     canonical_states = env.canonical_states
     num_states = len(canonical_states)
+
+    # Collect transition data
+    print("\nCollecting transition data...")
+    transition_counts, episodes, metrics = collect_transition_counts_and_episodes(
+        env=data_env,
+        num_envs=args.num_envs,
+        num_steps=args.num_steps,
+        num_states=num_states,
+        seed=args.seed,
+        use_tqdm=True,
+    )
 
     print(f"\nTransition data:")
     print(f"  Number of canonical states: {num_states}")
