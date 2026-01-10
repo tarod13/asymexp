@@ -422,15 +422,28 @@ def main(args: Args):
     np.save(results_dir / "gt_right_imag.npy", np.array(gt_right_imag))
     np.save(results_dir / "sampling_distribution.npy", np.array(sampling_probs))
 
+    # Create door markers for visualization
+    door_markers = {}
+    if door_config is not None and 'doors' in door_config:
+        for s_canonical, a_forward, s_prime_canonical, a_reverse in door_config['doors']:
+            s_full = int(canonical_states[s_canonical])
+            s_prime_full = int(canonical_states[s_prime_canonical])
+            door_markers[(s_full, a_forward)] = s_prime_full
+
+    # Save visualization metadata (required by generate_plots_complex.py)
+    viz_metadata = {
+        'canonical_states': np.array(canonical_states),
+        'grid_width': env.width,
+        'grid_height': env.height,
+        'door_markers': door_markers,
+        'num_eigenvectors': args.num_eigenvectors,
+        'gamma': args.gamma,
+    }
+    with open(results_dir / "viz_metadata.pkl", 'wb') as f:
+        pickle.dump(viz_metadata, f)
+
     # Visualize sampling distribution
     if args.plot_during_training:
-        door_markers = {}
-        if door_config is not None and 'doors' in door_config:
-            for s_canonical, a_forward, s_prime_canonical, a_reverse in door_config['doors']:
-                s_full = int(canonical_states[s_canonical])
-                s_prime_full = int(canonical_states[s_prime_canonical])
-                door_markers[(s_full, a_forward)] = s_prime_full
-
         plot_sampling_distribution(
             sampling_probs=sampling_probs,
             canonical_states=canonical_states,
@@ -752,15 +765,16 @@ def main(args: Args):
     final_params = train_state.params
 
     if args.save_model:
-        np.save(results_dir / "learned_left_real.npy", np.array(final_params['left_real']))
-        np.save(results_dir / "learned_left_imag.npy", np.array(final_params['left_imag']))
-        np.save(results_dir / "learned_right_real.npy", np.array(final_params['right_real']))
-        np.save(results_dir / "learned_right_imag.npy", np.array(final_params['right_imag']))
+        # Save with names expected by generate_plots_complex.py
+        np.save(results_dir / "final_learned_left_real.npy", np.array(final_params['left_real']))
+        np.save(results_dir / "final_learned_left_imag.npy", np.array(final_params['left_imag']))
+        np.save(results_dir / "final_learned_right_real.npy", np.array(final_params['right_real']))
+        np.save(results_dir / "final_learned_right_imag.npy", np.array(final_params['right_imag']))
         np.save(results_dir / "learned_duals_real.npy", np.array(final_params['duals_real']))
         np.save(results_dir / "learned_duals_imag.npy", np.array(final_params['duals_imag']))
 
-    # Save metrics
-    with open(results_dir / "metrics.json", 'w') as f:
+    # Save metrics (required by generate_plots_complex.py)
+    with open(results_dir / "metrics_history.json", 'w') as f:
         json.dump(metrics_history, f, indent=2)
 
     elapsed = time.time() - start_time
