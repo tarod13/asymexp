@@ -312,7 +312,7 @@ def main(args: Args):
     print(f"Collected {metrics['total_transitions']} transitions.")
 
     # Extract canonical state subspace from full transition counts
-    transition_counts = transition_counts_full[jnp.ix_(canonical_states, jnp.arange(4), canonical_states)]
+    transition_counts = transition_counts_full[jnp.ix_(canonical_states, jnp.arange(env.action_space), canonical_states)]
 
     print(f"\nTransition data:")
     print(f"  Number of canonical states: {num_canonical}")
@@ -358,19 +358,29 @@ def main(args: Args):
     print(f"  Added {len(replay_buffer)} trajectory sequences to replay buffer")
 
     # Compute ground truth eigendecomposition
-    print("\nComputing ground truth eigendecomposition...")
-    transition_matrix = get_transition_matrix(transition_counts, make_stochastic=True)
+    print("\nBuilding transition matrix...")
+    transition_matrix = get_transition_matrix(transition_counts)
 
-    # Use max_time_offset for eigendecomposition
-    max_time_offset = args.max_time_offset if args.max_time_offset is not None else args.num_steps
+    # Compute sampling distribution
+    print("Computing empirical sampling distribution...")
+    sampling_distribution = compute_sampling_distribution(transition_counts)
+    sampling_probs = jnp.diag(sampling_distribution)
+    print(f"  Sampling prob range: [{sampling_probs.min():.6f}, {sampling_probs.max():.6f}]")
+    print(f"  Sampling prob std: {sampling_probs.std():.6f}")
+
+    print(f"\nComputing non-symmetric Laplacian with gamma={args.gamma}, delta={args.delta}...")
+    print(f"  L = (1+δ)I - (1-γ)P·SR_γ (matches geometric sampling with k >= 1)")
     laplacian = compute_nonsymmetric_laplacian(
         transition_matrix,
         gamma=args.gamma,
-        delta=args.delta,
-        max_horizon=max_time_offset
+        delta=args.delta
     )
 
-    eigendecomp = compute_eigendecomposition(laplacian, k=args.num_eigenvectors)
+    eigendecomp = compute_eigendecomposition(
+        laplacian,
+        k=args.num_eigenvectors,
+        ascending=True  # For Laplacians, we want smallest eigenvalues
+    )
 
     gt_eigenvalues_real = eigendecomp['eigenvalues_real']
     gt_eigenvalues_imag = eigendecomp['eigenvalues_imag']
@@ -379,12 +389,12 @@ def main(args: Args):
     gt_right_real = eigendecomp['right_eigenvectors_real']
     gt_right_imag = eigendecomp['right_eigenvectors_imag']
 
-    print(f"  Ground truth eigenvalues (real): {gt_eigenvalues_real[:5]}")
-    print(f"  Ground truth eigenvalues (imag): {gt_eigenvalues_imag[:5]}")
-
-    # Compute sampling distribution
-    sampling_distribution = compute_sampling_distribution(transition_counts)
-    sampling_probs = jnp.diag(sampling_distribution)
+    print(f"\nSmallest {min(5, args.num_eigenvectors)} eigenvalues (complex):")
+    print("  Eigenvalue (real + imag)")
+    for i in range(min(5, args.num_eigenvectors)):
+        ev_real = gt_eigenvalues_real[i]
+        ev_imag = gt_eigenvalues_imag[i]
+        print(f"  λ_{i}: {ev_real:.6f} + {ev_imag:.6f}i")
 
     # Setup results directory
     if args.exp_name is None:
