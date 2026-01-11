@@ -1753,13 +1753,17 @@ def learn_eigenvectors(args):
     # Create masks for different parameter groups
     encoder_mask = {
         'encoder': True,
-        'duals_real': False,
-        'duals_imag': False,
+        'duals_left_real': False,
+        'duals_left_imag': False,
+        'duals_right_real': False,
+        'duals_right_imag': False,
     }
     other_mask = {
         'encoder': False,
-        'duals_real': True,
-        'duals_imag': True,
+        'duals_left_real': True,
+        'duals_left_imag': True,
+        'duals_right_real': True,
+        'duals_right_imag': True,
     }
 
     tx = optax.chain(
@@ -1798,8 +1802,10 @@ def learn_eigenvectors(args):
 
         initial_params = {
             'encoder': encoder.init(encoder_key, dummy_input),
-            'duals_real': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
-            'duals_imag': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
+            'duals_left_real': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
+            'duals_left_imag': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
+            'duals_right_real': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
+            'duals_right_imag': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
         }
 
         encoder_state = TrainState.create(
@@ -1848,12 +1854,18 @@ def learn_eigenvectors(args):
             n = phi_real.shape[0]
 
             # Get duals
-            duals_real = params['duals_real']  # For left eigenvector biorthogonality
-            duals_imag = params['duals_imag']  # For left eigenvector biorthogonality
+            dual_variables_left_real = params['duals_left_real']
+            dual_variables_left_imag = params['duals_left_imag']
+            dual_variables_right_real = params['duals_right_real']
+            dual_variables_right_imag = params['duals_right_imag']
 
-            # Eigenvalue sum is the sum of left and right duals (averaged)
-            eigenvalue_sum_real = duals_real.sum()
-            eigenvalue_sum_imag = duals_imag.sum()
+            # Eigenvalue sum is the sum of left and right diagonal duals (averaged)
+            diagonal_duals_left_real = jnp.diag(dual_variables_left_real)
+            diagonal_duals_left_imag = jnp.diag(dual_variables_left_imag)
+            diagonal_duals_right_real = jnp.diag(dual_variables_right_real)
+            diagonal_duals_right_imag = jnp.diag(dual_variables_right_imag)
+            eigenvalue_sum_real = -0.5 * (diagonal_duals_left_real + diagonal_duals_right_real).sum()
+            eigenvalue_sum_imag = -0.5 * (diagonal_duals_left_imag + diagonal_duals_right_imag).sum()
 
             # Compute biorthogonality inner products: <ψ, φ>
             # Real part: Re(<ψ, φ>) = ψ_real^T φ_real + ψ_imag^T φ_imag
@@ -1890,16 +1902,27 @@ def learn_eigenvectors(args):
             error_matrix_right_imag_1 = jnp.tril(inner_product_right_imag_1)
             error_matrix_right_imag_2 = jnp.tril(inner_product_right_imag_2)
 
-            # Norm errors for left eigenvectors (from biorthogonality)
-            norm_errors_real = jnp.diag(error_matrix_left_real_1)
-            norm_errors_imag = jnp.diag(error_matrix_left_imag_1)
+            # Compute dual loss (for real part constraint)
+            dual_loss_pos_real = (
+                jax.lax.stop_gradient(dual_variables_left_real)
+                * error_matrix_left_real_1
+                + jax.lax.stop_gradient(dual_variables_right_real)
+                * error_matrix_right_real_1
+            ).sum()
 
-            # Compute dual loss for left eigenvectors (for biorthogonality constraint)
-            dual_loss_pos_real = -(jax.lax.stop_gradient(duals_real) * norm_errors_real).sum()
-            dual_loss_neg_real = args.step_size_duals * (duals_real * jax.lax.stop_gradient(norm_errors_real)).sum()
+            dual_loss_neg_left_real = -(dual_variables_left_real * jax.lax.stop_gradient(args.step_size_duals * error_matrix_left_real_1)).sum()
+            dual_loss_neg_right_real = -(dual_variables_right_real * jax.lax.stop_gradient(args.step_size_duals * error_matrix_right_real_1)).sum()
 
-            dual_loss_pos_imag = -(jax.lax.stop_gradient(duals_imag) * norm_errors_imag).sum()
-            dual_loss_neg_imag = args.step_size_duals * (duals_imag * jax.lax.stop_gradient(norm_errors_imag)).sum()
+            # Compute dual loss (for imaginary part constraint)
+            dual_loss_pos_imag = (
+                jax.lax.stop_gradient(dual_variables_left_imag)
+                * error_matrix_left_imag_1
+                + jax.lax.stop_gradient(dual_variables_right_imag)
+                * error_matrix_right_imag_1
+            ).sum()
+
+            dual_loss_neg_left_imag = -(dual_variables_left_imag * jax.lax.stop_gradient(args.step_size_duals * error_matrix_left_imag_1)).sum()
+            dual_loss_neg_right_imag = -(dual_variables_right_imag * jax.lax.stop_gradient(args.step_size_duals * error_matrix_right_imag_1)).sum()
 
             # Compute right eigenvector norms: <phi, phi>
             # For complex vectors: <phi, phi> = phi_real^T phi_real + phi_imag^T phi_imag
@@ -1910,9 +1933,11 @@ def learn_eigenvectors(args):
             norm_errors_right_1 = phi_norms_real_1
             norm_errors_right_2 = phi_norms_real_2
 
-            # Total dual loss (only for left eigenvector biorthogonality)
+            # Total dual loss
             dual_loss_pos = dual_loss_pos_real + dual_loss_pos_imag
-            dual_loss_neg = dual_loss_neg_real + dual_loss_neg_imag
+            dual_loss_neg_left = dual_loss_neg_left_real + dual_loss_neg_left_imag
+            dual_loss_neg_right = dual_loss_neg_right_real + dual_loss_neg_right_imag
+            dual_loss_neg = dual_loss_neg_left + dual_loss_neg_right
 
             # Compute barrier loss (for real part constraint)
             quadratic_error_matrix_left_real = 2 * error_matrix_left_real_1 * jax.lax.stop_gradient(error_matrix_left_real_2)
@@ -1983,9 +2008,14 @@ def learn_eigenvectors(args):
 
             # Add dual variables and errors to aux
             for i in range(min(11, args.num_eigenvectors)):
-                # Left eigenvector duals (for biorthogonality)
-                aux[f'dual_real_{i}'] = duals_real[i]
-                aux[f'dual_imag_{i}'] = duals_imag[i]
+                # Diagonal duals for left and right eigenvectors
+                aux[f'dual_left_real_{i}'] = dual_variables_left_real[i, i]
+                aux[f'dual_left_imag_{i}'] = dual_variables_left_imag[i, i]
+                aux[f'dual_right_real_{i}'] = dual_variables_right_real[i, i]
+                aux[f'dual_right_imag_{i}'] = dual_variables_right_imag[i, i]
+                # Combined eigenvalue estimate (average of left and right duals)
+                aux[f'dual_real_{i}'] = -0.5 * (dual_variables_left_real[i, i] + dual_variables_right_real[i, i])
+                aux[f'dual_imag_{i}'] = -0.5 * (dual_variables_left_imag[i, i] + dual_variables_right_imag[i, i])
 
                 # Add diagonal errors for each eigenvector (biorthogonality)
                 aux[f'error_left_real_{i}'] = error_matrix_left_real_1[i, i]
@@ -1996,9 +2026,12 @@ def learn_eigenvectors(args):
                 # Add norm constraint errors for right eigenvectors
                 aux[f'error_norm_right_{i}'] = norm_errors_right_1[i]
 
-                # Note: Off-diagonal duals no longer exist in simplified algorithm
-                # Only track off-diagonal errors
+                # Track both off-diagonal duals and errors
                 for j in range(0, min(2, i)):
+                    aux[f'dual_left_real_{i}_{j}'] = dual_variables_left_real[i, j]
+                    aux[f'dual_left_imag_{i}_{j}'] = dual_variables_left_imag[i, j]
+                    aux[f'dual_right_real_{i}_{j}'] = dual_variables_right_real[i, j]
+                    aux[f'dual_right_imag_{i}_{j}'] = dual_variables_right_imag[i, j]
                     aux[f'error_left_real_{i}_{j}'] = error_matrix_left_real_1[i, j]
                     aux[f'error_left_imag_{i}_{j}'] = error_matrix_left_imag_1[i, j]
                     aux[f'error_right_real_{i}_{j}'] = error_matrix_right_real_1[i, j]

@@ -556,8 +556,10 @@ def main(args: Args):
             'left_imag': init_scale * jax.random.normal(jax.random.split(encoder_key)[0], (num_canonical, args.num_eigenvectors)),
             'right_real': init_scale * jax.random.normal(jax.random.split(encoder_key)[1], (num_canonical, args.num_eigenvectors)),
             'right_imag': init_scale * jax.random.normal(jax.random.split(jax.random.split(encoder_key)[1])[0], (num_canonical, args.num_eigenvectors)),
-            'duals_real': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
-            'duals_imag': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
+            'duals_left_real': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
+            'duals_left_imag': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
+            'duals_right_real': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
+            'duals_right_imag': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
         }
         print(f"  Initialized matrices with random values")
 
@@ -704,12 +706,18 @@ def main(args: Args):
             n = phi_real.shape[0]
 
             # Get duals
-            duals_real = params['duals_real']
-            duals_imag = params['duals_imag']
+            dual_variables_left_real = params['duals_left_real']
+            dual_variables_left_imag = params['duals_left_imag']
+            dual_variables_right_real = params['duals_right_real']
+            dual_variables_right_imag = params['duals_right_imag']
 
-            # Eigenvalue sum
-            eigenvalue_sum_real = duals_real.sum()
-            eigenvalue_sum_imag = duals_imag.sum()
+            # Eigenvalue sum is the sum of left and right diagonal duals (averaged)
+            diagonal_duals_left_real = jnp.diag(dual_variables_left_real)
+            diagonal_duals_left_imag = jnp.diag(dual_variables_left_imag)
+            diagonal_duals_right_real = jnp.diag(dual_variables_right_real)
+            diagonal_duals_right_imag = jnp.diag(dual_variables_right_imag)
+            eigenvalue_sum_real = -0.5 * (diagonal_duals_left_real + diagonal_duals_right_real).sum()
+            eigenvalue_sum_imag = -0.5 * (diagonal_duals_left_imag + diagonal_duals_right_imag).sum()
 
             # Compute biorthogonality inner products: <ψ, φ>
             # Real part: Re(<ψ, φ>) = ψ_real^T φ_real + ψ_imag^T φ_imag
@@ -744,16 +752,27 @@ def main(args: Args):
             error_matrix_right_imag_1 = jnp.tril(inner_product_right_imag_1)
             error_matrix_right_imag_2 = jnp.tril(inner_product_right_imag_2)
 
-            # Norm errors for left eigenvectors
-            norm_errors_real = jnp.diag(error_matrix_left_real_1)
-            norm_errors_imag = jnp.diag(error_matrix_left_imag_1)
+            # Compute dual loss (for real part constraint)
+            dual_loss_pos_real = (
+                jax.lax.stop_gradient(dual_variables_left_real)
+                * error_matrix_left_real_1
+                + jax.lax.stop_gradient(dual_variables_right_real)
+                * error_matrix_right_real_1
+            ).sum()
 
-            # Compute dual loss for left eigenvectors
-            dual_loss_pos_real = -(jax.lax.stop_gradient(duals_real) * norm_errors_real).sum()
-            dual_loss_neg_real = args.step_size_duals * (duals_real * jax.lax.stop_gradient(norm_errors_real)).sum()
+            dual_loss_neg_left_real = -(dual_variables_left_real * jax.lax.stop_gradient(args.step_size_duals * error_matrix_left_real_1)).sum()
+            dual_loss_neg_right_real = -(dual_variables_right_real * jax.lax.stop_gradient(args.step_size_duals * error_matrix_right_real_1)).sum()
 
-            dual_loss_pos_imag = -(jax.lax.stop_gradient(duals_imag) * norm_errors_imag).sum()
-            dual_loss_neg_imag = args.step_size_duals * (duals_imag * jax.lax.stop_gradient(norm_errors_imag)).sum()
+            # Compute dual loss (for imaginary part constraint)
+            dual_loss_pos_imag = (
+                jax.lax.stop_gradient(dual_variables_left_imag)
+                * error_matrix_left_imag_1
+                + jax.lax.stop_gradient(dual_variables_right_imag)
+                * error_matrix_right_imag_1
+            ).sum()
+
+            dual_loss_neg_left_imag = -(dual_variables_left_imag * jax.lax.stop_gradient(args.step_size_duals * error_matrix_left_imag_1)).sum()
+            dual_loss_neg_right_imag = -(dual_variables_right_imag * jax.lax.stop_gradient(args.step_size_duals * error_matrix_right_imag_1)).sum()
 
             # Compute right eigenvector norms
             phi_norms_real_1 = jnp.log((phi_real**2 + phi_imag**2).mean(0)+1e-6).clip(max=10)
@@ -764,7 +783,9 @@ def main(args: Args):
 
             # Total dual loss
             dual_loss_pos = dual_loss_pos_real + dual_loss_pos_imag
-            dual_loss_neg = dual_loss_neg_real + dual_loss_neg_imag
+            dual_loss_neg_left = dual_loss_neg_left_real + dual_loss_neg_left_imag
+            dual_loss_neg_right = dual_loss_neg_right_real + dual_loss_neg_right_imag
+            dual_loss_neg = dual_loss_neg_left + dual_loss_neg_right
 
             # Compute barrier loss (for real part constraint)
             quadratic_error_matrix_left_real = 2 * error_matrix_left_real_1 * jax.lax.stop_gradient(error_matrix_left_real_2)
@@ -838,15 +859,28 @@ def main(args: Args):
 
             # Add dual variables and errors to aux
             for i in range(min(11, args.num_eigenvectors)):
-                aux[f'dual_real_{i}'] = duals_real[i]
-                aux[f'dual_imag_{i}'] = duals_imag[i]
+                # Diagonal duals for left and right eigenvectors
+                aux[f'dual_left_real_{i}'] = dual_variables_left_real[i, i]
+                aux[f'dual_left_imag_{i}'] = dual_variables_left_imag[i, i]
+                aux[f'dual_right_real_{i}'] = dual_variables_right_real[i, i]
+                aux[f'dual_right_imag_{i}'] = dual_variables_right_imag[i, i]
+                # Combined eigenvalue estimate (average of left and right duals)
+                aux[f'dual_real_{i}'] = -0.5 * (dual_variables_left_real[i, i] + dual_variables_right_real[i, i])
+                aux[f'dual_imag_{i}'] = -0.5 * (dual_variables_left_imag[i, i] + dual_variables_right_imag[i, i])
+
+                # Add diagonal errors for each eigenvector
                 aux[f'error_left_real_{i}'] = error_matrix_left_real_1[i, i]
                 aux[f'error_left_imag_{i}'] = error_matrix_left_imag_1[i, i]
                 aux[f'error_right_real_{i}'] = error_matrix_right_real_1[i, i]
                 aux[f'error_right_imag_{i}'] = error_matrix_right_imag_1[i, i]
                 aux[f'error_norm_right_{i}'] = norm_errors_right_1[i]
 
+                # Track both off-diagonal duals and errors
                 for j in range(0, min(2, i)):
+                    aux[f'dual_left_real_{i}_{j}'] = dual_variables_left_real[i, j]
+                    aux[f'dual_left_imag_{i}_{j}'] = dual_variables_left_imag[i, j]
+                    aux[f'dual_right_real_{i}_{j}'] = dual_variables_right_real[i, j]
+                    aux[f'dual_right_imag_{i}_{j}'] = dual_variables_right_imag[i, j]
                     aux[f'error_left_real_{i}_{j}'] = error_matrix_left_real_1[i, j]
                     aux[f'error_left_imag_{i}_{j}'] = error_matrix_left_imag_1[i, j]
                     aux[f'error_right_real_{i}_{j}'] = error_matrix_right_real_1[i, j]
