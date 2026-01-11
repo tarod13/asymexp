@@ -506,6 +506,11 @@ def create_gridworld_env(args: Args):
 
 def plot_learning_curves(metrics_history: Dict, save_path: str):
     """Plot and save comprehensive learning curves with all diagnostics."""
+    print("Plotting comprehensive learning curves...")
+    print("  Available metric keys:")
+    for key in metrics_history[0].keys():
+        print(f"  Metric key: {key}")
+
     fig, axes = plt.subplots(4, 3, figsize=(18, 16))
     fig.suptitle('Training Metrics (Comprehensive Diagnostics)', fontsize=16)
 
@@ -514,42 +519,53 @@ def plot_learning_curves(metrics_history: Dict, save_path: str):
 
     # Row 1: Main losses
     # Plot 1: Total loss
-    axes[0, 0].plot(steps, [m['allo'] for m in metrics_history])
-    axes[0, 0].set_xlabel('Gradient Step')
-    axes[0, 0].set_ylabel('Total Loss')
-    axes[0, 0].set_title('ALLO Loss')
-    axes[0, 0].grid(True, alpha=0.3)
+    if 'allo' in metrics_history[0]:
+        axes[0, 0].plot(steps, [m['allo'] for m in metrics_history])
+        axes[0, 0].set_xlabel('Gradient Step')
+        axes[0, 0].set_ylabel('Total Loss')
+        axes[0, 0].set_title('ALLO Loss')
+        axes[0, 0].grid(True, alpha=0.3)
 
     # Plot 2: Graph loss
-    axes[0, 1].plot(steps, [m['graph_loss'] for m in metrics_history])
-    axes[0, 1].set_xlabel('Gradient Step')
-    axes[0, 1].set_ylabel('Graph Loss')
-    axes[0, 1].set_title('Graph Drawing Loss')
-    axes[0, 1].grid(True, alpha=0.3)
+    if 'graph_loss' in metrics_history[0]:
+        axes[0, 1].plot(steps, [m['graph_loss'] for m in metrics_history])
+        axes[0, 1].set_xlabel('Gradient Step')
+        axes[0, 1].set_ylabel('Graph Loss')
+        axes[0, 1].set_title('Graph Drawing Loss')
+        axes[0, 1].grid(True, alpha=0.3)
 
     # Plot 3: Gradient norm
-    axes[0, 2].plot(steps, [m['grad_norm'] for m in metrics_history])
-    axes[0, 2].set_xlabel('Gradient Step')
-    axes[0, 2].set_ylabel('Gradient Norm')
-    axes[0, 2].set_title('Gradient Norm')
-    axes[0, 2].grid(True, alpha=0.3)
+    if 'grad_norm' in metrics_history[0]:
+        axes[0, 2].plot(steps, [m['grad_norm'] for m in metrics_history])
+        axes[0, 2].set_xlabel('Gradient Step')
+        axes[0, 2].set_ylabel('Gradient Norm')
+        axes[0, 2].set_title('Gradient Norm')
+        axes[0, 2].grid(True, alpha=0.3)
 
     # Row 2: Dual losses and errors
     # Plot 4: Dual loss
-    axes[1, 0].plot(steps, [m['dual_loss'] for m in metrics_history], label='Positive')
-    axes[1, 0].plot(steps, [m['dual_loss_neg'] for m in metrics_history], label='Negative')
-    axes[1, 0].set_xlabel('Gradient Step')
-    axes[1, 0].set_ylabel('Dual Loss')
-    axes[1, 0].set_title('Dual Losses')
-    axes[1, 0].legend()
-    axes[1, 0].grid(True, alpha=0.3)
+    if 'dual_loss' in metrics_history[0] or 'dual_loss_neg' in metrics_history[0]:
+        if 'dual_loss' in metrics_history[0]:
+            axes[1, 0].plot(steps, [m['dual_loss'] for m in metrics_history], label='Positive')
+        else:
+            print("Warning: 'dual_loss' key not found in metrics history.")
+        if 'dual_loss_neg' in metrics_history[0]:
+            axes[1, 0].plot(steps, [m['dual_loss_neg'] for m in metrics_history], label='Negative')
+        else:
+            print("Warning: 'dual_loss_neg' key not found in metrics history.")
+        axes[1, 0].set_xlabel('Gradient Step')
+        axes[1, 0].set_ylabel('Dual Loss')
+        axes[1, 0].set_title('Dual Losses')
+        axes[1, 0].legend()
+        axes[1, 0].grid(True, alpha=0.3)
 
     # Plot 5: Barrier loss
-    axes[1, 1].plot(steps, [m['barrier_loss'] for m in metrics_history])
-    axes[1, 1].set_xlabel('Gradient Step')
-    axes[1, 1].set_ylabel('Barrier Loss')
-    axes[1, 1].set_title('Barrier Loss (Fixed Coefficient)')
-    axes[1, 1].grid(True, alpha=0.3)
+    if 'barrier_loss' in metrics_history[0]:
+        axes[1, 1].plot(steps, [m['barrier_loss'] for m in metrics_history])
+        axes[1, 1].set_xlabel('Gradient Step')
+        axes[1, 1].set_ylabel('Barrier Loss')
+        axes[1, 1].set_title('Barrier Loss (Fixed Coefficient)')
+        axes[1, 1].grid(True, alpha=0.3)
 
     # Plot 6: Total errors
     if 'total_error' in metrics_history[0]:
