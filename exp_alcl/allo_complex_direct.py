@@ -512,11 +512,64 @@ def main(args: Args):
 
     # Create door markers for visualization
     door_markers = {}
+
+    # First, extract doors from random door config if available
     if door_config is not None and 'doors' in door_config:
         for s_canonical, a_forward, s_prime_canonical, a_reverse in door_config['doors']:
             s_full = int(canonical_states[s_canonical])
             s_prime_full = int(canonical_states[s_prime_canonical])
             door_markers[(s_full, a_forward)] = s_prime_full
+
+    # Also extract doors directly from environment (for file-defined doors)
+    from src.envs.door_gridworld import DoorGridWorldEnv
+    if isinstance(data_env, DoorGridWorldEnv) and data_env.has_doors:
+        # Extract doors from blocked_transitions
+        # blocked_transitions are (state, action) pairs
+        # We need to figure out the forward transition for visualization
+        full_to_canonical = {int(full_idx): canon_idx for canon_idx, full_idx in enumerate(canonical_states)}
+
+        print(f"  Extracting doors from environment file:")
+        action_names = {0: 'Up', 1: 'Right', 2: 'Down', 3: 'Left'}
+        for state, act in data_env.blocked_transitions:
+            y, x = state // data_env.width, state % data_env.width
+            print(f"    Blocked: State ({x}, {y}) cannot perform action {action_names[act]}")
+
+        for state_full, action in data_env.blocked_transitions:
+            # This blocks the transition from state_full via action
+            # To visualize, we need the REVERSE door (the one that's allowed)
+            # The blocked transition is the reverse, so we need to find the forward transition
+            reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}  # U<->D, L<->R
+            forward_action = reverse_action_map[action]
+
+            # Calculate the source state (which is the destination of the blocked transition)
+            # The blocked transition is (dest, reverse_action), so we need (source, forward_action)
+            action_effects = {
+                0: (0, -1),  # Up
+                1: (1, 0),   # Right
+                2: (0, 1),   # Down
+                3: (-1, 0),  # Left
+            }
+            dx, dy = action_effects[action]
+            dest_y = state_full // data_env.width
+            dest_x = state_full % data_env.width
+            source_x = dest_x + dx
+            source_y = dest_y + dy
+
+            # Check if source is valid
+            if 0 <= source_x < data_env.width and 0 <= source_y < data_env.height:
+                source_full = source_y * data_env.width + source_x
+                # Add to door_markers if not already there
+                if (source_full, forward_action) not in door_markers:
+                    door_markers[(source_full, forward_action)] = state_full
+
+        if len(door_markers) > (len(door_config['doors']) if door_config else 0):
+            num_file_doors = len(door_markers) - (len(door_config['doors']) if door_config else 0)
+            print(f"  Added {num_file_doors} file-defined doors to visualization")
+            print(f"  Door markers for visualization:")
+            for (src_state, action), dest_state in door_markers.items():
+                src_y, src_x = src_state // data_env.width, src_state % data_env.width
+                dest_y, dest_x = dest_state // data_env.width, dest_state % data_env.width
+                print(f"    Door from ({src_x}, {src_y}) via {action_names[action]} to ({dest_x}, {dest_y})")
 
     # Save visualization metadata (required by generate_plots_complex.py)
     viz_metadata = {
@@ -1046,11 +1099,38 @@ def main(args: Args):
     # Visualize results if requested
     if args.plot_during_training:
         door_markers = {}
+
+        # First, extract doors from random door config if available
         if door_config is not None and 'doors' in door_config:
             for s_canonical, a_forward, s_prime_canonical, a_reverse in door_config['doors']:
                 s_full = int(canonical_states[s_canonical])
                 s_prime_full = int(canonical_states[s_prime_canonical])
                 door_markers[(s_full, a_forward)] = s_prime_full
+
+        # Also extract doors directly from environment (for file-defined doors)
+        from src.envs.door_gridworld import DoorGridWorldEnv
+        if isinstance(data_env, DoorGridWorldEnv) and data_env.has_doors:
+            # Extract doors from blocked_transitions
+            reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}  # U<->D, L<->R
+            action_effects = {
+                0: (0, -1),  # Up
+                1: (1, 0),   # Right
+                2: (0, 1),   # Down
+                3: (-1, 0),  # Left
+            }
+
+            for state_full, action in data_env.blocked_transitions:
+                forward_action = reverse_action_map[action]
+                dx, dy = action_effects[action]
+                dest_y = state_full // data_env.width
+                dest_x = state_full % data_env.width
+                source_x = dest_x + dx
+                source_y = dest_y + dy
+
+                if 0 <= source_x < data_env.width and 0 <= source_y < data_env.height:
+                    source_full = source_y * data_env.width + source_x
+                    if (source_full, forward_action) not in door_markers:
+                        door_markers[(source_full, forward_action)] = state_full
 
         # Create eigendecomposition dict for visualization
         # Use averaged eigenvalue estimates from diagonal duals
