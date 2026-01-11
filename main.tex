@@ -1,0 +1,802 @@
+\documentclass[letter, 12pt]{article}
+
+\usepackage[utf8]{inputenc}
+
+\usepackage{geometry}
+\usepackage{fullpage}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+
+\usepackage{graphicx} % Required for inserting images
+
+\renewcommand{\baselinestretch}{1.2}
+
+\DeclareMathOperator{\E}{\mathbb{E}}
+\DeclareMathOperator{\V}{\mathbb{V}}
+\DeclareMathOperator{\avec}{\bf a}
+\DeclareMathOperator{\thetavec}{\boldsymbol{\theta}}
+
+\input{config/math_commands}
+
+\title{Complex ALLO}
+\author{Diego Gomez}
+\date{January 2025}
+
+\begin{document}
+
+\newgeometry{margin=1in}
+
+\maketitle
+
+\section{Stability analysis}
+
+\subsection{Notation}
+Let $\la\in\RR^{|\cS|\times|\cS|}$ be a finite dimensional matrix whose eigendecomposition we are interested in approximating. Let $\la=\mat{U}\bb{\Lambda}\mat{V}^{\top}$ be its eigendecomposition, with $\mat{U}=[\vu]_{i=1}^{d}$ and $\mat{V}=[\vv]_{i=1}^{d}$ the matrices of left and right eigenvectors, and $\bb{\Lambda}=\text{diag}([\ev]_{i=1}^{d})$ the diagonal matrix containing the eigenvalues. We will not make assumptions about $\la$ being symmetric, which means that $\vu,\vv\in\CC^{|S|}$ and $\ev\in\CC$, i.e., the eigensystem of $\la$ is complex. For ease of notation, we denote any complex quantity $x$ as $x=a^x+ib^x$. 
+
+Further, we will use $X=\{\vec{x}_i\}_{i=1}^{d}$ and $Y=\{\vec{y}_i\}_{i=1}^{d}$ to denote the sets of vectors approximating the left and right eigenvectors. Also, let us introduce the constraint errors $\hjkx=\ip{\bvxj,\sg{\vyk}}_{\rho}-\delta_{jk}$ and $\hjky=\ip{\sg{\bvxk},\vyj}_{\rho}-\delta_{jk}$, where $\rho\in\Delta(\cS)$ is a state distribution of choice. In particular, we can write the constraint errors as: $\hjkx=\vxj^\top\mat{D}\sg{\vyk}-\delta_{jk}$ and $\hjky=\sg{\vxk}^\top\mat{D}\vyj-\delta_{jk}$, with $\mat{D}=\text{diag}(\rho)$.
+
+When the approximations are exactly equal to the eigenvectors, the errors become $0$, meaning that their real part is equal to the identity matrix $\mat{I}$ and the imaginary one, to the null matrix $\mat{Z}$. We associate to the real errors the dual variables $\dualr^x=[\ajkx]_{1\le k\le j \le d}^{d}$ and $\dualr^y=[\ajky]_{1\le k\le j \le d}^{d}$, and to the imaginary ones, $\duali^x=[\bjkx]_{1\le k\le j \le d}^{d}$ and $\duali^y=[\bjky]_{1\le k\le j \le d}^{d}$.
+
+The squared augmented Lagrangian objective takes the form:
+\begin{gather*}
+    \lag(X,Y,\dualr^{x},\dualr^{y},\duali^{x},\duali^{y})
+    =
+    \si \frac{1}{2}(\re{\ip{\bvx, \la\vy}_{\rho}})^2
+    - \sj\skj \ajkx\re{\hjkx}
+    + \frac{b}{2} \sj\skj (\re{\hjkx})^2 
+    \cdots \\[0.2cm] \cdots 
+    - \sj\skj \ajky\re{\hjky}
+    + \frac{b}{2} \sj\skj (\re{\hjky})^2 
+    - \sj\skj \bjkx\im{\hjkx}  
+    \cdots \\[0.2cm] \cdots
+    + \frac{b}{2} \sj\skj (\im{\hjkx})^2
+    - \sj\skj \bjky\im{\hjky}
+    + \frac{b}{2} \sj\skj (\im{\hjky})^2\,.
+\end{gather*}
+
+
+\subsection{Dynamical system}
+Since we are using the dual framework, we have a dynamical system where each $\vx$ and $\vy$ is changing to minimize $\lag$ and, in opposition, each dual is changing to maximize $\lag$. To make more explicit the behavior of the resulting system, let us calculate the gradients driving the dynamics. First, for the real component of $\vx$:
+\begin{align*}
+    \vg_{\vec{a}^\vx} 
+    :=
+    \nabla_{\vec{a}^\vx}\lag
+    =&
+    \re{\ip{\bvx, \la\vy}_{\rho}} \nabla_{\vec{a}^\vx} \re{\ip{\bvx, \la\vy}_{\rho}}
+    - \ski (\aikx-b\cdot\re{\hikx}) \re{ \nabla_{\vec{a}^\vx} \hikx }
+    \\[0.2cm]
+    &- \ski (\bikx-b\cdot\im{\hikx}) \im{ \nabla_{\vec{a}^\vx} \hikx }
+    \,;
+    \\[0.6cm]
+    \nabla_{\vec{a}^\vx} \re{\ip{\bvx, \la\vy}_{\rho}}
+    =&
+    \nabla_{\vec{a}^\vx} \re{(\vec{a}^{\vx}+i\vec{b}^{\vx})^{\top}\mat{D}\la(\vec{a}^{\vy}+i\vec{b}^{\vy})}
+    \\[0.4cm]
+    &=
+    \nabla_{\vec{a}^\vx} \Big[
+        (\vec{a}^{\vx})^{\top}\mat{D}\la\vec{a}^{\vy}-(\vec{b}^{\vx})^{\top}\mat{D}\la\vec{b}^{\vy}
+    \Big]
+    \\[0.4cm]
+    &=
+    \mat{D}\la\vec{a}^{\vy}
+    \,;
+    \\[0.6cm]
+    \nabla_{\vec{a}^\vx} \hjkx
+    =&
+    \nabla_{\vec{a}^\vx} \vxj^\top\mat{D}\sg{\vyk}
+    \\[0.4cm]
+    &=
+    \nabla_{\vec{a}^\vx} (\vec{a}^{\vxj}+i\vec{b}^{\vxj})^{\top}\mat{D}\sg{(\vec{a}^{\vyk}+i\vec{b}^{\vyk})}
+    \\[0.4cm]
+    &=
+    \delta_{ij}\mat{D}(\vec{a}^{\vyk}+i\vec{b}^{\vyk})
+    \,;
+    \\[0.6cm]
+    \therefore
+    \vg_{\vec{a}^\vx}
+    =&
+    \re{\ip{\bvx, \la\vy}_{\rho}} \mat{D}\la\vec{a}^{\vy}
+    - \ski (\aikx-b\cdot\re{\hikx}) \mat{D}\vec{a}^{\vyk}
+    \\[0.2cm]
+    &- \ski (\bikx-b\cdot\im{\hikx}) \mat{D}\vec{b}^{\vyk}
+    \,.
+\end{align*}
+
+Similarly, we have for the imaginary component:
+\begin{align*}
+    \vg_{\vec{b}^\vx}
+    =&
+    -\re{\ip{\bvx, \la\vy}_{\rho}} \mat{D}\la\vec{b}^{\vy}
+    + \ski (\aikx-b\cdot\re{\hikx}) \mat{D}\vec{b}^{\vyk}
+    \\[0.2cm]
+    &- \ski (\bikx-b\cdot\im{\hikx}) \mat{D}\vec{a}^{\vyk}
+\end{align*}
+
+Together, we have that the steepest ascent direction with respect to $\vx$ is:
+\begin{align*}
+    \vg_{\vx} 
+    =& \vg_{\vec{a}^\vx} 
+    + i \vg_{\vec{b}^\vx}
+    \\[0.2cm]
+    &=
+    \re{\ip{\bvx, \la\vy}_{\rho}} \mat{D}\la (\vec{a}^{\vy}-i\vec{b}^{\vy})
+    - \ski (\aikx-b\cdot\re{\hikx}) \mat{D} (\vec{a}^{\vyk}-i\vec{b}^{\vyk})
+    \\[0.2cm]
+    &- \ski (\bikx-b\cdot\im{\hikx}) \mat{D}(\vec{b}^{\vyk}+i\vec{a}^{\vyk})
+    \\[0.2cm]
+    &=
+    \re{\ip{\bvx, \la\vy}_{\rho}} \mat{D}\la \bvy
+    - \ski (\aikx-b\cdot\re{\hikx}) \mat{D} \bvyk
+    \\[0.2cm]
+    &+ i\ski (\bikx-b\cdot\im{\hikx}) \mat{D}(i\vec{b}^{\vyk}-\vec{a}^{\vyk})
+    \\[0.2cm]
+    &=
+    \re{\ip{\bvx, \la\vy}_{\rho}} \mat{D}\la \bvy
+    - \ski (\aikx+i\bikx-b\hikx) \mat{D} \bvyk
+    \,.
+\end{align*}
+
+If we repeat the same process for the right approximation $\vy$, we will obtain a very similar expression, except that every matrix is now transposed and $\vxk$ replaces $\vyk$:
+\begin{align*}
+    \vg_{\vy} 
+    =& \vg_{\vec{a}^\vy} 
+    + i \vg_{\vec{b}^\vy}
+    =
+    \re{\ip{\bvx, \la\vy}_{\rho}} \la^{\top}\mat{D} \bvx
+    - \ski (\aiky+i\biky-b\hiky) \mat{D} \bvxk
+    \,.
+\end{align*}
+
+Additionally, the gradient with respect to the duals is equal to their corresponding constraint error term:
+\begin{equation*}
+    \vg_{\ajkx} 
+    = \re{\hjkx}
+    \hspace{3pt}\,;\hspace{15pt}
+    \vg_{\ajky} 
+    = \re{\hjky}
+    \hspace{3pt}\,;\hspace{15pt}
+    \vg_{\bjkx} 
+    = \im{\hjkx}
+    \hspace{3pt}\,;\hspace{15pt}
+    \vg_{\bjky} 
+    = \im{\hjky}
+    \,.
+\end{equation*}
+
+For ease of notation, let us denote $\Theta[t]=\text{vec}\{X[t],Y[t],\dualr^x[t],\dualr^y[t],\duali^x[t],\duali^y[t]\}$ the vectorized form of the primal and dual parameters. Also, let $$\vg_{\Theta}=\text{vec}\Big\{\bigcup_i \vg_{\vx},\bigcup_i \vg_{\vy}, \bigcup_{jk} -\vg_{\ajkx}, \bigcup_{jk}, -\vg_{\ajky}, \bigcup_{jk} -\vg_{\bjkx}, \bigcup_{jk} -\vg_{\bjky} \Big\}$$ be the corresponding vectorized gradients. Our dynamical system is given by:
+\begin{align*}
+    \Theta[t+1] 
+    &= 
+    \Theta[t] - \alpha\cdot\vg_{\Theta}(\Theta[t])
+    \,.
+\end{align*}
+
+\subsection{Equilibria}
+To find the equilibrium points of the system we just need to solve for the dynamics becoming stationary, i.e., when the gradients become 0.
+
+Trivially, requiring $g_{\ajkx}=g_{\ajky}=g_{\bjkx}=g_{\bjky}=0$ implies that the biorthogonality constraints are satisfied. For $\vg_{\vx}$ and $\vg_{\vy}$ to be $\bb{0}$, we must have:
+\begin{align*}
+    \re{\ip{\bvx^*, \la\vy^*}_{\rho}} \mat{D}\la \bvy^*
+    &= \ski (\aikx^*+i\bikx^*) \mat{D} \bvyk^*
+    \\[0.4cm]
+    \re{\ip{\bvx^*, \la\vy^*}_{\rho}} \la^{\top}\mat{D} \bvx^*
+    &= \ski (\aiky^*+i\biky^*) \mat{D} \bvxk^*
+    \,.
+\end{align*}
+% Hence, if we take the inner product with $\vxj^*$ on both sides ($j\leq i$) and consider biorthogonality:
+
+% \begin{equation*}
+%     \ip{\vx^*, \la\vy^*}\ip{\vxj^*, \la\vy^*}
+%     = \ski (\bikx)^*\ip{\vxj^*, \vyk^*}
+%     = (\bijx)^*
+%     \hspace{5pt}\implies\hspace{5pt}
+%     \,.
+% \end{equation*}
+
+% \begin{equation*}
+%     \begin{cases}
+%     \la\vy^* = \bb{0} \text{ and } (\bikx)^* = 0, k\le i\,;\text{ or}\\[0.1cm]
+%     \ip{\vx^*, \la\vy^*} = 0 \text{ and } (\bikx)^* = 0, k\le i\,;\text{ or}\\[0.1cm]
+%     \ip{\vxk^*, \la\vy^*} = \frac{(\bikx)^*\delta_{k\le i}}{\ip{\vx^*, \la\vy^*}}
+%     \,.
+%     \end{cases}
+% \end{equation*}
+
+% Similarly for $\vg_{\vy}$:
+% \begin{equation*}
+%     \ip{\vx^*, \la\vy^*}\cdotp\la^{\top}\vx^*
+%     = \ski (\biky)^*\vyk^*
+%     \hspace{5pt}\implies\hspace{5pt}
+%     \begin{cases}
+%     \la^{\top}\vx^* = \bb{0} \text{ and } (\biky)^* = 0, k\le i\,;\text{ or}\\[0.1cm]
+%     \ip{\vx^*, \la\vy^*} = 0 \text{ and } (\biky)^* = 0, k\le i\,;\text{ or}\\[0.1cm]
+%     \ip{\vx^*, \la\vyk^*} = \frac{(\biky)^*\delta_{k\le i}}{\ip{\vx^*, \la\vy^*}}
+%     \,.
+%     \end{cases}
+% \end{equation*}
+
+%  By itself, these conditions tell us that the solutions live in corresponding linear sub-spaces. To pin down exactly what this means, let us consider an arbitrary $i$. If $\ip{\vx^*, \la\vy^*}=0$, then $(\bikx)^*=(\biky)^*=0$ and $\la\vy^*=\bb{0}$ or  $\la^{\top}\vx^*=\bb{0}$. Now, if $\la\vy^*=\bb{0}$, then $\vx^*$ is just constrained to the hypersphere $\mathbb{S}^{|\cS|-1}$, and vice versa. If, instead, $\ip{\vx^*, \la\vy^*}\neq0$, we have that for any $1\le k\le d$ it is simultaneously true that:
+%  \begin{equation*}
+%     \ip{\vxk^*, \la\vy^*} 
+%     = 
+%     \frac{(\bikx)^*\delta_{k\le i}}{\ip{\vx^*, \la\vy^*}}
+%     =
+%     \frac{(\beta_{ki}^{y})^*\delta_{i\le k}}{\ip{\vx^*, \la\vy^*}} \,.
+%  \end{equation*}
+
+%  We can see that when $k\neq i$ one side is $0$ and, as a result, $\bikx=\biky=0$. Otherwise, we get that $\ip{\vx^*,\la\vy^*}^2=\beta_{ii}^{x*}=\beta_{ii}^{y*}$. Replacing these values of duals in the original equations leads to $\la\vy^*=\ip{\vx^*,\la\vy^*}\vx^*$ and $\la^{\top}\vx^*=\ip{\vx^*,\la\vy^*}\vy^*$. Thus, we can infer that  $\vec{x}_{i}^*$ and $\vec{y}_{i}^*$ are corresponding left and right singular vectors of $\la$. That is, $\vec{x}_{i}^*=\vec{u}_{\tau(i)}$, $\vec{y}_{i}^*=\vec{v}_{\tau(i)}$, and $(\beta_{ii}^x)^*=(\beta_{ii}^y)^*=\sigma_{\tau(i)}^2$, for some arbitrary permutation $\tau:\cS\to\cS$.
+
+%  The conclusion of this derivation is that the equilibria contains pairs of vectors corresponding to singular values of the Laplacian.  If the singular vector is non-zero, then the pair is the respective pair of left and singular vectors. However, if it is $0$, then one of the vectors needs to lie in the (left or right) null-space of the Laplacian, but the other one can be any arbitrary vector. This is particularly troubling since it is guaranteed that the Laplacian matrix will have $0$ as a singular value, and in continuous cases it is not uncommon for the multiplicity of this singular value to be larger than $1$. 
+ 
+% \subsection{Linear stability}
+% To determine the stability of the different equilibria, let us calculate the double gradients constituting the negative Jacobian matrix of the dynamical system. Let us start with $\vg_{\vx}$.
+% \begin{align*}
+%     J_{\vxj\vx}
+%     &:=
+%     (\nabla_{\vxj}\vg_{\vx})^{\top}
+%     =
+%     \begin{cases}
+%         \la\vy\otimes\la\vy - (\beta_{ii}^x - bh_{ii}^x)\mat{I} + 2b\vx\otimes\vx + b\sum_{k=1}^{i-1}\vxk\otimes\vxk
+%         \,,&\text{ if } j=i
+%         \,;\\[0.1cm]
+%         (-\beta_{ij}^x + b h_{ij}^x)\mat{I} + b\vxj\otimes\vx
+%         \,,&\text{ if } j<i
+%         \,;\\[0.1cm]
+%         \bb{0}
+%         \,,&\text{ if } j>i
+%         \,.
+%     \end{cases}
+%     \\[0.2cm]
+%     J_{\vyj\vx}
+%     &:=
+%     (\nabla_{\vyj}\vg_{\vx})^{\top}
+%     =
+%     \delta_{ij}\Big( \la\vy\otimes\la^{\top}\vx 
+%     + 
+%     \ip{\vx,\la\vy}\la
+%     \Big)
+%     \,.
+%     \\[0.2cm]
+%     J_{\bjkx\vx}
+%     &:=
+%     (\nabla_{\bjkx}\vg_{\vx})^{\top}
+%     =
+%     -\delta_{ij}\vxk
+%     \,.
+%     \\[0.2cm]
+%     J_{\bjky\vx}
+%     &:=
+%     (\nabla_{\bjky}\vg_{\vx})^{\top}
+%     =
+%     \bb{0}\,.
+% \end{align*}
+
+% By symmetry, we have for $\vg_{\vy}$:
+% \begin{align*}
+%     J_{\vxj\vy}
+%     &:=
+%     (\nabla_{\vxj}\vg_{\vy})^{\top}
+%     =
+%     \delta_{ij}\Big( \la^{\top}\vx\otimes\la\vy 
+%         + 
+%     \ip{\vx,\la\vy}\la^{\top}
+%     \Big)
+%     \,.
+%     \\[0.2cm]
+%     J_{\vyj\vy}
+%     &:=
+%     (\nabla_{\vyj}\vg_{\vy})^{\top}
+%     =
+%     \begin{cases}
+%         \la^{\top}\vx\otimes\la^{\top}\vx - (\beta_{ii}^y - bh_{ii}^y)\mat{I} + 2b\vy\otimes\vy + b\sum_{k=1}^{i-1}\vyk\otimes\vyk
+%         \,,&\text{ if } j=i
+%         \,;\\[0.1cm]
+%         (-\beta_{ij}^y + b h_{ij}^y)\mat{I} + b\vyj\otimes\vy
+%         \,,&\text{ if } j<i
+%         \,;\\[0.1cm]
+%         \bb{0}
+%         \,,&\text{ if } j>i
+%         \,.
+%     \end{cases}
+%     \\[0.2cm]
+%     J_{\bjkx\vy}
+%     &:=
+%     (\nabla_{\bjkx}\vg_{\vy})^{\top}
+%     =
+%     \bb{0}\,.
+%     \\[0.2cm]
+%     J_{\bjky\vy}
+%     &:=
+%     (\nabla_{\bjky}\vg_{\vy})^{\top}
+%     =
+%     -\delta_{ij}\vyk
+%     \,.
+% \end{align*}
+
+% For the remaining terms $g_{\bjkx}$ and $g_{\bjky}$ we have:
+% \begin{align*}
+%     J_{\vx\bjkx}
+%     &:=
+%     (\nabla_{\vx}(-g_{\bjkx}))^{\top}
+%     =
+%     \delta_{ij}\vxk^{\top} + \delta_{ik}\vxj^{\top}
+%     \,.
+%     \\[0.2cm]
+%     J_{\vy\bjkx}
+%     &:=
+%     (\nabla_{\vy}(-g_{\bjkx}))^{\top}
+%     =
+%     \bb{0}^{\top}
+%     \,.
+%     \\[0.2cm]
+%     J_{\beta_{j'k'}^x\bjkx}
+%     &:=
+%     (\nabla_{\beta_{j'k'}^x}(-g_{\bjkx}))^{\top}
+%     =
+%     0
+%     \,.
+%     \\[0.2cm]
+%     J_{\beta_{j'k'}^y\bjkx}
+%     &:=
+%     (\nabla_{\beta_{j'k'}^y}(-g_{\bjkx}))^{\top}
+%     =
+%     0
+%     \,.
+%     \\[0.4cm]
+%     J_{\vx\bjky}
+%     &:=
+%     (\nabla_{\vx}(-g_{\bjky}))^{\top}
+%     =
+%     \bb{0}^{\top}
+%     \,.
+%     \\[0.2cm]
+%     J_{\vy\bjky}
+%     &:=
+%     (\nabla_{\vy}(-g_{\bjky}))^{\top}
+%     =
+%     \delta_{ij}\vyk^{\top} + \delta_{ik}\vyj^{\top}
+%     \,.
+%     \\[0.2cm]
+%     J_{\beta_{j'k'}^x\bjky}
+%     &:=
+%     (\nabla_{\beta_{j'k'}^x}(-g_{\bjky}))^{\top}
+%     =
+%     0
+%     \,.
+%     \\[0.2cm]
+%     J_{\beta_{j'k'}^y\bjky}
+%     &:=
+%     (\nabla_{\beta_{j'k'}^y}(-g_{\bjky}))^{\top}
+%     =
+%     0
+%     \,.
+% \end{align*}
+
+% Now, we are interested in the stability of the equilibrium points, so we need to replace the values associated to them. We do this for $J_{\cdot\vx}$ and $J_{\cdot\vy}$, and the other ones follow in the same manner.
+% \begin{align*}
+%     J_{\vxj\vx}^*
+%     &=
+%     \begin{cases}
+%         (\sigma_{\tau(i)}^2 + 2b)\cdot\vec{u}_{\tau(i)}\otimes\vec{u}_{\tau(i)} 
+%         -
+%         \sigma_{\tau(i)}^2\mat{I} 
+%         + 
+%         b\sum_{k=1}^{i-1}\vec{u}_{\tau(k)}\otimes\vec{u}_{\tau(k)}
+%         \,,&\text{ if } j=i
+%         \,;\\[0.1cm]
+%         b \cdot\vec{u}_{\tau(j)}\otimes\vec{u}_{\tau(i)} 
+%         \,,&\text{ if } j<i
+%         \,;\\[0.1cm]
+%         \bb{0}
+%         \,,&\text{ if } j>i
+%         \,.
+%     \end{cases}
+%     \\[0.2cm]
+%     J_{\vyj\vx}^*
+%     &=
+%     \delta_{ij}\sigma_{\tau(i)}\Big( \sigma_{\tau(i)}\vec{u}_{\tau(j)}\otimes\vec{v}_{\tau(i)}
+%     + 
+%     \la
+%     \Big)
+%     \,.
+%     \\[0.2cm]
+%     J_{\bjkx\vx}^*
+%     &=
+%     -\delta_{ij}\vec{u}_{\tau(k)}
+%     \,.
+%     \\[0.2cm]
+%     J_{\bjky\vx}^*
+%     &=
+%     \bb{0}
+%     \,.
+%     \\[0.4cm]
+%     J_{\vxj\vy}^*
+%     &=
+%     \delta_{ij}\sigma_{\tau(i)}\Big( \sigma_{\tau(i)}\vec{v}_{\tau(i)}\otimes\vec{u}_{\tau(i)}
+%     + 
+%     \la^{\top}
+%     \Big)
+%     \,.
+%     \\[0.2cm]
+%     J_{\vyj\vy}^*
+%     &=
+%     \begin{cases}
+%         (\sigma_{\tau(i)}^2 + 2b)\cdot\vec{v}_{\tau(i)}\otimes\vec{v}_{\tau(i)} 
+%         -
+%         \sigma_{\tau(i)}^2\mat{I} 
+%         + 
+%         b\sum_{k=1}^{i-1}\vec{v}_{\tau(k)}\otimes\vec{v}_{\tau(k)}
+%         \,,&\text{ if } j=i
+%         \,;\\[0.1cm]
+%         b \cdot\vec{v}_{\tau(i)}\otimes\vec{v}_{\tau(j)} 
+%         \,,&\text{ if } j<i
+%         \,;\\[0.1cm]
+%         \bb{0}
+%         \,,&\text{ if } j>i
+%         \,.
+%     \end{cases}
+%     \\[0.2cm]
+%     J_{\bjkx\vy}^*
+%     &=
+%     \bb{0}
+%     \,.
+%     \\[0.2cm]
+%     J_{\bjky\vy}^*
+%     &=
+%     -\delta_{ij}\vec{v}_{\tau(k)}
+%     \,.
+% \end{align*}
+
+% Now, we determine the eigenvalues of the Jacobian. For this, we need to solve the system:
+% \begin{equation}
+%     \mat{J}\vec{z} = \eta\vec{z}\,,
+% \end{equation}
+% where $\eta$ denotes an eigenvalue of the Jacobian and $\vec{z}$ its corresponding eigenvector.
+
+% To facilitate the solution of this system, we use the following notation:
+% \begin{equation*}
+%     \vec{z} 
+%     =
+%     \begin{bmatrix}
+%         \vec{z}^x \\[0.1cm]
+%         \vec{z}^y \\[0.1cm]
+%         \bb{\zeta}^x \\[0.1cm]
+%         \bb{\zeta}^y
+%     \end{bmatrix}
+%     \,,\hspace{10pt}
+%     \vec{z}^{\cdot} 
+%     = \begin{bmatrix}
+%         \vec{z}_{i}^{\cdot}
+%     \end{bmatrix}_{i}
+%     \,,\hspace{10pt}
+%     \bb{\zeta}^{\cdot}
+%     =
+%     \begin{bmatrix}
+%         \zeta_{jk}^{\cdot}
+%     \end{bmatrix}_{k\le j}\,,\hspace{10pt}
+% \end{equation*}
+% where $\vec{z}_{i}^{\cdot}\in\RR^{|\cS|}$, for all $1\le i\le d$, and $\bb{\zeta}_{jk}^{\cdot}\in\RR$, for all $1\le k\le j\le d$. With this, the eigenvalue system becomes:
+% \begin{align*}
+%     \sum_{j=1}^{d}(J_{\vxj\vx}\vec{z}_j^x
+%     +
+%     J_{\vyj\vx}\vec{z}_j^y) 
+%     +
+%     \sj\skj ( J_{\bjkx\vx}\zeta_{jk}^x
+%     +
+%     J_{\bjky\vx}\zeta_{jk}^y)
+%     =
+%     \eta\vec{z}_i^x 
+%     \,,\hspace{4pt}
+%     & \forall\hspace{2pt} i \in [d]
+%     \,;\\[0.5cm]
+%     \sum_{j=1}^{d}(J_{\vxj\vy}\vec{z}_j^x
+%     +
+%     J_{\vyj\vy}\vec{z}_j^y) 
+%     +
+%     \sj\skj ( J_{\bjkx\vy}\zeta_{jk}^x
+%     +
+%     J_{\bjky\vy}\zeta_{jk}^y)
+%     =
+%     \eta\vec{z}_i^y 
+%     \,,\hspace{4pt}
+%     & \forall\hspace{2pt} i \in [d]
+%     \,;\\[0.5cm]
+%     \sum_{i=1}^{d}(J_{\vx\bjkx}\vec{z}_i^x
+%     +
+%     J_{\vyj\bjkx}\vec{z}_i^y) 
+%     +
+%     \sum_{j'=1}^d\sum_{k'=1}^{j'} ( J_{\beta_{j'k'}^x\bjkx}\zeta_{j'k'}^x
+%     +
+%     J_{\beta_{j'k'}^y\bjkx}\zeta_{j'k'}^y)
+%     =
+%     \eta\zeta_{jk}^x 
+%     \,,\hspace{4pt}
+%     & \forall\hspace{2pt} k \le j \in [d]
+%     \,;\\[0.5cm]
+%     \sum_{i=1}^{d}(J_{\vx\bjky}\vec{z}_i^x
+%     +
+%     J_{\vyj\bjky}\vec{z}_i^y) 
+%     +
+%     \sum_{j'=1}^d\sum_{k'=1}^{j'} ( J_{\beta_{j'k'}^x\bjky}\zeta_{j'k'}^x
+%     +
+%     J_{\beta_{j'k'}^y\bjky}\zeta_{j'k'}^y)
+%     =
+%     \eta\zeta_{jk}^y 
+%     \,,\hspace{4pt}
+%     & \forall\hspace{2pt} k \le j \in [d]
+%     \,.     
+% \end{align*}
+
+% Hence, if we consider the first set of equations and replace the Jacobian terms for the equilibrium point we get:
+% \begin{align*}
+%     \Big(
+%         (\sigma_{\tau(i)}^2 + 2b)\cdot\vec{u}_{\tau(i)}\otimes\vec{u}_{\tau(i)} 
+%         -
+%         \sigma_{\tau(i)}^2\mat{I} 
+%         + 
+%         b\sum_{k=1}^{i-1}\vec{u}_{\tau(k)}\otimes\vec{u}_{\tau(k)}
+%     \Big)\vec{z}_i^x
+%     &+
+%     \sum_{j=1}^{i-1}b \left(
+%         \vec{u}_{\tau(j)}\otimes\vec{u}_{\tau(i)}
+%     \right) \vec{z}_j^x
+%     + \cdots
+%     \\[0.2cm]
+%     \cdots +
+%     \sigma_{\tau(i)}\Big( \sigma_{\tau(i)}\vec{u}_{\tau(i)}\otimes\vec{v}_{\tau(i)}
+%     + 
+%     \la
+%     \Big) \vec{z}_i^y
+%     &-
+%     \ski \zeta_{ik}^x\vec{u}_{\tau(k)} 
+%     =
+%     \eta\vec{z}_i^x
+%     \,.
+% \end{align*}
+
+% Since the Laplacian singular vectors form a pair of basis, we have the decompositions $\vec{z}_{i}^{x}=\sum_{j=1}^{|\cS|}c_{ij}^x\vec{u}_{\tau(j)}$ and $\vec{z}_{i}^{y}=\sum_{j=1}^{|\cS|}c_{ij}^y\vec{v}_{\tau(j)}$, for some sequences of reals $(c_{ij}^x)_{j=1}^{|\cS|}$ and $(c_{ij}^y)_{j=1}^{|\cS|}$. In this way, the terms in the previous set of equations become:
+% \begin{align*}
+%     \Big(
+%         (\sigma_{\tau(i)}^2 + 2b)\cdot\vec{u}_{\tau(i)}\otimes\vec{u}_{\tau(i)} 
+%         -
+%         \sigma_{\tau(i)}^2\mat{I}
+%         &+ 
+%         b\sum_{k=1}^{i-1}\vec{u}_{\tau(k)}\otimes\vec{u}_{\tau(k)}
+%     \Big)\vec{z}_i^x
+%     = \cdots
+%     \\[0.2cm]
+%     &\cdots
+%     c_{ii}^x(\sigma_{\tau(i)}^2 + 2b)\cdot\vec{u}_{\tau(i)} 
+%     -
+%     \sigma_{\tau(i)}^2
+%     \sum_{j=1}^{|\cS|}c_{ij}^x\vec{u}_{\tau(j)}
+%     + b\sum_{k=1}^{i-1}c_{ik}^x\vec{u}_{\tau(k)}
+%     \,,
+%     \\[0.2cm]
+%     \sum_{j=1}^{i-1}b \left(
+%         \vec{u}_{\tau(j)}\otimes\vec{u}_{\tau(i)}
+%     \right) \vec{z}_j^x
+%     &=
+%     \sum_{j=1}^{i-1}c_{ji}^xb\vec{u}_{\tau(j)}
+%     \,,
+%     \\[0.2cm]
+%     \sigma_{\tau(i)}\Big( \sigma_{\tau(i)}\vec{u}_{\tau(i)}\otimes\vec{v}_{\tau(i)}
+%     + 
+%     \la
+%     \Big) \vec{z}_i^y
+%     &=
+%     c_{ii}^y\sigma_{\tau(i)}^2\vec{u}_{\tau(i)} + \sigma_{\tau(i)}\sum_{j=1}^{|\cS|}c_{ij}^y\sigma_{\tau(j)}\vec{u}_{\tau(j)}\,.
+% \end{align*}
+
+% We can observe that the resulting equation consists of linear combinations of linearly independent vectors. Hence, we obtain separate equations for each of these vectors:
+% \begin{align}\label{eq:coef}
+%     \begin{cases}
+%     -
+%     c_{ij}^x\sigma_{\tau(i)}^2
+%     +
+%     (c_{ji}^x+c_{ij}^x)b
+%     +
+%     c_{ij}^y\sigma_{\tau(i)}\sigma_{\tau(j)}
+%     -
+%     \zeta_{ij}^x
+%     =
+%     \eta c_{ij}^x
+%     \,,\hspace{4pt}
+%     & \forall\hspace{2pt} j < i \in [d]
+%     \,;
+%     \\[0.2cm]
+%     2(c_{ii}^xb + c_{ii}^y\sigma_{\tau(i)}^2 - \zeta_{ii}^x)
+%     =
+%     \eta c_{ii}^x
+%     \,,\hspace{4pt}
+%     & \forall\hspace{2pt} i \in [d]
+%     \,;
+%     \\[0.2cm]
+%     -
+%     c_{ij}^x\sigma_{\tau(i)}^2
+%     +
+%     c_{ij}^y\sigma_{\tau(i)}\sigma_{\tau(j)}
+%     =
+%     \eta c_{ij}^x
+%     \,,\hspace{4pt}
+%     & \forall\hspace{2pt} i<j, i \in [d], j \in [\cS]
+%     \,.
+%     \end{cases}
+% \end{align}
+
+% Let us concentrate first on the third set of equalities in Eq. \ref{eq:coef}. If we fix a pair $i<j$, then, what the equality tells us is that, if $c_{ij}^x$, that is, if the $i-$th component of the eigenvector $\vec{z}(\tau)$ contains in its linear combination $\vec{u}_{\tau(j)}$, then the corresponding eigenvalue has to satisfy:
+% \begin{equation*}
+%     \eta 
+%     =
+%     \sigma_{\tau(i)}\Big(
+%         \frac{c_{ij}^y}{c_{ij}^x}\sigma_{\tau(j)} - \sigma_{\tau(i)}
+%     \Big)
+%     \,.
+% \end{equation*}
+
+% Now, it is not hard to see that, because of the symmetry, all of the previous coefficient equalities apply as well when $x$ and $y$ are interchanged. Hence, we have as well the condition:
+% \begin{equation*}
+%     \eta 
+%     =
+%     \sigma_{\tau(i)}\Big(
+%         \frac{c_{ij}^x}{c_{ij}^y}\sigma_{\tau(j)} - \sigma_{\tau(i)}
+%     \Big)
+%     \,.
+% \end{equation*}
+
+% The two equalities can only happen simultaneously if $c_{ij}^x=c_{ij}^y$, which results in $\eta=\sigma_{\tau(i)}(\sigma_{\tau(j)} - \sigma_{\tau(i)})$. In order for the dynamics to be stable, we require all the eigenvalues to have a positive real part. Thus, we can conclude that the equilibrium point corresponding to $\tau$ is stable only if $\sigma_{\tau(j)}>\sigma_{\tau(i)}$. Thus, $\tau$ will correspond to a stable equilibrium only if the first $d$ singular values correspond to the lowest $d$ singular values. This applies to every pair $i<j$, and so we have identified $d(|S|-d)+d^2-\frac{d(d+1)}{2}=d(|S|-\frac{d+1}{2})$ eigenvalues so far.
+
+% Before proceeding with the rest of the coefficient equalities, let us replace the Jacobian terms corresponding to the dual variables. This will allow us to determine necessary relationships between the coefficient $c_{ij}^{\cdot}$ and the dual components $\zeta_{ij}^{\cdot}$.
+% \begin{align*}
+%     \sum_{i=1}^{d}J_{\vx\bjkx}\vec{z}_i^x 
+%     =
+%     \sum_{i=1}^{d}(\delta_{ij}\vec{u}_{\tau(k)}^{\top} + \delta_{ik}\vec{u}_{\tau(j)}^{\top})\sum_{j'=1}^{|\cS|}c_{ij'}^x\vec{u}_{\tau(j')}
+%     =
+%     c_{jk}^x+c_{kj}^x
+%     =
+%     \eta\zeta_{jk}^x 
+%     \,,\hspace{4pt}
+%     & \forall\hspace{2pt} k \le j \in [d]
+%     \,.
+% \end{align*}
+
+% Let us now fix $i$ and assume that $c_{ii}^x$ is not $0$. Then, replacing the relationship between the dual components $\zeta_{ii}^x$ and the coefficient $c_{ii}^x$ in the second set of equalities in Eq. \ref{eq:coef}, we obtain the following quadratic equation:
+% \begin{align*}
+%     2\eta(c_{ii}^xb + c_{ii}^y\sigma_{\tau(i)}^2 - \zeta_{ii}^x)
+%     =
+%     \eta^2 c_{ii}^x
+%     \hspace{10pt}&\implies\hspace{10pt}
+%     \eta^2 
+%     - 
+%     \Big(
+%         2b + 2\frac{c_{ii}^y}{c_{ii}^x}\sigma_{\tau(i)}^2
+%     \Big)\eta 
+%     + 
+%     (4) = 0
+%     \\[0.2cm]
+%     &\implies\hspace{10pt}
+%     \eta
+%     =
+%     \Big(
+%         b + \frac{c_{ii}^y}{c_{ii}^x}\sigma_{\tau(i)}^2
+%     \Big)
+%     \pm
+%     \sqrt{\Big(
+%         b + \frac{c_{ii}^y}{c_{ii}^x}\sigma_{\tau(i)}^2
+%     \Big)^2 - 4}
+%     \,.
+% \end{align*}
+% There are two things to mention here. First, just as in the case for $i<j$, we can deduce that, because of symmetry, this equation can only be satisfied simultaneously with its "$y$ counterpart" if $c_{ii}^x=c_{ii}^y$. Hence, the eigenvalue takes the simpler form $\eta=(b + \sigma_{\tau(i)}^2) \pm \sqrt{(b + \sigma_{\tau(i)}^2)^2 - 4}$. Second, as long as $b>2$, we have that the discriminant is always real and lower than $b + \sigma_{\tau(i)}^2$, which implies that the eigenvalues are positive for all $i$. With this, we have identified $2d$ more eigenvalues, for a total of $d(|S|-\frac{d-3}{2})$.
+
+% As a final step, let us fix a pair $j<i$ and assume $c_{ij}^x\neq0$. We want to find eigenvalues different to the previous ones, so, we will use the first equalities in Eq. \ref{eq:coef}, while we assume that the remaining ones are equal to 0 in both sides. For this to happen, we must have $c_{ii}^x=c_{ii}^y=c_{ji}^x=c_{ji}^y=0$. Hence, following the same reasoning as before:
+% \begin{align*}
+%     \eta(-
+%     c_{ij}^x\sigma_{\tau(i)}^2
+%     +
+%     c_{ij}^xb
+%     &+
+%     c_{ij}^y\sigma_{\tau(i)}\sigma_{\tau(j)}
+%     -
+%     \zeta_{ij}^x)
+%     =
+%     \eta^2 c_{ij}^x
+%     \\[0.2cm]
+%     &\implies\hspace{5pt}
+%     \eta^2 
+%     - 
+%     \Big(
+%         -
+%         \sigma_{\tau(i)}^2
+%         + 
+%         b
+%         +
+%         \frac{c_{ij}^y}{c_{ij}^x}\sigma_{\tau(i)}\sigma_{\tau(j)}
+%     \Big)\eta 
+%     + 
+%     (1) = 0
+%     \\[0.2cm]
+%     &\implies\hspace{5pt}
+%     \eta^2 
+%     - 
+%     \Big[
+%         b 
+%         + \sigma_{\tau(i)}(
+%         \sigma_{\tau(j)}
+%         -
+%         \sigma_{\tau(i)})
+%     \Big]\eta 
+%     + 
+%     (1) = 0
+%     \\[0.2cm]
+%     &\implies\hspace{5pt}
+%     \eta
+%     =
+%     \frac{1}{2}
+%     \Big[
+%         b 
+%         + \sigma_{\tau(i)}(
+%         \sigma_{\tau(j)}
+%         -
+%         \sigma_{\tau(i)})
+%     \Big]
+%     \pm
+%     \frac{1}{2}
+%     \sqrt{
+%         \Big[
+%             b 
+%             + \sigma_{\tau(i)}(
+%             \sigma_{\tau(j)}
+%             -
+%             \sigma_{\tau(i)})
+%         \Big]^2 
+%         - 4
+%     }
+%     \,.
+% \end{align*}
+% Thus, as long as $b>6$, we have that the eigenvalues are positive, guaranteeing stability for the ordered equilibria.
+
+\end{document}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ % For the time being, however, let us assume that no singular value can be $0$. Since all the solution vectors must lie in $\mathbb{S}^{|\cS|-1}$, we have that all the null solutions are unfeasible and thus $\vec{x}_{1}^*$, $\vec{y}_{1}^*$, $(\beta_{11}^{x})^*$, and $(\beta_{11}^{y})^*$ capture a pair of corresponding singular vectors and their singular value. Let us now proceed with a proof by induction. Let us assume that the first $i-1$ cases correspond, univocally, to pairs of singular vectors. In addition, since the singular vectors form basis of $\RR^{|\cS|}$, we can express $\vec{y}_{i}^*$ and $\vec{x}_{i}^*$ as linear combinations of them: $\vec{y}_{i}^*=\sum_{j=1}^{|\cS|}c_{ij}^{y}\vec{v}_{\tau(j)}$, $\vec{x}_{i}^*=\sum_{j=1}^{|\cS|}c_{ij}^{x}\vec{u}_{\tau(j)}$. Together with the previous equations, we get:
+
+ % \begin{align*}
+ %    \la\vec{y}_{i}^*
+ %    &=
+ %    \la \sum_{k=1}^{|\cS|}c_{ik}^{y}\vec{v}_{\tau(k)}
+ %    =
+ %    \sum_{k=1}^{|\cS|}\sigma_{\tau(k)}c_{ik}^{y}\vec{u}_{\tau(k)}
+ %    \,,\\[0.2cm]
+ %    \sum_{j=1}^{i} (\beta_{ij}^x)^* \vxj^*
+ %    &=
+ %    \sum_{j=1}^{i} (\beta_{ij}^x)^* \sum_{k=1}^{|\cS|} c_{ik}^{x}\vec{u}_{\tau(k)}
+ %    =
+ %    \sum_{k=1}^{|\cS|} \Big( \sum_{j=1}^{i} (\beta_{ij}^x)^* c_{ik}^{x} \Big) \vec{u}_{\tau(k)}\,,\\[0.2cm]
+ %    \implies \sigma_{\tau(k)}c_{ik}^{y}
+ %    &=
+ %    \sum_{j=1}^{i} \frac{(\beta_{ij}^x)^*}{\sqrt{(\beta_{ii}^x)^*}} c_{ik}^{x}\,,\forall k\in [\cS]
+ %    % \ip{\vec{x}_{i}^*,\la\vec{y}_{i}^*}
+ %    % &= 
+ %    % \ipb{\sum_{j=1}^{|\cS|}c_{ij}^{x}\vec{u}_{\tau(j)}, \sum_{k=1}^{|\cS|}\sigma_{\tau(k)}c_{ik}^{y}\vec{u}_{\tau(k)}}
+ %    % =
+ %    % \sum_{j=1}^{|\cS|}\sigma_{\tau(j)}c_{ij}^{x}c_{ij}^{y}
+ %    % \,,\\[0.2cm]
+ %    % \ip{\vx^*, \la\vy^*}\cdotp\la\vy^*
+ %    % &= 
+ %    % \sum_{j=1}^{|\cS|}\sum_{k=1}^{|\cS|}\sigma_{\tau(j)}\sigma_{\tau(k)}c_{ij}^{x}c_{ij}^{y}c_{ik}^{y}\vec{u}_{\tau(k)}
+ % \end{align*}
