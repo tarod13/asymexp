@@ -512,11 +512,64 @@ def main(args: Args):
 
     # Create door markers for visualization
     door_markers = {}
+
+    # First, extract doors from random door config if available
     if door_config is not None and 'doors' in door_config:
         for s_canonical, a_forward, s_prime_canonical, a_reverse in door_config['doors']:
             s_full = int(canonical_states[s_canonical])
             s_prime_full = int(canonical_states[s_prime_canonical])
             door_markers[(s_full, a_forward)] = s_prime_full
+
+    # Also extract doors directly from environment (for file-defined doors)
+    from src.envs.door_gridworld import DoorGridWorldEnv
+    if isinstance(data_env, DoorGridWorldEnv) and data_env.has_doors:
+        # Extract doors from blocked_transitions
+        # blocked_transitions are (state, action) pairs
+        # We need to figure out the forward transition for visualization
+        full_to_canonical = {int(full_idx): canon_idx for canon_idx, full_idx in enumerate(canonical_states)}
+
+        print(f"  Extracting doors from environment file:")
+        action_names = {0: 'Up', 1: 'Right', 2: 'Down', 3: 'Left'}
+        for state, act in data_env.blocked_transitions:
+            y, x = state // data_env.width, state % data_env.width
+            print(f"    Blocked: State ({x}, {y}) cannot perform action {action_names[act]}")
+
+        for state_full, action in data_env.blocked_transitions:
+            # This blocks the transition from state_full via action
+            # To visualize, we need the REVERSE door (the one that's allowed)
+            # The blocked transition is the reverse, so we need to find the forward transition
+            reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}  # U<->D, L<->R
+            forward_action = reverse_action_map[action]
+
+            # Calculate the source state (which is the destination of the blocked transition)
+            # The blocked transition is (dest, reverse_action), so we need (source, forward_action)
+            action_effects = {
+                0: (0, -1),  # Up
+                1: (1, 0),   # Right
+                2: (0, 1),   # Down
+                3: (-1, 0),  # Left
+            }
+            dx, dy = action_effects[action]
+            dest_y = state_full // data_env.width
+            dest_x = state_full % data_env.width
+            source_x = dest_x + dx
+            source_y = dest_y + dy
+
+            # Check if source is valid
+            if 0 <= source_x < data_env.width and 0 <= source_y < data_env.height:
+                source_full = source_y * data_env.width + source_x
+                # Add to door_markers if not already there
+                if (source_full, forward_action) not in door_markers:
+                    door_markers[(source_full, forward_action)] = state_full
+
+        if len(door_markers) > (len(door_config['doors']) if door_config else 0):
+            num_file_doors = len(door_markers) - (len(door_config['doors']) if door_config else 0)
+            print(f"  Added {num_file_doors} file-defined doors to visualization")
+            print(f"  Door markers for visualization:")
+            for (src_state, action), dest_state in door_markers.items():
+                src_y, src_x = src_state // data_env.width, src_state % data_env.width
+                dest_y, dest_x = dest_state // data_env.width, dest_state % data_env.width
+                print(f"    Door from ({src_x}, {src_y}) via {action_names[action]} to ({dest_x}, {dest_y})")
 
     # Save visualization metadata (required by generate_plots_complex.py)
     viz_metadata = {
@@ -556,8 +609,10 @@ def main(args: Args):
             'left_imag': init_scale * jax.random.normal(jax.random.split(encoder_key)[0], (num_canonical, args.num_eigenvectors)),
             'right_real': init_scale * jax.random.normal(jax.random.split(encoder_key)[1], (num_canonical, args.num_eigenvectors)),
             'right_imag': init_scale * jax.random.normal(jax.random.split(jax.random.split(encoder_key)[1])[0], (num_canonical, args.num_eigenvectors)),
-            'duals_real': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
-            'duals_imag': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
+            'duals_left_real': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
+            'duals_left_imag': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
+            'duals_right_real': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
+            'duals_right_imag': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
         }
         print(f"  Initialized matrices with random values")
 
@@ -704,12 +759,18 @@ def main(args: Args):
             n = phi_real.shape[0]
 
             # Get duals
-            duals_real = params['duals_real']
-            duals_imag = params['duals_imag']
+            dual_variables_left_real = params['duals_left_real']
+            dual_variables_left_imag = params['duals_left_imag']
+            dual_variables_right_real = params['duals_right_real']
+            dual_variables_right_imag = params['duals_right_imag']
 
-            # Eigenvalue sum
-            eigenvalue_sum_real = duals_real.sum()
-            eigenvalue_sum_imag = duals_imag.sum()
+            # Eigenvalue sum is the sum of left and right diagonal duals (averaged)
+            diagonal_duals_left_real = jnp.diag(dual_variables_left_real)
+            diagonal_duals_left_imag = jnp.diag(dual_variables_left_imag)
+            diagonal_duals_right_real = jnp.diag(dual_variables_right_real)
+            diagonal_duals_right_imag = jnp.diag(dual_variables_right_imag)
+            eigenvalue_sum_real = -0.5 * (diagonal_duals_left_real + diagonal_duals_right_real).sum()
+            eigenvalue_sum_imag = -0.5 * (diagonal_duals_left_imag + diagonal_duals_right_imag).sum()
 
             # Compute biorthogonality inner products: <ψ, φ>
             # Real part: Re(<ψ, φ>) = ψ_real^T φ_real + ψ_imag^T φ_imag
@@ -744,16 +805,27 @@ def main(args: Args):
             error_matrix_right_imag_1 = jnp.tril(inner_product_right_imag_1)
             error_matrix_right_imag_2 = jnp.tril(inner_product_right_imag_2)
 
-            # Norm errors for left eigenvectors
-            norm_errors_real = jnp.diag(error_matrix_left_real_1)
-            norm_errors_imag = jnp.diag(error_matrix_left_imag_1)
+            # Compute dual loss (for real part constraint)
+            dual_loss_pos_real = (
+                jax.lax.stop_gradient(dual_variables_left_real)
+                * error_matrix_left_real_1
+                + jax.lax.stop_gradient(dual_variables_right_real)
+                * error_matrix_right_real_1
+            ).sum()
 
-            # Compute dual loss for left eigenvectors
-            dual_loss_pos_real = -(jax.lax.stop_gradient(duals_real) * norm_errors_real).sum()
-            dual_loss_neg_real = args.step_size_duals * (duals_real * jax.lax.stop_gradient(norm_errors_real)).sum()
+            dual_loss_neg_left_real = -(dual_variables_left_real * jax.lax.stop_gradient(args.step_size_duals * error_matrix_left_real_1)).sum()
+            dual_loss_neg_right_real = -(dual_variables_right_real * jax.lax.stop_gradient(args.step_size_duals * error_matrix_right_real_1)).sum()
 
-            dual_loss_pos_imag = -(jax.lax.stop_gradient(duals_imag) * norm_errors_imag).sum()
-            dual_loss_neg_imag = args.step_size_duals * (duals_imag * jax.lax.stop_gradient(norm_errors_imag)).sum()
+            # Compute dual loss (for imaginary part constraint)
+            dual_loss_pos_imag = (
+                jax.lax.stop_gradient(dual_variables_left_imag)
+                * error_matrix_left_imag_1
+                + jax.lax.stop_gradient(dual_variables_right_imag)
+                * error_matrix_right_imag_1
+            ).sum()
+
+            dual_loss_neg_left_imag = -(dual_variables_left_imag * jax.lax.stop_gradient(args.step_size_duals * error_matrix_left_imag_1)).sum()
+            dual_loss_neg_right_imag = -(dual_variables_right_imag * jax.lax.stop_gradient(args.step_size_duals * error_matrix_right_imag_1)).sum()
 
             # Compute right eigenvector norms
             phi_norms_real_1 = jnp.log((phi_real**2 + phi_imag**2).mean(0)+1e-6).clip(max=10)
@@ -764,7 +836,9 @@ def main(args: Args):
 
             # Total dual loss
             dual_loss_pos = dual_loss_pos_real + dual_loss_pos_imag
-            dual_loss_neg = dual_loss_neg_real + dual_loss_neg_imag
+            dual_loss_neg_left = dual_loss_neg_left_real + dual_loss_neg_left_imag
+            dual_loss_neg_right = dual_loss_neg_right_real + dual_loss_neg_right_imag
+            dual_loss_neg = dual_loss_neg_left + dual_loss_neg_right
 
             # Compute barrier loss (for real part constraint)
             quadratic_error_matrix_left_real = 2 * error_matrix_left_real_1 * jax.lax.stop_gradient(error_matrix_left_real_2)
@@ -838,15 +912,28 @@ def main(args: Args):
 
             # Add dual variables and errors to aux
             for i in range(min(11, args.num_eigenvectors)):
-                aux[f'dual_real_{i}'] = duals_real[i]
-                aux[f'dual_imag_{i}'] = duals_imag[i]
+                # Diagonal duals for left and right eigenvectors
+                aux[f'dual_left_real_{i}'] = dual_variables_left_real[i, i]
+                aux[f'dual_left_imag_{i}'] = dual_variables_left_imag[i, i]
+                aux[f'dual_right_real_{i}'] = dual_variables_right_real[i, i]
+                aux[f'dual_right_imag_{i}'] = dual_variables_right_imag[i, i]
+                # Combined eigenvalue estimate (average of left and right duals)
+                aux[f'dual_real_{i}'] = -0.5 * (dual_variables_left_real[i, i] + dual_variables_right_real[i, i])
+                aux[f'dual_imag_{i}'] = -0.5 * (dual_variables_left_imag[i, i] + dual_variables_right_imag[i, i])
+
+                # Add diagonal errors for each eigenvector
                 aux[f'error_left_real_{i}'] = error_matrix_left_real_1[i, i]
                 aux[f'error_left_imag_{i}'] = error_matrix_left_imag_1[i, i]
                 aux[f'error_right_real_{i}'] = error_matrix_right_real_1[i, i]
                 aux[f'error_right_imag_{i}'] = error_matrix_right_imag_1[i, i]
                 aux[f'error_norm_right_{i}'] = norm_errors_right_1[i]
 
+                # Track both off-diagonal duals and errors
                 for j in range(0, min(2, i)):
+                    aux[f'dual_left_real_{i}_{j}'] = dual_variables_left_real[i, j]
+                    aux[f'dual_left_imag_{i}_{j}'] = dual_variables_left_imag[i, j]
+                    aux[f'dual_right_real_{i}_{j}'] = dual_variables_right_real[i, j]
+                    aux[f'dual_right_imag_{i}_{j}'] = dual_variables_right_imag[i, j]
                     aux[f'error_left_real_{i}_{j}'] = error_matrix_left_real_1[i, j]
                     aux[f'error_left_imag_{i}_{j}'] = error_matrix_left_imag_1[i, j]
                     aux[f'error_right_real_{i}_{j}'] = error_matrix_right_real_1[i, j]
@@ -974,14 +1061,32 @@ def main(args: Args):
     # Save final model
     final_params = train_state.params
 
+    # Compute eigenvalue estimates from dual variables
+    # Extract diagonal elements and average left/right duals
+    diagonal_duals_left_real = jnp.diag(final_params['duals_left_real'])
+    diagonal_duals_left_imag = jnp.diag(final_params['duals_left_imag'])
+    diagonal_duals_right_real = jnp.diag(final_params['duals_right_real'])
+    diagonal_duals_right_imag = jnp.diag(final_params['duals_right_imag'])
+
+    learned_eigenvalues_real = -0.5 * (diagonal_duals_left_real + diagonal_duals_right_real)
+    learned_eigenvalues_imag = -0.5 * (diagonal_duals_left_imag + diagonal_duals_right_imag)
+
     if args.save_model:
         # Save with names expected by generate_plots_complex.py
         np.save(results_dir / "final_learned_left_real.npy", np.array(final_params['left_real']))
         np.save(results_dir / "final_learned_left_imag.npy", np.array(final_params['left_imag']))
         np.save(results_dir / "final_learned_right_real.npy", np.array(final_params['right_real']))
         np.save(results_dir / "final_learned_right_imag.npy", np.array(final_params['right_imag']))
-        np.save(results_dir / "learned_duals_real.npy", np.array(final_params['duals_real']))
-        np.save(results_dir / "learned_duals_imag.npy", np.array(final_params['duals_imag']))
+
+        # Save dual variables (eigenvalue estimates)
+        np.save(results_dir / "learned_duals_real.npy", np.array(learned_eigenvalues_real))
+        np.save(results_dir / "learned_duals_imag.npy", np.array(learned_eigenvalues_imag))
+
+        # Also save full dual matrices for debugging
+        np.save(results_dir / "duals_left_real.npy", np.array(final_params['duals_left_real']))
+        np.save(results_dir / "duals_left_imag.npy", np.array(final_params['duals_left_imag']))
+        np.save(results_dir / "duals_right_real.npy", np.array(final_params['duals_right_real']))
+        np.save(results_dir / "duals_right_imag.npy", np.array(final_params['duals_right_imag']))
 
     # Save metrics (required by generate_plots_complex.py)
     with open(results_dir / "metrics_history.json", 'w') as f:
@@ -994,17 +1099,45 @@ def main(args: Args):
     # Visualize results if requested
     if args.plot_during_training:
         door_markers = {}
+
+        # First, extract doors from random door config if available
         if door_config is not None and 'doors' in door_config:
             for s_canonical, a_forward, s_prime_canonical, a_reverse in door_config['doors']:
                 s_full = int(canonical_states[s_canonical])
                 s_prime_full = int(canonical_states[s_prime_canonical])
                 door_markers[(s_full, a_forward)] = s_prime_full
 
+        # Also extract doors directly from environment (for file-defined doors)
+        from src.envs.door_gridworld import DoorGridWorldEnv
+        if isinstance(data_env, DoorGridWorldEnv) and data_env.has_doors:
+            # Extract doors from blocked_transitions
+            reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}  # U<->D, L<->R
+            action_effects = {
+                0: (0, -1),  # Up
+                1: (1, 0),   # Right
+                2: (0, 1),   # Down
+                3: (-1, 0),  # Left
+            }
+
+            for state_full, action in data_env.blocked_transitions:
+                forward_action = reverse_action_map[action]
+                dx, dy = action_effects[action]
+                dest_y = state_full // data_env.width
+                dest_x = state_full % data_env.width
+                source_x = dest_x + dx
+                source_y = dest_y + dy
+
+                if 0 <= source_x < data_env.width and 0 <= source_y < data_env.height:
+                    source_full = source_y * data_env.width + source_x
+                    if (source_full, forward_action) not in door_markers:
+                        door_markers[(source_full, forward_action)] = state_full
+
         # Create eigendecomposition dict for visualization
+        # Use averaged eigenvalue estimates from diagonal duals
         learned_eigendecomp = {
-            'eigenvalues': (final_params['duals_real'] + 1j * final_params['duals_imag']).astype(jnp.complex64),
-            'eigenvalues_real': final_params['duals_real'],
-            'eigenvalues_imag': final_params['duals_imag'],
+            'eigenvalues': (learned_eigenvalues_real + 1j * learned_eigenvalues_imag).astype(jnp.complex64),
+            'eigenvalues_real': learned_eigenvalues_real,
+            'eigenvalues_imag': learned_eigenvalues_imag,
             'right_eigenvectors_real': final_params['right_real'],
             'right_eigenvectors_imag': final_params['right_imag'],
             'left_eigenvectors_real': final_params['left_real'],
