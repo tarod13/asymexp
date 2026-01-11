@@ -1341,9 +1341,6 @@ def create_replay_buffer_only(env, canonical_states, args: Args):
     )
     print(f"Collected {metrics['total_transitions']} transitions.")
 
-    # Map full state indices to canonical indices
-    full_to_canonical = {int(full_idx): canon_idx for canon_idx, full_idx in enumerate(canonical_states)}
-
     # Initialize replay buffer
     max_valid_length = int(raw_episodes['lengths'].max()) + 1
     replay_buffer = EpisodicReplayBuffer(
@@ -1353,30 +1350,13 @@ def create_replay_buffer_only(env, canonical_states, args: Args):
         seed=args.seed
     )
 
-    # Convert and add episodes to buffer
-    for ep_idx in range(args.num_envs):
-        episode_length = int(raw_episodes['lengths'][ep_idx])
-        episode_obs_full = raw_episodes['observations'][ep_idx, :episode_length + 1]
-        episode_terminals = raw_episodes['terminals'][ep_idx, :episode_length + 1]
-
-        episode_obs_canonical = []
-        episode_terminals_canonical = []
-        for i, state_idx in enumerate(episode_obs_full):
-            state_idx = int(state_idx)
-            if state_idx in full_to_canonical:
-                episode_obs_canonical.append(full_to_canonical[state_idx])
-                episode_terminals_canonical.append(int(episode_terminals[i]))
-
-        if len(episode_obs_canonical) >= 2:
-            obs_array = np.array(episode_obs_canonical, dtype=np.int32).reshape(-1, 1)
-            terminals_array = np.array(episode_terminals_canonical, dtype=np.int32)
-            episode_dict = {
-                'obs': obs_array,
-                'terminals': terminals_array,
-            }
-            replay_buffer.add_episode(episode_dict)
-
-    print(f"Added {len(replay_buffer)} trajectory sequences to replay buffer")
+    # Convert and add episodes to buffer using vectorized method
+    print("\nPopulating replay buffer with episodes...")
+    replay_buffer.populate_with_tabular_episodes(
+        canonical_states=canonical_states,
+        episodes=raw_episodes,
+    )
+    print(f"  Added {len(replay_buffer)} trajectory sequences to replay buffer")
     return replay_buffer
 
 
@@ -1439,9 +1419,6 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
 
     print(f"Collected {metrics['total_transitions']} transitions.")
 
-    # Map full state indices to canonical indices
-    full_to_canonical = {int(full_idx): canon_idx for canon_idx, full_idx in enumerate(canonical_states)}
-
     # Initialize replay buffer
     # Find max valid episode length for buffer sizing
     max_valid_length = int(raw_episodes['lengths'].max()) + 1
@@ -1452,38 +1429,13 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         seed=args.seed
     )
 
-    # Convert raw episodes (OGBench format) to canonical state space and add to buffer
-    # Each row may contain multiple trajectories separated by terminal flags
-    for ep_idx in range(args.num_envs):
-        episode_length = int(raw_episodes['lengths'][ep_idx])
-
-        # Get ALL observations and terminals up to write_idx
-        episode_obs_full = raw_episodes['observations'][ep_idx, :episode_length + 1]
-        episode_terminals = raw_episodes['terminals'][ep_idx, :episode_length + 1]
-
-        # Convert ALL observations to canonical state indices (don't filter by valids here)
-        episode_obs_canonical = []
-        episode_terminals_canonical = []
-        for i, state_idx in enumerate(episode_obs_full):
-            state_idx = int(state_idx)
-            # Only convert states that exist in canonical mapping
-            if state_idx in full_to_canonical:
-                episode_obs_canonical.append(full_to_canonical[state_idx])
-                episode_terminals_canonical.append(int(episode_terminals[i]))
-
-        # Add ALL data to buffer if it has at least 2 states
-        # The buffer will use terminals to determine trajectory boundaries during sampling
-        if len(episode_obs_canonical) >= 2:
-            # Reshape to (n, 1) as expected by replay buffer's transform function
-            obs_array = np.array(episode_obs_canonical, dtype=np.int32).reshape(-1, 1)
-            terminals_array = np.array(episode_terminals_canonical, dtype=np.int32)
-            episode_dict = {
-                'obs': obs_array,
-                'terminals': terminals_array,
-            }
-            replay_buffer.add_episode(episode_dict)
-
-    print(f"Added {len(replay_buffer)} trajectory sequences to replay buffer (may contain multiple episodes)")
+    # Convert and add episodes to buffer using vectorized method
+    print("\nPopulating replay buffer with episodes...")
+    replay_buffer.populate_with_tabular_episodes(
+        canonical_states=canonical_states,
+        episodes=raw_episodes,
+    )
+    print(f"  Added {len(replay_buffer)} trajectory sequences to replay buffer")
 
     # Extract canonical state subspace
     transition_counts = transition_counts_full[jnp.ix_(canonical_states, jnp.arange(env.action_space), canonical_states)]
@@ -1753,13 +1705,17 @@ def learn_eigenvectors(args):
     # Create masks for different parameter groups
     encoder_mask = {
         'encoder': True,
-        'duals_real': False,
-        'duals_imag': False,
+        'duals_left_real': False,
+        'duals_left_imag': False,
+        'duals_right_real': False,
+        'duals_right_imag': False,
     }
     other_mask = {
         'encoder': False,
-        'duals_real': True,
-        'duals_imag': True,
+        'duals_left_real': True,
+        'duals_left_imag': True,
+        'duals_right_real': True,
+        'duals_right_imag': True,
     }
 
     tx = optax.chain(
@@ -1798,8 +1754,10 @@ def learn_eigenvectors(args):
 
         initial_params = {
             'encoder': encoder.init(encoder_key, dummy_input),
-            'duals_real': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
-            'duals_imag': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
+            'duals_left_real': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
+            'duals_left_imag': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
+            'duals_right_real': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
+            'duals_right_imag': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
         }
 
         encoder_state = TrainState.create(
@@ -1848,12 +1806,18 @@ def learn_eigenvectors(args):
             n = phi_real.shape[0]
 
             # Get duals
-            duals_real = params['duals_real']  # For left eigenvector biorthogonality
-            duals_imag = params['duals_imag']  # For left eigenvector biorthogonality
+            dual_variables_left_real = params['duals_left_real']
+            dual_variables_left_imag = params['duals_left_imag']
+            dual_variables_right_real = params['duals_right_real']
+            dual_variables_right_imag = params['duals_right_imag']
 
-            # Eigenvalue sum is the sum of left and right duals (averaged)
-            eigenvalue_sum_real = duals_real.sum()
-            eigenvalue_sum_imag = duals_imag.sum()
+            # Eigenvalue sum is the sum of left and right diagonal duals (averaged)
+            diagonal_duals_left_real = jnp.diag(dual_variables_left_real)
+            diagonal_duals_left_imag = jnp.diag(dual_variables_left_imag)
+            diagonal_duals_right_real = jnp.diag(dual_variables_right_real)
+            diagonal_duals_right_imag = jnp.diag(dual_variables_right_imag)
+            eigenvalue_sum_real = -0.5 * (diagonal_duals_left_real + diagonal_duals_right_real).sum()
+            eigenvalue_sum_imag = -0.5 * (diagonal_duals_left_imag + diagonal_duals_right_imag).sum()
 
             # Compute biorthogonality inner products: <ψ, φ>
             # Real part: Re(<ψ, φ>) = ψ_real^T φ_real + ψ_imag^T φ_imag
@@ -1890,16 +1854,27 @@ def learn_eigenvectors(args):
             error_matrix_right_imag_1 = jnp.tril(inner_product_right_imag_1)
             error_matrix_right_imag_2 = jnp.tril(inner_product_right_imag_2)
 
-            # Norm errors for left eigenvectors (from biorthogonality)
-            norm_errors_real = jnp.diag(error_matrix_left_real_1)
-            norm_errors_imag = jnp.diag(error_matrix_left_imag_1)
+            # Compute dual loss (for real part constraint)
+            dual_loss_pos_real = (
+                jax.lax.stop_gradient(dual_variables_left_real)
+                * error_matrix_left_real_1
+                + jax.lax.stop_gradient(dual_variables_right_real)
+                * error_matrix_right_real_1
+            ).sum()
 
-            # Compute dual loss for left eigenvectors (for biorthogonality constraint)
-            dual_loss_pos_real = -(jax.lax.stop_gradient(duals_real) * norm_errors_real).sum()
-            dual_loss_neg_real = args.step_size_duals * (duals_real * jax.lax.stop_gradient(norm_errors_real)).sum()
+            dual_loss_neg_left_real = -(dual_variables_left_real * jax.lax.stop_gradient(args.step_size_duals * error_matrix_left_real_1)).sum()
+            dual_loss_neg_right_real = -(dual_variables_right_real * jax.lax.stop_gradient(args.step_size_duals * error_matrix_right_real_1)).sum()
 
-            dual_loss_pos_imag = -(jax.lax.stop_gradient(duals_imag) * norm_errors_imag).sum()
-            dual_loss_neg_imag = args.step_size_duals * (duals_imag * jax.lax.stop_gradient(norm_errors_imag)).sum()
+            # Compute dual loss (for imaginary part constraint)
+            dual_loss_pos_imag = (
+                jax.lax.stop_gradient(dual_variables_left_imag)
+                * error_matrix_left_imag_1
+                + jax.lax.stop_gradient(dual_variables_right_imag)
+                * error_matrix_right_imag_1
+            ).sum()
+
+            dual_loss_neg_left_imag = -(dual_variables_left_imag * jax.lax.stop_gradient(args.step_size_duals * error_matrix_left_imag_1)).sum()
+            dual_loss_neg_right_imag = -(dual_variables_right_imag * jax.lax.stop_gradient(args.step_size_duals * error_matrix_right_imag_1)).sum()
 
             # Compute right eigenvector norms: <phi, phi>
             # For complex vectors: <phi, phi> = phi_real^T phi_real + phi_imag^T phi_imag
@@ -1910,9 +1885,11 @@ def learn_eigenvectors(args):
             norm_errors_right_1 = phi_norms_real_1
             norm_errors_right_2 = phi_norms_real_2
 
-            # Total dual loss (only for left eigenvector biorthogonality)
+            # Total dual loss
             dual_loss_pos = dual_loss_pos_real + dual_loss_pos_imag
-            dual_loss_neg = dual_loss_neg_real + dual_loss_neg_imag
+            dual_loss_neg_left = dual_loss_neg_left_real + dual_loss_neg_left_imag
+            dual_loss_neg_right = dual_loss_neg_right_real + dual_loss_neg_right_imag
+            dual_loss_neg = dual_loss_neg_left + dual_loss_neg_right
 
             # Compute barrier loss (for real part constraint)
             quadratic_error_matrix_left_real = 2 * error_matrix_left_real_1 * jax.lax.stop_gradient(error_matrix_left_real_2)
@@ -1983,9 +1960,14 @@ def learn_eigenvectors(args):
 
             # Add dual variables and errors to aux
             for i in range(min(11, args.num_eigenvectors)):
-                # Left eigenvector duals (for biorthogonality)
-                aux[f'dual_real_{i}'] = duals_real[i]
-                aux[f'dual_imag_{i}'] = duals_imag[i]
+                # Diagonal duals for left and right eigenvectors
+                aux[f'dual_left_real_{i}'] = dual_variables_left_real[i, i]
+                aux[f'dual_left_imag_{i}'] = dual_variables_left_imag[i, i]
+                aux[f'dual_right_real_{i}'] = dual_variables_right_real[i, i]
+                aux[f'dual_right_imag_{i}'] = dual_variables_right_imag[i, i]
+                # Combined eigenvalue estimate (average of left and right duals)
+                aux[f'dual_real_{i}'] = -0.5 * (dual_variables_left_real[i, i] + dual_variables_right_real[i, i])
+                aux[f'dual_imag_{i}'] = -0.5 * (dual_variables_left_imag[i, i] + dual_variables_right_imag[i, i])
 
                 # Add diagonal errors for each eigenvector (biorthogonality)
                 aux[f'error_left_real_{i}'] = error_matrix_left_real_1[i, i]
@@ -1996,9 +1978,12 @@ def learn_eigenvectors(args):
                 # Add norm constraint errors for right eigenvectors
                 aux[f'error_norm_right_{i}'] = norm_errors_right_1[i]
 
-                # Note: Off-diagonal duals no longer exist in simplified algorithm
-                # Only track off-diagonal errors
+                # Track both off-diagonal duals and errors
                 for j in range(0, min(2, i)):
+                    aux[f'dual_left_real_{i}_{j}'] = dual_variables_left_real[i, j]
+                    aux[f'dual_left_imag_{i}_{j}'] = dual_variables_left_imag[i, j]
+                    aux[f'dual_right_real_{i}_{j}'] = dual_variables_right_real[i, j]
+                    aux[f'dual_right_imag_{i}_{j}'] = dual_variables_right_imag[i, j]
                     aux[f'error_left_real_{i}_{j}'] = error_matrix_left_real_1[i, j]
                     aux[f'error_left_imag_{i}_{j}'] = error_matrix_left_imag_1[i, j]
                     aux[f'error_right_real_{i}_{j}'] = error_matrix_right_real_1[i, j]
@@ -2491,6 +2476,25 @@ def learn_eigenvectors(args):
     np.save(results_dir / "final_learned_left_imag.npy", np.array(final_features_dict['left_imag']))
     np.save(results_dir / "final_learned_right_real.npy", np.array(final_features_dict['right_real']))
     np.save(results_dir / "final_learned_right_imag.npy", np.array(final_features_dict['right_imag']))
+
+    # Save dual variables (eigenvalue estimates)
+    # Extract diagonal elements and average left/right duals
+    diagonal_duals_left_real = jnp.diag(encoder_state.params['duals_left_real'])
+    diagonal_duals_left_imag = jnp.diag(encoder_state.params['duals_left_imag'])
+    diagonal_duals_right_real = jnp.diag(encoder_state.params['duals_right_real'])
+    diagonal_duals_right_imag = jnp.diag(encoder_state.params['duals_right_imag'])
+
+    learned_eigenvalues_real = -0.5 * (diagonal_duals_left_real + diagonal_duals_right_real)
+    learned_eigenvalues_imag = -0.5 * (diagonal_duals_left_imag + diagonal_duals_right_imag)
+
+    np.save(results_dir / "learned_duals_real.npy", np.array(learned_eigenvalues_real))
+    np.save(results_dir / "learned_duals_imag.npy", np.array(learned_eigenvalues_imag))
+
+    # Also save full dual matrices for debugging
+    np.save(results_dir / "duals_left_real.npy", np.array(encoder_state.params['duals_left_real']))
+    np.save(results_dir / "duals_left_imag.npy", np.array(encoder_state.params['duals_left_imag']))
+    np.save(results_dir / "duals_right_real.npy", np.array(encoder_state.params['duals_right_real']))
+    np.save(results_dir / "duals_right_imag.npy", np.array(encoder_state.params['duals_right_imag']))
 
     # Compute and save normalized eigenvectors
     final_normalized_features = normalize_eigenvectors_for_comparison(
