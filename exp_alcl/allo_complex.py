@@ -2525,6 +2525,25 @@ def learn_eigenvectors(args):
     np.save(results_dir / "final_learned_right_real.npy", np.array(final_features_dict['right_real']))
     np.save(results_dir / "final_learned_right_imag.npy", np.array(final_features_dict['right_imag']))
 
+    # Save dual variables (eigenvalue estimates)
+    # Extract diagonal elements and average left/right duals
+    diagonal_duals_left_real = jnp.diag(encoder_state.params['duals_left_real'])
+    diagonal_duals_left_imag = jnp.diag(encoder_state.params['duals_left_imag'])
+    diagonal_duals_right_real = jnp.diag(encoder_state.params['duals_right_real'])
+    diagonal_duals_right_imag = jnp.diag(encoder_state.params['duals_right_imag'])
+
+    learned_eigenvalues_real = -0.5 * (diagonal_duals_left_real + diagonal_duals_right_real)
+    learned_eigenvalues_imag = -0.5 * (diagonal_duals_left_imag + diagonal_duals_right_imag)
+
+    np.save(results_dir / "learned_duals_real.npy", np.array(learned_eigenvalues_real))
+    np.save(results_dir / "learned_duals_imag.npy", np.array(learned_eigenvalues_imag))
+
+    # Also save full dual matrices for debugging
+    np.save(results_dir / "duals_left_real.npy", np.array(encoder_state.params['duals_left_real']))
+    np.save(results_dir / "duals_left_imag.npy", np.array(encoder_state.params['duals_left_imag']))
+    np.save(results_dir / "duals_right_real.npy", np.array(encoder_state.params['duals_right_real']))
+    np.save(results_dir / "duals_right_imag.npy", np.array(encoder_state.params['duals_right_imag']))
+
     # Compute and save normalized eigenvectors
     final_normalized_features = normalize_eigenvectors_for_comparison(
         left_real=final_features_dict['left_real'],

@@ -1008,14 +1008,32 @@ def main(args: Args):
     # Save final model
     final_params = train_state.params
 
+    # Compute eigenvalue estimates from dual variables
+    # Extract diagonal elements and average left/right duals
+    diagonal_duals_left_real = jnp.diag(final_params['duals_left_real'])
+    diagonal_duals_left_imag = jnp.diag(final_params['duals_left_imag'])
+    diagonal_duals_right_real = jnp.diag(final_params['duals_right_real'])
+    diagonal_duals_right_imag = jnp.diag(final_params['duals_right_imag'])
+
+    learned_eigenvalues_real = -0.5 * (diagonal_duals_left_real + diagonal_duals_right_real)
+    learned_eigenvalues_imag = -0.5 * (diagonal_duals_left_imag + diagonal_duals_right_imag)
+
     if args.save_model:
         # Save with names expected by generate_plots_complex.py
         np.save(results_dir / "final_learned_left_real.npy", np.array(final_params['left_real']))
         np.save(results_dir / "final_learned_left_imag.npy", np.array(final_params['left_imag']))
         np.save(results_dir / "final_learned_right_real.npy", np.array(final_params['right_real']))
         np.save(results_dir / "final_learned_right_imag.npy", np.array(final_params['right_imag']))
-        np.save(results_dir / "learned_duals_real.npy", np.array(final_params['duals_real']))
-        np.save(results_dir / "learned_duals_imag.npy", np.array(final_params['duals_imag']))
+
+        # Save dual variables (eigenvalue estimates)
+        np.save(results_dir / "learned_duals_real.npy", np.array(learned_eigenvalues_real))
+        np.save(results_dir / "learned_duals_imag.npy", np.array(learned_eigenvalues_imag))
+
+        # Also save full dual matrices for debugging
+        np.save(results_dir / "duals_left_real.npy", np.array(final_params['duals_left_real']))
+        np.save(results_dir / "duals_left_imag.npy", np.array(final_params['duals_left_imag']))
+        np.save(results_dir / "duals_right_real.npy", np.array(final_params['duals_right_real']))
+        np.save(results_dir / "duals_right_imag.npy", np.array(final_params['duals_right_imag']))
 
     # Save metrics (required by generate_plots_complex.py)
     with open(results_dir / "metrics_history.json", 'w') as f:
@@ -1035,10 +1053,11 @@ def main(args: Args):
                 door_markers[(s_full, a_forward)] = s_prime_full
 
         # Create eigendecomposition dict for visualization
+        # Use averaged eigenvalue estimates from diagonal duals
         learned_eigendecomp = {
-            'eigenvalues': (final_params['duals_real'] + 1j * final_params['duals_imag']).astype(jnp.complex64),
-            'eigenvalues_real': final_params['duals_real'],
-            'eigenvalues_imag': final_params['duals_imag'],
+            'eigenvalues': (learned_eigenvalues_real + 1j * learned_eigenvalues_imag).astype(jnp.complex64),
+            'eigenvalues_real': learned_eigenvalues_real,
+            'eigenvalues_imag': learned_eigenvalues_imag,
             'right_eigenvectors_real': final_params['right_real'],
             'right_eigenvectors_imag': final_params['right_imag'],
             'left_eigenvectors_real': final_params['left_real'],
