@@ -4,6 +4,7 @@ import itertools
 import dataclasses
 import os
 from pathlib import Path
+from tqdm import tqdm
 
 import numpy as np
 import jax.numpy as jnp
@@ -211,6 +212,76 @@ class EpisodicReplayBuffer:
 
         self._idx = (self._idx + 1) % self._max_episodes
         self._full = self._full or self._idx == 0
+
+    def populate_with_tabular_episodes(self, canonical_states, episodes, verbose=True):
+        """
+        Vectorized processing of episodes to populate the replay buffer.
+        
+        Args:
+            canonical_states (list/array): List of valid state indices. The index in this list 
+                                        becomes the new canonical ID.
+            episodes (dict): Dictionary containing 'lengths', 'observations', and 'terminals'.
+            
+        Returns:
+            None: The function modifies the replay_buffer in place.
+        """
+        # --- 1. SETUP LOOKUP TABLE ---
+        # Convert canonical states to a numpy array for indexing
+        canon_states_arr = np.array(canonical_states, dtype=np.int32)
+        
+        if len(canon_states_arr) == 0:
+            return None  # No valid states to process
+
+        # Determine the size of the lookup table based on the largest state ID found
+        max_state_id = canon_states_arr.max()
+        
+        # Create a lookup table initialized to -1 (representing "invalid/ignore")
+        # lookup_table[original_state_id] -> canonical_id
+        lookup_table = np.full(max_state_id + 1, -1, dtype=np.int32)
+        
+        # Fill the table: The value at index `state_id` is its new canonical index (0, 1, 2...)
+        lookup_table[canon_states_arr] = np.arange(len(canon_states_arr), dtype=np.int32)
+
+        # --- 2. PROCESS EPISODES ---
+        num_episodes = len(episodes['lengths'])
+        
+        for ep_idx in tqdm(range(num_episodes), desc="Populating replay buffer", disable=not verbose):
+            # Get actual length of this specific episode
+            episode_length = int(episodes['lengths'][ep_idx])
+            
+            # Slice and cast to int (Vectorized slice)
+            # We assume observations are 1D arrays of state indices
+            raw_obs = episodes['observations'][ep_idx, :episode_length + 1].astype(int)
+            raw_terms = episodes['terminals'][ep_idx, :episode_length + 1].astype(int)
+
+            # --- A. VECTORIZED MAPPING ---
+            # 1. Identify which observations are within the bounds of our lookup table
+            #    (Any observation > max_state_id is automatically invalid)
+            in_bounds_mask = raw_obs <= max_state_id
+            
+            # 2. Initialize mapped array with -1
+            mapped_obs = np.full_like(raw_obs, -1)
+            
+            # 3. Apply lookup only on safe indices
+            #    This effectively translates "Full State ID" -> "Canonical ID"
+            mapped_obs[in_bounds_mask] = lookup_table[raw_obs[in_bounds_mask]]
+
+            # --- B. VECTORIZED FILTERING ---
+            # Create a boolean mask where the mapping resulted in a valid ID (not -1)
+            valid_mask = mapped_obs != -1
+
+            # Apply mask to filter both observations and terminals simultaneously
+            final_obs = mapped_obs[valid_mask]
+            final_terms = raw_terms[valid_mask]
+
+            # --- C. ADD TO BUFFER ---
+            # Only add if we have enough data (at least 2 transitions usually needed for SAS)
+            if len(final_obs) >= 2:
+                episode_dict = {
+                    'obs': final_obs.reshape(-1, 1), # Reshape to (T, 1) as commonly expected in RL
+                    'terminals': final_terms,
+                }
+                self.add_episode(episode_dict)
 
     def sample(self, batch_size, discount, env_info={}):   # TODO: Consider if necessary.
         # Sample episodes

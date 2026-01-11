@@ -17,7 +17,8 @@ import random
 import time
 import json
 import pickle
-from typing import Dict
+import glob
+from typing import Dict, Any
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -146,17 +147,54 @@ def plot_sampling_distribution(
     plt.close()
 
 
+def load_checkpoint(path_str: str) -> Dict[str, Any]:
+    """
+    Load a checkpoint from a file or directory.
+    If a directory is provided, tries to find the latest checkpoint_*.pkl file.
+    """
+    path = Path(path_str)
+    
+    if path.is_dir():
+        # Try to find checkpoints in this directory
+        checkpoints = list(path.glob("checkpoint_*.pkl"))
+        if not checkpoints:
+            raise FileNotFoundError(f"No checkpoint_*.pkl files found in {path}")
+        
+        # Sort by step number
+        def get_step(p):
+            try:
+                return int(p.stem.split('_')[1])
+            except (IndexError, ValueError):
+                return -1
+        
+        latest_checkpoint = max(checkpoints, key=get_step)
+        print(f"Found latest checkpoint: {latest_checkpoint}")
+        path = latest_checkpoint
+    
+    if not path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {path}")
+
+    with open(path, 'rb') as f:
+        checkpoint = pickle.load(f)
+        
+    print(f"Loaded checkpoint from {path}")
+    if 'step' in checkpoint:
+        print(f"  Step: {checkpoint['step']}")
+    
+    return checkpoint
+
+
 @dataclass
 class Args:
     # Environment
     env_type: str = "room4"
     env_file: str | None = None
     env_file_name: str | None = None
-    max_episode_length: int = 2
+    max_episode_length: int = 1000
 
     # Data collection
-    num_envs: int = 500000
-    num_steps: int = 2
+    num_envs: int = 1000
+    num_steps: int = 1000
 
     # Irreversible doors
     use_doors: bool = False
@@ -167,8 +205,8 @@ class Args:
     num_eigenvectors: int = 10
 
     # Training
-    learning_rate: float = 1e-3  # Increased for SGD (Adam was 3e-4)
-    batch_size: int = 256
+    learning_rate: float = 1e-3
+    batch_size: int = 4096
     num_gradient_steps: int = 20000
     gamma: float = 0.2
     delta: float = 0.1
@@ -182,10 +220,10 @@ class Args:
     step_size_duals: float = 1.0
 
     # Logging and saving
-    log_freq: int = 100
-    plot_freq: int = 1000
-    save_freq: int = 1000
-    checkpoint_freq: int = 5000
+    log_freq: int = 10000
+    plot_freq: int = 10000
+    save_freq: int = 10000
+    checkpoint_freq: int = 50000
     save_model: bool = True
     plot_during_training: bool = False
     results_dir: str = "./results"
@@ -267,9 +305,71 @@ def create_gridworld_env(args: Args):
 
 
 def main(args: Args):
-    # Set random seeds
-    random.seed(args.seed)
-    np.random.seed(args.seed)
+    # Resume handling setup
+    checkpoint_data = None
+    start_step = 0
+    metrics_history = []
+    
+    if args.resume_from is not None:
+        print(f"\n{'='*60}")
+        print(f"RESUMING TRAINING")
+        
+        try:
+            checkpoint_data = load_checkpoint(args.resume_from)
+            
+            # Determine results directory from resume path
+            resume_path = Path(args.resume_from)
+            if resume_path.is_file():
+                results_dir = resume_path.parent
+            else:
+                results_dir = resume_path
+                
+            print(f"Resuming in directory: {results_dir}")
+            
+            # Extract state
+            start_step = checkpoint_data.get('step', 0) + 1
+            metrics_history = checkpoint_data.get('metrics_history', [])
+            
+            # Merge args
+            if 'args' in checkpoint_data:
+                saved_args_dict = checkpoint_data['args']
+                # List of keys we want to KEEP from the NEW args (training params)
+                training_keys = [
+                    'learning_rate', 'num_gradient_steps', 'log_freq', 
+                    'plot_freq', 'checkpoint_freq', 'batch_size',
+                    'save_model', 'plot_during_training'
+                ]
+                
+                # Update saved args with current training params
+                for key in training_keys:
+                    if hasattr(args, key):
+                        saved_args_dict[key] = getattr(args, key)
+                
+                # Update args object values from the merged dictionary
+                # (We keep the original env params to ensure consistency)
+                for key, value in saved_args_dict.items():
+                    if hasattr(args, key):
+                        setattr(args, key, value)
+                
+                print(f"Merged arguments from checkpoint (preserving new training params)")
+            
+            # Restore random state if available
+            if 'rng_state' in checkpoint_data:
+                random.setstate(checkpoint_data['rng_state'])
+                np.random.set_state(checkpoint_data['np_rng_state'])
+                print("Restored random seeds")
+                
+        except Exception as e:
+            print(f"Error resuming: {e}")
+            print("Falling back to fresh start...")
+            checkpoint_data = None
+            
+        print(f"{'='*60}\n")
+
+    # Set random seeds (if not restored)
+    if checkpoint_data is None:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
 
     key = jax.random.PRNGKey(args.seed)
     encoder_key = key
@@ -331,30 +431,11 @@ def main(args: Args):
     )
 
     # Convert and add episodes to buffer
-    for ep_idx in range(args.num_envs):
-        episode_length = int(episodes['lengths'][ep_idx])
-        episode_obs_full = episodes['observations'][ep_idx, :episode_length + 1]
-        episode_terminals = episodes['terminals'][ep_idx, :episode_length + 1]
-
-        # Convert to canonical state indices
-        episode_obs_canonical = []
-        episode_terminals_canonical = []
-        for i, state_idx in enumerate(episode_obs_full):
-            state_idx = int(state_idx)
-            if state_idx in full_to_canonical:
-                episode_obs_canonical.append(full_to_canonical[state_idx])
-                episode_terminals_canonical.append(int(episode_terminals[i]))
-
-        # Add to buffer if it has at least 2 states
-        if len(episode_obs_canonical) >= 2:
-            obs_array = np.array(episode_obs_canonical, dtype=np.int32).reshape(-1, 1)
-            terminals_array = np.array(episode_terminals_canonical, dtype=np.int32)
-            episode_dict = {
-                'obs': obs_array,
-                'terminals': terminals_array,
-            }
-            replay_buffer.add_episode(episode_dict)
-
+    print("\nPopulating replay buffer with episodes...")
+    replay_buffer.populate_with_tabular_episodes(
+        canonical_states=canonical_states,
+        episodes=episodes,
+    )
     print(f"  Added {len(replay_buffer)} trajectory sequences to replay buffer")
 
     # Compute ground truth eigendecomposition
@@ -397,13 +478,20 @@ def main(args: Args):
         print(f"  λ_{i}: {ev_real:.6f} + {ev_imag:.6f}i")
 
     # Setup results directory
-    if args.exp_name is None:
-        exp_name = f"{args.env_type}__allo_direct__{args.exp_number}__{args.seed}__{int(time.time())}"
-    else:
-        exp_name = args.exp_name
+    if checkpoint_data is None:
+        if args.exp_name is None:
+            exp_name = f"{args.env_type}__allo_direct__{args.exp_number}__{args.seed}__{int(time.time())}"
+        else:
+            exp_name = args.exp_name
 
-    results_dir = Path(args.results_dir) / args.env_type / exp_name
-    results_dir.mkdir(parents=True, exist_ok=True)
+        results_dir = Path(args.results_dir) / args.env_type / exp_name
+        results_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        # Use directory from resume
+        if isinstance(results_dir, str):
+            results_dir = Path(results_dir)
+        results_dir.mkdir(parents=True, exist_ok=True)
+        
     plots_dir = results_dir / "plots"
     plots_dir.mkdir(exist_ok=True)
 
@@ -413,7 +501,7 @@ def main(args: Args):
     with open(results_dir / "args.json", 'w') as f:
         json.dump(vars(args), f, indent=2)
 
-    # Save ground truth data
+    # Save ground truth data (overwrite even if resuming to be safe)
     np.save(results_dir / "gt_eigenvalues_real.npy", np.array(gt_eigenvalues_real))
     np.save(results_dir / "gt_eigenvalues_imag.npy", np.array(gt_eigenvalues_imag))
     np.save(results_dir / "gt_left_real.npy", np.array(gt_left_real))
@@ -443,7 +531,7 @@ def main(args: Args):
         pickle.dump(viz_metadata, f)
 
     # Visualize sampling distribution
-    if args.plot_during_training:
+    if args.plot_during_training and checkpoint_data is None:
         plot_sampling_distribution(
             sampling_probs=sampling_probs,
             canonical_states=canonical_states,
@@ -457,16 +545,21 @@ def main(args: Args):
     # Shape: (num_canonical, num_eigenvectors)
     print("\nInitializing eigenvector matrices...")
 
-    # Initialize with small random values
-    init_scale = 0.01
-    initial_params = {
-        'left_real': init_scale * jax.random.normal(encoder_key, (num_canonical, args.num_eigenvectors)),
-        'left_imag': init_scale * jax.random.normal(jax.random.split(encoder_key)[0], (num_canonical, args.num_eigenvectors)),
-        'right_real': init_scale * jax.random.normal(jax.random.split(encoder_key)[1], (num_canonical, args.num_eigenvectors)),
-        'right_imag': init_scale * jax.random.normal(jax.random.split(jax.random.split(encoder_key)[1])[0], (num_canonical, args.num_eigenvectors)),
-        'duals_real': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
-        'duals_imag': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
-    }
+    if checkpoint_data is not None:
+        initial_params = checkpoint_data['params']
+        print("  Using restored parameters from checkpoint")
+    else:
+        # Initialize with small random values
+        init_scale = 0.01
+        initial_params = {
+            'left_real': init_scale * jax.random.normal(encoder_key, (num_canonical, args.num_eigenvectors)),
+            'left_imag': init_scale * jax.random.normal(jax.random.split(encoder_key)[0], (num_canonical, args.num_eigenvectors)),
+            'right_real': init_scale * jax.random.normal(jax.random.split(encoder_key)[1], (num_canonical, args.num_eigenvectors)),
+            'right_imag': init_scale * jax.random.normal(jax.random.split(jax.random.split(encoder_key)[1])[0], (num_canonical, args.num_eigenvectors)),
+            'duals_real': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
+            'duals_imag': args.duals_initial_val * jnp.ones((args.num_eigenvectors,)),
+        }
+        print(f"  Initialized matrices with random values")
 
     # Create SGD optimizer for ALL parameters
     sgd_tx = optax.sgd(learning_rate=args.learning_rate)
@@ -487,8 +580,13 @@ def main(args: Args):
         params=initial_params,
         tx=sgd_tx,
     )
+    
+    # Restore optimizer state if resuming
+    if checkpoint_data is not None and 'opt_state' in checkpoint_data:
+        train_state = train_state.replace(opt_state=checkpoint_data['opt_state'])
+        print("  Restored optimizer state from checkpoint")
 
-    print(f"  Initialized matrices with shape: ({num_canonical}, {args.num_eigenvectors})")
+    print(f"  Matrix shape: ({num_canonical}, {args.num_eigenvectors})")
     print(f"  Using SGD optimizer with learning rate: {args.learning_rate}")
 
     # Define JIT-compiled cosine similarity computation
@@ -799,12 +897,14 @@ def main(args: Args):
         return new_state, loss, aux
 
     # Training loop
-    print("\nStarting training...")
+    if checkpoint_data is None:
+        print("\nStarting training...")
+    else:
+        print(f"\nResuming training from step {start_step}...")
+        
     start_time = time.time()
 
-    metrics_history = []
-
-    for step in tqdm(range(args.num_gradient_steps)):
+    for step in tqdm(range(start_step, args.num_gradient_steps)):
         # Sample batches
         batch1 = replay_buffer.sample(args.batch_size, discount=args.gamma)
         batch2 = replay_buffer.sample(args.batch_size, discount=args.gamma)
@@ -839,6 +939,7 @@ def main(args: Args):
                 'barrier_biortho': float(aux['barrier_biortho']),
                 'barrier_norm': float(aux['barrier_norm']),
                 'dual_loss': float(aux['dual_loss']),
+                'dual_loss_neg': float(aux['dual_loss_neg']),
                 'l1_constraint_error': float(aux['l1_constraint_error']),
                 'grad_norm': float(aux['grad_norm']),
                 'left_cosine_sim_avg': float(left_cosine_sim),
@@ -863,6 +964,10 @@ def main(args: Args):
                     'params': train_state.params,
                     'opt_state': train_state.opt_state,
                     'step': step,
+                    'metrics_history': metrics_history,
+                    'args': vars(args),
+                    'rng_state': random.getstate(),
+                    'np_rng_state': np.random.get_state(),
                 }, f)
             print(f"Saved checkpoint to {checkpoint_path}")
 
