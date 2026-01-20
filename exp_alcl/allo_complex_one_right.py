@@ -1,14 +1,5 @@
 """
 Train a model to learn complex eigenvectors of non-symmetric Laplacians.
-
-This script uses (x,y) coordinates as inputs to the network and learns
-the left and right eigenvectors (with real and imaginary components) of
-non-symmetric Laplacians through an augmented Lagrangian optimization approach.
-The network outputs 4 sets of features: left_real, left_imag, right_real, right_imag.
-
-The loss function consists of:
-1. Graph drawing loss: E[(ψ_real(s)(φ_real(s) - φ_real(s')) + ψ_img(s)(φ_img(s) - φ_img(s')))²]
-2. Biorthogonality constraints: φ^T ψ = I (for both real and imaginary parts)
 """
 
 import os
@@ -52,7 +43,6 @@ from exp_alcl.episodic_replay_buffer import EpisodicReplayBuffer
 
 # Simple MLP network for (x,y) coordinates
 class CoordinateEncoder(nn.Module):
-    num_features: int
     hidden_dim: int = 256
     num_hidden_layers: int = 3
 
@@ -64,8 +54,6 @@ class CoordinateEncoder(nn.Module):
 
         Returns:
             features_dict: Dictionary containing:
-                - left_real: (batch_size, num_features) left eigenvector real components
-                - left_imag: (batch_size, num_features) left eigenvector imaginary components
                 - right_real: (batch_size, num_features) right eigenvector real components
                 - right_imag: (batch_size, num_features) right eigenvector imaginary components
         """
@@ -84,29 +72,17 @@ class CoordinateEncoder(nn.Module):
         # Separate heads for each component with independent transformations
         # Each head has at least one independent layer before the final prediction
 
-        # Left real head
-        left_real_hidden = nn.Dense(self.hidden_dim)(x)
-        left_real_hidden = nn.relu(left_real_hidden)
-        left_real = nn.Dense(self.num_features)(left_real_hidden)
-
-        # Left imaginary head
-        left_imag_hidden = nn.Dense(self.hidden_dim)(x)
-        left_imag_hidden = nn.relu(left_imag_hidden)
-        left_imag = nn.Dense(self.num_features)(left_imag_hidden)
-
         # Right real head
         right_real_hidden = nn.Dense(self.hidden_dim)(x)
         right_real_hidden = nn.relu(right_real_hidden)
-        right_real = nn.Dense(self.num_features)(right_real_hidden)
+        right_real = nn.Dense(1)(right_real_hidden)
 
         # Right imaginary head
         right_imag_hidden = nn.Dense(self.hidden_dim)(x)
         right_imag_hidden = nn.relu(right_imag_hidden)
-        right_imag = nn.Dense(self.num_features)(right_imag_hidden)
+        right_imag = nn.Dense(1)(right_imag_hidden)
 
         features_dict = {
-            'left_real': left_real,
-            'left_imag': left_imag,
             'right_real': right_real,
             'right_imag': right_imag,
         }
@@ -208,111 +184,7 @@ def compute_sampling_distribution(
     return D
 
 
-def compute_symmetrized_laplacian(
-    transition_matrix: jnp.ndarray,
-    gamma: float,
-) -> jnp.ndarray:
-    """
-    Compute the symmetrized Laplacian L = I - (1-γ)(SR_γ + SR_γ^T)/2.
-
-    This is a simplified version that assumes uniform sampling distribution.
-
-    Args:
-        transition_matrix: Shape [num_states, num_states], stochastic transition matrix P
-        gamma: Discount factor used in successor representation
-
-    Returns:
-        Symmetrized Laplacian of shape [num_states, num_states]
-    """
-    num_states = transition_matrix.shape[0]
-    identity = jnp.eye(num_states)
-
-    # Compute successor representation SR_γ = (I - γP)^(-1)
-    sr_matrix = compute_successor_representation(transition_matrix, gamma)
-
-    # Symmetrize: (SR_γ + SR_γ^T)/2
-    sr_symmetrized = (sr_matrix + sr_matrix.T) / 2.0
-
-    # Compute Laplacian: L = I - (1-γ)(SR_γ + SR_γ^T)/2
-    laplacian = identity - (1 - gamma) * sr_symmetrized
-
-    return laplacian
-
-
-def compute_weighted_symmetrized_laplacian(
-    transition_matrix: jnp.ndarray,
-    sampling_distribution: jnp.ndarray,
-    gamma: float,
-) -> jnp.ndarray:
-    """
-    Compute the weighted symmetrized Laplacian L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2.
-
-    This version accounts for non-uniform sampling distribution D.
-
-    Args:
-        transition_matrix: Shape [num_states, num_states], stochastic transition matrix P
-        sampling_distribution: Shape [num_states, num_states], diagonal matrix D with sampling probabilities
-        gamma: Discount factor used in successor representation
-
-    Returns:
-        Weighted symmetrized Laplacian of shape [num_states, num_states]
-    """
-    # Compute successor representation SR_γ = (I - γP)^(-1)
-    sr_matrix = compute_successor_representation(transition_matrix, gamma)
-
-    # Compute DSR_γ and SR_γ^TD^T
-    D_SR = sampling_distribution @ sr_matrix
-    SR_D_T = sr_matrix.T @ sampling_distribution.T
-
-    # Symmetrize: (DSR_γ + SR_γ^TD^T)/2
-    weighted_sr_symmetrized = (D_SR + SR_D_T) / 2.0
-
-    # Compute Laplacian: L = D - (1-γ)(DSR_γ + SR_γ^TD^T)/2
-    laplacian = sampling_distribution - (1 - gamma) * weighted_sr_symmetrized
-
-    return laplacian
-
-
-def compute_inverse_weighted_laplacian(
-    transition_matrix: jnp.ndarray,
-    sampling_distribution: jnp.ndarray,
-    gamma: float,
-) -> jnp.ndarray:
-    """
-    Compute the inverse-weighted Laplacian L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2.
-
-    This version accounts for the cancellation of D on the left and introduction of D^{-1} on the transpose.
-
-    Args:
-        transition_matrix: Shape [num_states, num_states], stochastic transition matrix P
-        sampling_distribution: Shape [num_states, num_states], diagonal matrix D with sampling probabilities
-        gamma: Discount factor used in successor representation
-
-    Returns:
-        Inverse-weighted Laplacian of shape [num_states, num_states]
-    """
-    num_states = transition_matrix.shape[0]
-    identity = jnp.eye(num_states)
-
-    # Compute successor representation SR_γ = (I - γP)^(-1)
-    sr_matrix = compute_successor_representation(transition_matrix, gamma)
-
-    # Compute D^{-1} (inverse of diagonal matrix)
-    D_inv = jnp.linalg.inv(sampling_distribution)
-
-    # Compute SR_γ and D^{-1}SR_γ^TD
-    Dinv_SRT_D = D_inv @ sr_matrix.T @ sampling_distribution
-
-    # Symmetrize: (SR_γ + D^{-1}SR_γ^TD)/2
-    inverse_weighted_sr_symmetrized = (sr_matrix + Dinv_SRT_D) / 2.0
-
-    # Compute Laplacian: L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
-    laplacian = identity - (1 - gamma) * inverse_weighted_sr_symmetrized
-
-    return laplacian
-
-
-def compute_nonsymmetric_laplacian(
+def compute_laplacian(
     transition_matrix: jnp.ndarray,
     gamma: float,
     delta: float = 0.0,
@@ -349,57 +221,6 @@ def compute_nonsymmetric_laplacian(
     return laplacian
 
 
-def compute_symmetrized_eigendecomposition(
-    transition_matrix: jnp.ndarray,
-    k: int = None
-) -> Dict[str, jnp.ndarray]:
-    """
-    Compute eigendecomposition of a symmetric matrix.
-
-    For symmetric matrices, eigenvalues are real and eigenvectors are orthogonal.
-
-    Args:
-        transition_matrix: Shape [num_states, num_states], symmetric
-        k: Number of top eigenvalues/vectors to keep (None = keep all)
-
-    Returns:
-        Dictionary containing (compatible with visualization code):
-            - eigenvalues: Shape [k] (complex, but with zero imaginary parts)
-            - eigenvalues_real: Shape [k]
-            - eigenvalues_imag: Shape [k] (all zeros)
-            - right_eigenvectors_real: Shape [num_states, k]
-            - right_eigenvectors_imag: Shape [num_states, k] (all zeros)
-            - left_eigenvectors_real: Shape [num_states, k] (same as right for symmetric)
-            - left_eigenvectors_imag: Shape [num_states, k] (all zeros)
-    """
-    # Compute eigendecomposition (for symmetric matrices, use eigh for better stability)
-    eigenvalues, eigenvectors = jnp.linalg.eigh(transition_matrix)
-
-    # Sort by ascending eigenvalue real part
-    sorted_indices = jnp.argsort(jnp.real(eigenvalues))
-    eigenvalues = eigenvalues[sorted_indices]
-    eigenvectors = eigenvectors[:, sorted_indices]
-
-    # Keep only top k if specified
-    if k is not None:
-        eigenvalues = eigenvalues[:k]
-        eigenvectors = eigenvectors[:, :k]
-
-    num_states = eigenvectors.shape[0]
-    num_eigs = eigenvalues.shape[0]
-
-    # Create format compatible with visualization code
-    return {
-        "eigenvalues": eigenvalues.astype(jnp.complex64),
-        "eigenvalues_real": eigenvalues,
-        "eigenvalues_imag": jnp.zeros_like(eigenvalues),
-        "right_eigenvectors_real": eigenvectors,
-        "right_eigenvectors_imag": jnp.zeros((num_states, num_eigs)),
-        "left_eigenvectors_real": eigenvectors,  # Same as right for symmetric matrices
-        "left_eigenvectors_imag": jnp.zeros((num_states, num_eigs)),
-    }
-
-
 # Training arguments
 @dataclass
 class Args:
@@ -419,7 +240,6 @@ class Args:
     door_seed: int = 42  # Seed for door placement
 
     # Model
-    num_eigenvectors: int = 10
     hidden_dim: int = 256
     num_hidden_layers: int = 3
 
@@ -429,14 +249,10 @@ class Args:
     num_gradient_steps: int = 20000
     gamma: float = 0.2  # Discount factor for successor representation
     delta: float = 0.1  # Eigenvalue shift parameter: L = (1+δ)I - M (improves numerical stability)
+    lambda_x: float = 10.0  # Exponential decay parameter for CLF
 
     # Episodic replay buffer
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
-
-    # Augmented Lagrangian parameters
-    duals_initial_val: float = 2.0
-    barrier_coef: float = 2.0
-    step_size_duals: float = 1.0
     
     # Logging and saving
     log_freq: int = 100
@@ -502,360 +318,6 @@ def create_gridworld_env(args: Args):
         print(f"  Environment type: {type(env).__name__} (no file-defined doors)")
 
     return env
-
-
-def plot_learning_curves(metrics_history: Dict, save_path: str):
-    """Plot and save comprehensive learning curves with all diagnostics."""
-    print("Plotting comprehensive learning curves...")
-    print("  Available metric keys:")
-    for key in metrics_history[0].keys():
-        print(f"  Metric key: {key}")
-
-    fig, axes = plt.subplots(4, 3, figsize=(18, 16))
-    fig.suptitle('Training Metrics (Comprehensive Diagnostics)', fontsize=16)
-
-    # Extract data
-    steps = [m['gradient_step'] for m in metrics_history]
-
-    # Row 1: Main losses
-    # Plot 1: Total loss
-    if 'allo' in metrics_history[0]:
-        axes[0, 0].plot(steps, [m['allo'] for m in metrics_history])
-        axes[0, 0].set_xlabel('Gradient Step')
-        axes[0, 0].set_ylabel('Total Loss')
-        axes[0, 0].set_title('ALLO Loss')
-        axes[0, 0].grid(True, alpha=0.3)
-
-    # Plot 2: Graph loss
-    if 'graph_loss' in metrics_history[0]:
-        axes[0, 1].plot(steps, [m['graph_loss'] for m in metrics_history])
-        axes[0, 1].set_xlabel('Gradient Step')
-        axes[0, 1].set_ylabel('Graph Loss')
-        axes[0, 1].set_title('Graph Drawing Loss')
-        axes[0, 1].grid(True, alpha=0.3)
-
-    # Plot 3: Gradient norm
-    if 'grad_norm' in metrics_history[0]:
-        axes[0, 2].plot(steps, [m['grad_norm'] for m in metrics_history])
-        axes[0, 2].set_xlabel('Gradient Step')
-        axes[0, 2].set_ylabel('Gradient Norm')
-        axes[0, 2].set_title('Gradient Norm')
-        axes[0, 2].grid(True, alpha=0.3)
-
-    # Row 2: Dual losses and errors
-    # Plot 4: Dual loss
-    if 'dual_loss' in metrics_history[0] or 'dual_loss_neg' in metrics_history[0]:
-        if 'dual_loss' in metrics_history[0]:
-            axes[1, 0].plot(steps, [m['dual_loss'] for m in metrics_history], label='Positive')
-        else:
-            print("Warning: 'dual_loss' key not found in metrics history.")
-        if 'dual_loss_neg' in metrics_history[0]:
-            axes[1, 0].plot(steps, [m['dual_loss_neg'] for m in metrics_history], label='Negative')
-        else:
-            print("Warning: 'dual_loss_neg' key not found in metrics history.")
-        axes[1, 0].set_xlabel('Gradient Step')
-        axes[1, 0].set_ylabel('Dual Loss')
-        axes[1, 0].set_title('Dual Losses')
-        axes[1, 0].legend()
-        axes[1, 0].grid(True, alpha=0.3)
-
-    # Plot 5: Barrier loss
-    if 'barrier_loss' in metrics_history[0]:
-        axes[1, 1].plot(steps, [m['barrier_loss'] for m in metrics_history])
-        axes[1, 1].set_xlabel('Gradient Step')
-        axes[1, 1].set_ylabel('Barrier Loss')
-        axes[1, 1].set_title('Barrier Loss (Fixed Coefficient)')
-        axes[1, 1].grid(True, alpha=0.3)
-
-    # Plot 6: Total errors
-    if 'total_error' in metrics_history[0]:
-        axes[1, 2].plot(steps, [m['total_error'] for m in metrics_history], label='Total')
-    if 'total_norm_error' in metrics_history[0]:
-        axes[1, 2].plot(steps, [m['total_norm_error'] for m in metrics_history], label='Norm')
-    if 'total_two_component_error' in metrics_history[0]:
-        axes[1, 2].plot(steps, [m['total_two_component_error'] for m in metrics_history], label='First 2')
-    axes[1, 2].set_xlabel('Gradient Step')
-    axes[1, 2].set_ylabel('Error')
-    axes[1, 2].set_title('Orthogonality Errors')
-    axes[1, 2].legend()
-    axes[1, 2].grid(True, alpha=0.3)
-
-    # Row 3: Diagonal errors for first few eigenvectors
-    # Plot 7: Left real diagonal errors
-    axes[2, 0].set_title('Left Real Diagonal Errors')
-    for i in range(min(5, 11)):
-        key = f'error_left_real_{i}'
-        if key in metrics_history[0]:
-            axes[2, 0].plot(steps, [m[key] for m in metrics_history], label=f'ev{i}', alpha=0.7)
-    axes[2, 0].set_xlabel('Gradient Step')
-    axes[2, 0].set_ylabel('Error')
-    axes[2, 0].legend(fontsize=8)
-    axes[2, 0].grid(True, alpha=0.3)
-
-    # Plot 8: Left imag diagonal errors
-    axes[2, 1].set_title('Left Imag Diagonal Errors')
-    for i in range(min(5, 11)):
-        key = f'error_left_imag_{i}'
-        if key in metrics_history[0]:
-            axes[2, 1].plot(steps, [m[key] for m in metrics_history], label=f'ev{i}', alpha=0.7)
-    axes[2, 1].set_xlabel('Gradient Step')
-    axes[2, 1].set_ylabel('Error')
-    axes[2, 1].legend(fontsize=8)
-    axes[2, 1].grid(True, alpha=0.3)
-
-    # Plot 9: Right real diagonal errors
-    axes[2, 2].set_title('Right Real Diagonal Errors')
-    for i in range(min(5, 11)):
-        key = f'error_right_real_{i}'
-        if key in metrics_history[0]:
-            axes[2, 2].plot(steps, [m[key] for m in metrics_history], label=f'ev{i}', alpha=0.7)
-    axes[2, 2].set_xlabel('Gradient Step')
-    axes[2, 2].set_ylabel('Error')
-    axes[2, 2].legend(fontsize=8)
-    axes[2, 2].grid(True, alpha=0.3)
-
-    # Plot 10: Right imag diagonal errors (moved to row 4, col 0)
-    axes[3, 0].set_title('Right Imag Diagonal Errors')
-    for i in range(min(5, 11)):
-        key = f'error_right_imag_{i}'
-        if key in metrics_history[0]:
-            axes[3, 0].plot(steps, [m[key] for m in metrics_history], label=f'ev{i}', alpha=0.7)
-    axes[3, 0].set_xlabel('Gradient Step')
-    axes[3, 0].set_ylabel('Error')
-    axes[3, 0].legend(fontsize=8)
-    axes[3, 0].grid(True, alpha=0.3)
-
-    # Plot 11: Distance to constraint manifold
-    if 'distance_to_constraint_manifold' in metrics_history[0]:
-        axes[3, 1].plot(steps, [m['distance_to_constraint_manifold'] for m in metrics_history])
-        axes[3, 1].set_xlabel('Gradient Step')
-        axes[3, 1].set_ylabel('Distance')
-        axes[3, 1].set_title('Distance to Constraint Manifold')
-        axes[3, 1].grid(True, alpha=0.3)
-    else:
-        axes[3, 1].text(0.5, 0.5, 'Metric not available', ha='center', va='center', transform=axes[3, 1].transAxes)
-        axes[3, 1].set_title('Distance to Constraint Manifold')
-
-    # Plot 12: Distance to origin
-    if 'distance_to_origin' in metrics_history[0]:
-        axes[3, 2].plot(steps, [m['distance_to_origin'] for m in metrics_history])
-        axes[3, 2].set_xlabel('Gradient Step')
-        axes[3, 2].set_ylabel('Distance')
-        axes[3, 2].set_title('Distance to Origin')
-        axes[3, 2].grid(True, alpha=0.3)
-    else:
-        axes[3, 2].text(0.5, 0.5, 'Metric not available', ha='center', va='center', transform=axes[3, 2].transAxes)
-        axes[3, 2].set_title('Distance to Origin')
-
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"Comprehensive learning curves saved to {save_path}")
-
-
-def plot_dual_variable_evolution(metrics_history, ground_truth_eigenvalues, gamma, save_path,
-                                  num_eigenvectors=11, ground_truth_eigenvalues_simple=None,
-                                  ground_truth_eigenvalues_weighted=None):
-    """
-    Plot the evolution of dual variables (Laplacian eigenvalue estimates) vs ground truth eigenvalues.
-
-    The duals are eigenvalues of the non-symmetric Laplacian L = I - (1-γ)P·SR_γ,
-    where P is the transition matrix, SR_γ is the successor representation, and γ is the discount factor.
-
-    The eigenvalue estimates are computed as -0.5 * (dual_left + dual_right) where dual_left and
-    dual_right are the left and right biorthogonality constraint multipliers.
-
-    Args:
-        metrics_history: List of metric dictionaries
-        ground_truth_eigenvalues: Array of ground truth eigenvalues of the non-symmetric Laplacian
-        gamma: Discount factor used in the successor representation
-        save_path: Path to save the plot
-        num_eigenvectors: Number of eigenvectors to plot
-        ground_truth_eigenvalues_simple: Optional array for comparison (unused)
-        ground_truth_eigenvalues_weighted: Optional array for comparison (unused)
-    """
-    steps = [m['gradient_step'] for m in metrics_history]
-    num_plot = min(num_eigenvectors, len(ground_truth_eigenvalues))
-
-    # Create figure with three rows: real/imag components, magnitude, and errors
-    fig, axes = plt.subplots(3, 1, figsize=(12, 14))
-
-    colors = plt.cm.tab10(np.linspace(0, 1, num_plot))
-
-    # Plot 1: Real and imaginary components of dual variables
-    ax1 = axes[0]
-
-    for i in range(num_plot):
-        dual_real_key = f'dual_real_{i}'
-        dual_imag_key = f'dual_imag_{i}'
-
-        if dual_real_key in metrics_history[0] and dual_imag_key in metrics_history[0]:
-            # Get dual values (these are eigenvalues of the Laplacian)
-            # Already scaled as -0.5 * (dual_left + dual_right) in aux
-            dual_values_real = np.array([m[dual_real_key] for m in metrics_history])
-            dual_values_imag = np.array([m[dual_imag_key] for m in metrics_history])
-
-            # Plot real and imaginary components
-            ax1.plot(steps, dual_values_real, label=f'λ_{i} (real)',
-                    color=colors[i], linewidth=1.5, linestyle='-')
-            ax1.plot(steps, dual_values_imag, label=f'λ_{i} (imag)',
-                    color=colors[i], linewidth=1.5, linestyle='--', alpha=0.7)
-
-            # Plot ground truth (real and imaginary)
-            gt_value_real = float(ground_truth_eigenvalues[i].real)
-            gt_value_imag = float(ground_truth_eigenvalues[i].imag)
-            ax1.axhline(y=gt_value_real, color=colors[i], linestyle='-', alpha=0.2, linewidth=2)
-            ax1.axhline(y=gt_value_imag, color=colors[i], linestyle='--', alpha=0.2, linewidth=2)
-
-    ax1.set_xlabel('Gradient Step', fontsize=12)
-    ax1.set_ylabel('Dual Variable Value', fontsize=12)
-    ax1.set_title('Dual Variables: Real (solid) and Imaginary (dashed) Components', fontsize=14)
-    ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8, ncol=2)
-    ax1.grid(True, alpha=0.3)
-
-    # Plot 2: Magnitude of complex dual variables
-    ax2 = axes[1]
-
-    for i in range(num_plot):
-        dual_real_key = f'dual_real_{i}'
-        dual_imag_key = f'dual_imag_{i}'
-
-        if dual_real_key in metrics_history[0] and dual_imag_key in metrics_history[0]:
-            # Get dual values (already scaled as -0.5 * (dual_left + dual_right))
-            dual_values_real = np.array([m[dual_real_key] for m in metrics_history])
-            dual_values_imag = np.array([m[dual_imag_key] for m in metrics_history])
-
-            # Calculate magnitude
-            dual_magnitude = np.sqrt(dual_values_real**2 + dual_values_imag**2)
-
-            ax2.plot(steps, dual_magnitude, label=f'|λ_{i}|', color=colors[i], linewidth=1.5)
-
-            # Plot ground truth magnitude
-            gt_magnitude = np.abs(ground_truth_eigenvalues[i])
-            ax2.axhline(y=gt_magnitude, color=colors[i], linestyle='-', alpha=0.3, linewidth=2.5)
-
-    ax2.set_xlabel('Gradient Step', fontsize=12)
-    ax2.set_ylabel('Magnitude', fontsize=12)
-    ax2.set_title('Magnitude of Complex Dual Variables', fontsize=14)
-    ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
-    ax2.grid(True, alpha=0.3)
-
-    # Plot 3: Complex magnitude errors
-    ax3 = axes[2]
-
-    for i in range(num_plot):
-        dual_real_key = f'dual_real_{i}'
-        dual_imag_key = f'dual_imag_{i}'
-
-        if dual_real_key in metrics_history[0] and dual_imag_key in metrics_history[0]:
-            # Get dual values
-            dual_values_real = np.array([m[dual_real_key] for m in metrics_history])
-            dual_values_imag = np.array([m[dual_imag_key] for m in metrics_history])
-
-            # Apply 0.5 factor due to sampling scheme
-            dual_values_real_scaled = 0.5 * dual_values_real
-            dual_values_imag_scaled = 0.5 * dual_values_imag
-
-            # Calculate complex error magnitude: |dual - ground_truth|
-            gt_value_real = float(ground_truth_eigenvalues[i].real)
-            gt_value_imag = float(ground_truth_eigenvalues[i].imag)
-
-            error_real = dual_values_real_scaled - gt_value_real
-            error_imag = dual_values_imag_scaled - gt_value_imag
-            error_magnitude = np.sqrt(error_real**2 + error_imag**2)
-
-            ax3.plot(steps, error_magnitude, label=f'|error λ_{i}|',
-                    color=colors[i], linewidth=1.5)
-
-    ax3.set_xlabel('Gradient Step', fontsize=12)
-    ax3.set_ylabel('Error Magnitude', fontsize=12)
-    ax3.set_title('Complex Error Magnitude in Complex Plane', fontsize=14)
-    ax3.set_yscale('log')
-    ax3.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
-    ax3.grid(True, alpha=0.3, which='both')
-
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"Dual variable evolution plot saved to {save_path}")
-
-
-def plot_sampling_distribution(
-    sampling_probs: jnp.ndarray,
-    canonical_states: jnp.ndarray,
-    grid_width: int,
-    grid_height: int,
-    save_path: str,
-    portals: dict = None,
-):
-    """
-    Visualize the empirical sampling distribution D on the grid.
-
-    Args:
-        sampling_probs: 1D array of sampling probabilities for each canonical state
-        canonical_states: Array of canonical state indices
-        grid_width: Width of the grid
-        grid_height: Height of the grid
-        save_path: Path to save the visualization
-        portals: Optional dictionary of portal/door markers
-    """
-    fig, ax = plt.subplots(1, 1, figsize=(10, 8))
-
-    # Create a full grid initialized with NaN for obstacles
-    grid_values = np.full((grid_height, grid_width), np.nan)
-
-    # Fill in the sampling probabilities for canonical states
-    for canon_idx, full_state_idx in enumerate(canonical_states):
-        y = int(full_state_idx) // grid_width
-        x = int(full_state_idx) % grid_width
-        grid_values[y, x] = float(sampling_probs[canon_idx])
-
-    # Create the heatmap
-    im = ax.imshow(grid_values, cmap='viridis', interpolation='nearest', origin='upper')
-
-    # Add colorbar
-    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label('Sampling Probability', fontsize=12)
-
-    # Add grid lines
-    ax.set_xticks(np.arange(grid_width) - 0.5, minor=True)
-    ax.set_yticks(np.arange(grid_height) - 0.5, minor=True)
-    ax.grid(which="minor", color="gray", linestyle='-', linewidth=0.5, alpha=0.3)
-
-    # Add portal markers if provided
-    if portals:
-        for (state, action), next_state in portals.items():
-            y = state // grid_width
-            x = state % grid_width
-            next_y = next_state // grid_width
-            next_x = next_state % grid_width
-
-            # Draw arrow from state to next_state
-            dx = next_x - x
-            dy = next_y - y
-            ax.arrow(x, y, dx * 0.3, dy * 0.3,
-                    head_width=0.2, head_length=0.15,
-                    fc='red', ec='red', linewidth=2, alpha=0.7)
-
-    ax.set_xlabel('X', fontsize=12)
-    ax.set_ylabel('Y', fontsize=12)
-    ax.set_title('Empirical Sampling Distribution D', fontsize=14, fontweight='bold')
-
-    # Add statistics text
-    stats_text = (f'Min: {np.nanmin(grid_values):.6f}\n'
-                  f'Max: {np.nanmax(grid_values):.6f}\n'
-                  f'Mean: {np.nanmean(grid_values):.6f}\n'
-                  f'Std: {np.nanstd(grid_values):.6f}')
-    ax.text(0.02, 0.98, stats_text,
-            transform=ax.transAxes,
-            fontsize=10,
-            verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"Sampling distribution visualization saved to {save_path}")
 
 
 def save_checkpoint(
@@ -931,7 +393,7 @@ def compute_complex_cosine_similarities(
         <u, v> = conj(u)^T v = (u_real^T v_real + u_imag^T v_imag) + i(u_real^T v_imag - u_imag^T v_real)
         ||u|| = sqrt(u_real^T u_real + u_imag^T u_imag)
         cos(θ) = <u, v> / (||u|| ||v||)
-        Result: |Re(cos(θ))|
+        Result: |cos(θ)|
 
     Args:
         learned_real: Learned eigenvector real parts [num_states, num_eigenvectors]
@@ -972,9 +434,8 @@ def compute_complex_cosine_similarities(
         cos_imag = inner_imag / (u_norm * v_norm + 1e-10)
 
         # Take absolute value of real part
-        abs_cos_real = jnp.abs(cos_real)
+        abs_cos_real = (cos_real**2 + cos_imag**2)**0.5
         similarities[f'{prefix}cosine_sim_{i}'] = float(abs_cos_real)
-        similarities[f'{prefix}cosine_sim_imag_{i}'] = float(cos_imag)  # Also save imaginary for inspection
         cosine_sims.append(float(abs_cos_real))
 
     # Average across all components
@@ -984,8 +445,6 @@ def compute_complex_cosine_similarities(
 
 
 def normalize_eigenvectors_for_comparison(
-    left_real: jnp.ndarray,
-    left_imag: jnp.ndarray,
     right_real: jnp.ndarray,
     right_imag: jnp.ndarray,
     sampling_probs: jnp.ndarray,
@@ -1002,27 +461,18 @@ def normalize_eigenvectors_for_comparison(
        - Divide by that component (fixes arbitrary phase)
        - Normalize to unit norm
 
-    2. For LEFT eigenvectors:
-       - Multiply by the largest component from corresponding right eigenvector
-       - Multiply by the norm of the corresponding right eigenvector (before normalization)
-       - Scale each entry by the stationary state distribution (to convert from adjoint)
-
     This ensures proper comparison between learned and ground truth eigenvectors while
     accounting for:
     - Arbitrary complex scaling freedom
     - Adjoint vs. true left eigenvector relationship
 
     Args:
-        left_real: Left eigenvector real parts [num_states, num_eigenvectors]
-        left_imag: Left eigenvector imaginary parts [num_states, num_eigenvectors]
         right_real: Right eigenvector real parts [num_states, num_eigenvectors]
         right_imag: Right eigenvector imaginary parts [num_states, num_eigenvectors]
         sampling_probs: State distribution probabilities [num_states]
 
     Returns:
         Dictionary containing:
-            - 'left_real': Normalized left eigenvector real parts
-            - 'left_imag': Normalized left eigenvector imaginary parts
             - 'right_real': Normalized right eigenvector real parts
             - 'right_imag': Normalized right eigenvector imaginary parts
     """
@@ -1032,8 +482,6 @@ def normalize_eigenvectors_for_comparison(
     # Normalize eigenvectors
     normalized_right_real = jnp.zeros_like(right_real)
     normalized_right_imag = jnp.zeros_like(right_imag)
-    normalized_left_real = jnp.zeros_like(left_real)
-    normalized_left_imag = jnp.zeros_like(left_imag)
 
     for i in range(num_components):
         # Step 1: Process right eigenvectors
@@ -1057,41 +505,13 @@ def normalize_eigenvectors_for_comparison(
         normalized_right_real = normalized_right_real.at[:, i].set(scaled_right_real / (right_norm + 1e-10))
         normalized_right_imag = normalized_right_imag.at[:, i].set(scaled_right_imag / (right_norm + 1e-10))
 
-        # Step 2: Process left eigenvectors (complementary normalization)
-        left_r = left_real[:, i]
-        left_i = left_imag[:, i]
-
-        # Compute the original norm of the right eigenvector (before normalization)
-        original_right_norm = jnp.sqrt(jnp.sum(right_r**2 + right_i**2))
-
-        # Multiply by max component (conjugate for complex multiplication)
-        # (a + bi) * (c + di) = (ac - bd) + i(ad + bc)
-        scaled_left_real = (left_r * max_component_real - left_i * max_component_imag)
-        scaled_left_imag = (left_r * max_component_imag + left_i * max_component_real)
-
-        # Multiply by the original norm of the right eigenvector
-        scaled_left_real = scaled_left_real * original_right_norm
-        scaled_left_imag = scaled_left_imag * original_right_norm
-
-        # Scale each entry by the stationary state distribution
-        # This converts from adjoint eigenvectors to true left eigenvectors
-        scaled_left_real = scaled_left_real * sampling_probs
-        scaled_left_imag = scaled_left_imag * sampling_probs
-
-        normalized_left_real = normalized_left_real.at[:, i].set(scaled_left_real)
-        normalized_left_imag = normalized_left_imag.at[:, i].set(scaled_left_imag)
-
     return {
-        'left_real': normalized_left_real,
-        'left_imag': normalized_left_imag,
         'right_real': normalized_right_real,
         'right_imag': normalized_right_imag,
     }
 
 
 def compute_complex_cosine_similarities_with_normalization(
-    learned_left_real: jnp.ndarray,
-    learned_left_imag: jnp.ndarray,
     learned_right_real: jnp.ndarray,
     learned_right_imag: jnp.ndarray,
     gt_left_real: jnp.ndarray,
@@ -1125,8 +545,6 @@ def compute_complex_cosine_similarities_with_normalization(
     the complex conjugate of learned psi when computing cosine similarities.
 
     Args:
-        learned_left_real: Learned left eigenvector real parts [num_states, num_eigenvectors]
-        learned_left_imag: Learned left eigenvector imaginary parts [num_states, num_eigenvectors]
         learned_right_real: Learned right eigenvector real parts [num_states, num_eigenvectors]
         learned_right_imag: Learned right eigenvector imaginary parts [num_states, num_eigenvectors]
         gt_left_real: Ground truth left eigenvector real parts [num_states, num_eigenvectors]
@@ -1140,20 +558,9 @@ def compute_complex_cosine_similarities_with_normalization(
     """
     # Normalize learned eigenvectors only (ground truth is already normalized)
     learned_normalized = normalize_eigenvectors_for_comparison(
-        left_real=learned_left_real,
-        left_imag=learned_left_imag,
         right_real=learned_right_real,
         right_imag=learned_right_imag,
         sampling_probs=sampling_probs
-    )
-
-    # For left eigenvectors: use complex conjugate of learned psi
-    # Since psi = conj(adjoint eigenvector), we need conj(psi) = adjoint eigenvector
-    # To get complex conjugate, flip the sign of the imaginary part
-    left_sims = compute_complex_cosine_similarities(
-        learned_normalized['left_real'], -learned_normalized['left_imag'],  # Complex conjugate
-        gt_left_real, gt_left_imag,  # Ground truth (already normalized)
-        prefix="left_"
     )
 
     # For right eigenvectors: use as is (no conjugate needed)
@@ -1165,116 +572,9 @@ def compute_complex_cosine_similarities_with_normalization(
 
     # Combine results
     result = {}
-    result.update(left_sims)
     result.update(right_sims)
 
     return result
-
-
-def plot_cosine_similarity_evolution(metrics_history: Dict, save_path: str, num_eigenvectors: int = None):
-    """
-    Plot the evolution of cosine similarities between learned and ground truth eigenvectors.
-
-    For complex eigenvectors, plots both left and right eigenvector similarities.
-
-    Args:
-        metrics_history: List of metric dictionaries containing cosine similarity values
-        save_path: Path to save the plot
-        num_eigenvectors: Number of eigenvectors to plot (None = plot all available)
-    """
-    steps = [m['gradient_step'] for m in metrics_history]
-
-    # Check for complex eigenvector metrics (left and right)
-    has_left = 'left_cosine_sim_avg' in metrics_history[0]
-    has_right = 'right_cosine_sim_avg' in metrics_history[0]
-
-    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
-
-    # Plot left and right eigenvector cosine similarities
-    if has_left:
-        left_values = [m['left_cosine_sim_avg'] for m in metrics_history]
-        ax.plot(steps, left_values, label='Left Eigenvectors (φ)',
-                color='blue', linewidth=2.5, linestyle='-', marker='o', markersize=3, markevery=max(1, len(steps)//20))
-
-    if has_right:
-        right_values = [m['right_cosine_sim_avg'] for m in metrics_history]
-        ax.plot(steps, right_values, label='Right Eigenvectors (ψ)',
-                color='red', linewidth=2.5, linestyle='-', marker='s', markersize=3, markevery=max(1, len(steps)//20))
-
-    # Plot average of both if both exist
-    if has_left and has_right:
-        avg_values = [(left_values[i] + right_values[i]) / 2 for i in range(len(steps))]
-        ax.plot(steps, avg_values, label='Average (Left + Right)',
-                color='green', linewidth=2.0, linestyle='--', alpha=0.7)
-
-    ax.set_xlabel('Gradient Step', fontsize=12)
-    ax.set_ylabel('|Re(Complex Cosine Similarity)|', fontsize=12)
-    ax.set_title('Evolution of Complex Cosine Similarity\n(Absolute Value of Real Part of <conj(u),v> / (||u|| ||v||))', fontsize=14)
-
-    ax.legend(loc='best', fontsize=11)
-    ax.grid(True, alpha=0.3)
-    ax.set_ylim([-0.05, 1.05])  # Absolute value ranges from 0 to 1
-
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"Cosine similarity evolution plot saved to {save_path}")
-
-
-def plot_all_duals_evolution(metrics_history: Dict, save_path: str, num_eigenvectors: int = 6):
-    """
-    Plot dual variable evolution for diagonal norm constraints.
-
-    After simplification, we only track diagonal dual variables (norm constraints)
-    for real and imaginary parts.
-
-    Args:
-        metrics_history: List of metric dictionaries
-        save_path: Path to save the plot
-        num_eigenvectors: Number of eigenvectors to plot
-    """
-    steps = [m['gradient_step'] for m in metrics_history]
-
-    # Create a large figure with subplots for each eigenvector
-    fig, axes = plt.subplots(num_eigenvectors, 2, figsize=(16, 4*num_eigenvectors))
-    fig.suptitle('Dual Variables Evolution (Diagonal Norms)', fontsize=16)
-
-    if num_eigenvectors == 1:
-        axes = axes.reshape(1, -1)
-
-    for i in range(num_eigenvectors):
-        # Left column: Real parts
-        ax_real = axes[i, 0]
-
-        if f'dual_real_{i}' in metrics_history[0]:
-            dual_real = [m[f'dual_real_{i}'] for m in metrics_history]
-            ax_real.plot(steps, dual_real, label='Dual (Real)',
-                        linewidth=2.0, color='blue')
-
-        ax_real.set_xlabel('Gradient Step')
-        ax_real.set_ylabel('Dual Value (Real)')
-        ax_real.set_title(f'Eigenvector {i} - Real Part Dual')
-        ax_real.legend()
-        ax_real.grid(True, alpha=0.3)
-
-        # Right column: Imaginary parts
-        ax_imag = axes[i, 1]
-
-        if f'dual_imag_{i}' in metrics_history[0]:
-            dual_imag = [m[f'dual_imag_{i}'] for m in metrics_history]
-            ax_imag.plot(steps, dual_imag, label='Dual (Imag)',
-                        linewidth=2.0, color='red')
-
-        ax_imag.set_xlabel('Gradient Step')
-        ax_imag.set_ylabel('Dual Value (Imag)')
-        ax_imag.set_title(f'Eigenvector {i} - Imaginary Part Dual')
-        ax_imag.legend()
-        ax_imag.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"All duals evolution plot saved to {save_path}")
 
 
 def state_idx_to_xy(state_idx: int, width: int) -> tuple:
@@ -1455,23 +755,23 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print(f"\nComputing non-symmetric Laplacian with gamma={args.gamma}, delta={args.delta}...")
     print(f"  L = (1+δ)I - (1-γ)P·SR_γ (matches geometric sampling with k >= 1)")
 
-    laplacian_matrix = compute_nonsymmetric_laplacian(transition_matrix, args.gamma, delta=args.delta)
+    laplacian_matrix = compute_laplacian(transition_matrix, args.gamma, delta=args.delta)
     eigendecomp = compute_eigendecomposition(
         laplacian_matrix,
-        k=args.num_eigenvectors,
+        k=1,
         ascending=True  # For Laplacians, we want smallest eigenvalues
     )
 
-    print(f"\nSmallest {min(5, args.num_eigenvectors)} eigenvalues (complex):")
+    print(f"\nSmallest {min(5, 1)} eigenvalues (complex):")
     print("  Eigenvalue (real + imag)")
-    for i in range(min(5, args.num_eigenvectors)):
+    for i in range(min(5, 1)):
         ev_real = eigendecomp['eigenvalues_real'][i]
         ev_imag = eigendecomp['eigenvalues_imag'][i]
         print(f"  λ_{i}: {ev_real:.6f} + {ev_imag:.6f}i")
 
     # Print ranges of eigenvector values to debug visualization issues
-    print(f"\nEigenvector value ranges (first {min(5, args.num_eigenvectors)} eigenvectors):")
-    for i in range(min(5, args.num_eigenvectors)):
+    print(f"\nEigenvector value ranges (first {min(5, 1)} eigenvectors):")
+    for i in range(min(5, 1)):
         # Right eigenvectors
         right_real = eigendecomp['right_eigenvectors_real'][:, i]
         right_imag = eigendecomp['right_eigenvectors_imag'][:, i]
@@ -1630,7 +930,9 @@ def learn_eigenvectors(args):
     else:
         # Create environment and collect data (new run)
         env = create_gridworld_env(args)
-        laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer, transition_matrix = collect_data_and_compute_eigenvectors(env, args)
+        laplacian_matrix, eigendecomp, state_coords, canonical_states, \
+            sampling_probs, door_config, data_env, replay_buffer, transition_matrix = \
+                collect_data_and_compute_eigenvectors(env, args)
 
         # Extract ground truth eigenvalues and eigenvectors (complex)
         gt_eigenvalues = eigendecomp['eigenvalues']  # Complex eigenvalues
@@ -1682,18 +984,8 @@ def learn_eigenvectors(args):
                     s_prime_full = int(canonical_states[s_prime_canonical])
                     door_markers[(s_full, a_forward)] = s_prime_full
 
-            plot_sampling_distribution(
-                sampling_probs=sampling_probs,
-                canonical_states=canonical_states,
-                grid_width=env.width,
-                grid_height=env.height,
-                save_path=str(plots_dir / "sampling_distribution.png"),
-                portals=door_markers if door_markers else None
-            )
-
     # Initialize the encoder
     encoder = CoordinateEncoder(
-        num_features=args.num_eigenvectors,
         hidden_dim=args.hidden_dim,
         num_hidden_layers=args.num_hidden_layers,
     )
@@ -1705,17 +997,9 @@ def learn_eigenvectors(args):
     # Create masks for different parameter groups
     encoder_mask = {
         'encoder': True,
-        'duals_left_real': False,
-        'duals_left_imag': False,
-        'duals_right_real': False,
-        'duals_right_imag': False,
     }
     other_mask = {
         'encoder': False,
-        'duals_left_real': True,
-        'duals_left_imag': True,
-        'duals_right_real': True,
-        'duals_right_imag': True,
     }
 
     tx = optax.chain(
@@ -1754,10 +1038,6 @@ def learn_eigenvectors(args):
 
         initial_params = {
             'encoder': encoder.init(encoder_key, dummy_input),
-            'duals_left_real': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
-            'duals_left_imag': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
-            'duals_right_real': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
-            'duals_right_imag': jnp.tril(args.duals_initial_val * jnp.ones((args.num_eigenvectors, args.num_eigenvectors))),
         }
 
         encoder_state = TrainState.create(
@@ -1784,239 +1064,74 @@ def learn_eigenvectors(args):
             features_2 = encoder.apply(encoder_params, state_coords_batch_2)[0]
             next_features = encoder.apply(encoder_params, next_state_coords_batch)[0]
 
-            # Extract left and right eigenvectors (real and imaginary parts)
+            # Extract right eigenvectors (real and imaginary parts)
             # features_1 contains: left_real, left_imag, right_real, right_imag
-            psi_real = features_1['left_real']  # Left eigenvectors, real part
-            psi_imag = features_1['left_imag']  # Left eigenvectors, imaginary part
-            phi_real = features_1['right_real']  # Right eigenvectors, real part
-            phi_imag = features_1['right_imag']  # Right eigenvectors, imaginary part
+            x_r = features_1['right_real']  # Right eigenvectors, real part
+            x_i = features_1['right_imag']  # Right eigenvectors, imaginary part
 
-            psi_real_2 = features_2['left_real']
-            psi_imag_2 = features_2['left_imag']
-            phi_real_2 = features_2['right_real']
-            phi_imag_2 = features_2['right_imag']
+            x_r_2 = features_2['right_real']
+            x_i_2 = features_2['right_imag']
 
-            next_psi_real = next_features['left_real']
-            next_psi_imag = next_features['left_imag']
-            next_phi_real = next_features['right_real']
-            next_phi_imag = next_features['right_imag']
+            next_x_r = next_features['right_real']
+            next_x_i = next_features['right_imag']
 
             # Get sizes
-            d = args.num_eigenvectors
-            n = phi_real.shape[0]
+            n = x_r.shape[0]
 
-            # Get duals
-            dual_variables_left_real = params['duals_left_real']
-            dual_variables_left_imag = params['duals_left_imag']
-            dual_variables_right_real = params['duals_right_real']
-            dual_variables_right_imag = params['duals_right_imag']
+            # Compute current unnormalized eigenvalue estimates
+            lambda_r = (x_r * next_x_r).mean() + (x_i * next_x_i).mean()
+            lambda_i = (x_r * next_x_i).mean() - (x_i * next_x_r).mean()
 
-            # Eigenvalue sum is the sum of left and right diagonal duals (averaged)
-            diagonal_duals_left_real = jnp.diag(dual_variables_left_real)
-            diagonal_duals_left_imag = jnp.diag(dual_variables_left_imag)
-            diagonal_duals_right_real = jnp.diag(dual_variables_right_real)
-            diagonal_duals_right_imag = jnp.diag(dual_variables_right_imag)
-            eigenvalue_sum_real = -0.5 * (diagonal_duals_left_real + diagonal_duals_right_real).sum()
-            eigenvalue_sum_imag = -0.5 * (diagonal_duals_left_imag + diagonal_duals_right_imag).sum()
+            # Compute squared norms
+            norm_x_r_sq = (x_r ** 2).mean()
+            norm_x_i_sq = (x_i ** 2).mean()
+            norm_x_sq = norm_x_r_sq + norm_x_i_sq
 
-            # Compute biorthogonality inner products: <ψ, φ>
-            # Real part: Re(<ψ, φ>) = ψ_real^T φ_real + ψ_imag^T φ_imag
-            inner_product_left_real_1 = (jnp.einsum('ij,ik->jk', psi_real, jax.lax.stop_gradient(phi_real)) +
-                                   jnp.einsum('ij,ik->jk', psi_imag, jax.lax.stop_gradient(phi_imag))) / n
-            inner_product_left_real_2 = (jnp.einsum('ij,ik->jk', psi_real_2, jax.lax.stop_gradient(phi_real_2)) +
-                                   jnp.einsum('ij,ik->jk', psi_imag_2, jax.lax.stop_gradient(phi_imag_2))) / n
-            # Imaginary part: Im(<ψ, φ>) = ψ_real^T φ_imag - ψ_imag^T φ_real
-            inner_product_left_imag_1 = (jnp.einsum('ij,ik->jk', psi_real, jax.lax.stop_gradient(phi_imag)) -
-                                   jnp.einsum('ij,ik->jk', psi_imag, jax.lax.stop_gradient(phi_real))) / n
-            inner_product_left_imag_2 = (jnp.einsum('ij,ik->jk', psi_real_2, jax.lax.stop_gradient(phi_imag_2)) -
-                                   jnp.einsum('ij,ik->jk', psi_imag_2, jax.lax.stop_gradient(phi_real_2))) / n
-            
-            # Same for right eigenvectors
-            inner_product_right_real_1 = (jnp.einsum('ij,ik->jk', phi_real, jax.lax.stop_gradient(psi_real)) +
-                                    jnp.einsum('ij,ik->jk', phi_imag, jax.lax.stop_gradient(psi_imag))) / n
-            inner_product_right_real_2 = (jnp.einsum('ij,ik->jk', phi_real_2, jax.lax.stop_gradient(psi_real_2)) +
-                                    jnp.einsum('ij,ik->jk', phi_imag_2, jax.lax.stop_gradient(psi_imag_2))) / n
-            inner_product_right_imag_1 = (-jnp.einsum('ij,ik->jk', phi_real, jax.lax.stop_gradient(psi_imag)) +
-                                    jnp.einsum('ij,ik->jk', phi_imag, jax.lax.stop_gradient(psi_real))) / n
-            inner_product_right_imag_2 = (-jnp.einsum('ij,ik->jk', phi_real_2, jax.lax.stop_gradient(psi_imag_2)) +
-                                    jnp.einsum('ij,ik->jk', phi_imag_2, jax.lax.stop_gradient(psi_real_2))) / n
+            # Compute graph losses
+            f_x_real = - next_x_r  + lambda_r * x_r - lambda_i * x_i
+            f_x_imag = - next_x_i  + lambda_i * x_r + lambda_r * x_i
+            graph_loss_real = (x_r * jax.lax.stop_gradient(f_x_real)).mean()
+            graph_loss_imag = (x_i * jax.lax.stop_gradient(f_x_imag)).mean()
+            graph_loss = graph_loss_real + graph_loss_imag
 
-            # Biorthogonality error matrices
-            # Real part should equal identity
-            error_matrix_left_real_1 = jnp.tril(inner_product_left_real_1 - jnp.eye(d))
-            error_matrix_left_real_2 = jnp.tril(inner_product_left_real_2 - jnp.eye(d))
-            error_matrix_right_real_1 = jnp.tril(inner_product_right_real_1 - jnp.eye(d))
-            error_matrix_right_real_2 = jnp.tril(inner_product_right_real_2 - jnp.eye(d))
+            # Compute Lyapunov metrics
+            norm_error = norm_x_sq - 1
+            V_x_norm = norm_error ** 2 / 2
+            norm_nabla_V_x_norm_sq = 4 * norm_x_sq * norm_error ** 2
 
-            # Imaginary part should equal zero
-            error_matrix_left_imag_1 = jnp.tril(inner_product_left_imag_1)
-            error_matrix_left_imag_2 = jnp.tril(inner_product_left_imag_2)
-            error_matrix_right_imag_1 = jnp.tril(inner_product_right_imag_1)
-            error_matrix_right_imag_2 = jnp.tril(inner_product_right_imag_2)
-
-            # Compute dual loss (for real part constraint)
-            dual_loss_pos_real = (
-                jax.lax.stop_gradient(dual_variables_left_real)
-                * error_matrix_left_real_1
-                + jax.lax.stop_gradient(dual_variables_right_real)
-                * error_matrix_right_real_1
-            ).sum()
-
-            dual_loss_neg_left_real = -(dual_variables_left_real * jax.lax.stop_gradient(args.step_size_duals * error_matrix_left_real_1)).sum()
-            dual_loss_neg_right_real = -(dual_variables_right_real * jax.lax.stop_gradient(args.step_size_duals * error_matrix_right_real_1)).sum()
-
-            # Compute dual loss (for imaginary part constraint)
-            dual_loss_pos_imag = (
-                jax.lax.stop_gradient(dual_variables_left_imag)
-                * error_matrix_left_imag_1
-                + jax.lax.stop_gradient(dual_variables_right_imag)
-                * error_matrix_right_imag_1
-            ).sum()
-
-            dual_loss_neg_left_imag = -(dual_variables_left_imag * jax.lax.stop_gradient(args.step_size_duals * error_matrix_left_imag_1)).sum()
-            dual_loss_neg_right_imag = -(dual_variables_right_imag * jax.lax.stop_gradient(args.step_size_duals * error_matrix_right_imag_1)).sum()
-
-            # Compute right eigenvector norms: <phi, phi>
-            # For complex vectors: <phi, phi> = phi_real^T phi_real + phi_imag^T phi_imag
-            phi_norms_real_1 = jnp.log((phi_real**2 + phi_imag**2).mean(0)+1e-6).clip(max=10)
-            phi_norms_real_2 = jnp.log((phi_real_2**2 + phi_imag_2**2).mean(0)+1e-6).clip(max=10)
-
-            # Norm constraint errors: log(<phi, phi>) = log(1) = 0
-            norm_errors_right_1 = phi_norms_real_1
-            norm_errors_right_2 = phi_norms_real_2
-
-            # Total dual loss
-            dual_loss_pos = dual_loss_pos_real + dual_loss_pos_imag
-            dual_loss_neg_left = dual_loss_neg_left_real + dual_loss_neg_left_imag
-            dual_loss_neg_right = dual_loss_neg_right_real + dual_loss_neg_right_imag
-            dual_loss_neg = dual_loss_neg_left + dual_loss_neg_right
-
-            # Compute barrier loss (for real part constraint)
-            quadratic_error_matrix_left_real = 2 * error_matrix_left_real_1 * jax.lax.stop_gradient(error_matrix_left_real_2)
-            quadratic_error_left_real = quadratic_error_matrix_left_real.sum()
-            barrier_loss_left_real = args.barrier_coef * quadratic_error_left_real
-            
-            quadratic_error_matrix_right_real = 2 * error_matrix_right_real_1 * jax.lax.stop_gradient(error_matrix_right_real_2)
-            quadratic_error_right_real = quadratic_error_matrix_right_real.sum()
-            barrier_loss_right_real = args.barrier_coef * quadratic_error_right_real
-
-            # Compute barrier loss (for imaginary part constraint)
-            quadratic_error_matrix_left_imag = 2 * error_matrix_left_imag_1 * jax.lax.stop_gradient(error_matrix_left_imag_2)
-            quadratic_error_left_imag = quadratic_error_matrix_left_imag.sum()
-            barrier_loss_left_imag = args.barrier_coef * quadratic_error_left_imag
-
-            quadratic_error_matrix_right_imag = 2 * error_matrix_right_imag_1 * jax.lax.stop_gradient(error_matrix_right_imag_2)
-            quadratic_error_right_imag = quadratic_error_matrix_right_imag.sum()
-            barrier_loss_right_imag = args.barrier_coef * quadratic_error_right_imag
-
-            barrier_loss_left = barrier_loss_left_real + barrier_loss_left_imag
-            barrier_loss_right = barrier_loss_right_real + barrier_loss_right_imag
-
-            # Compute barrier loss for right eigenvector norm constraints
-            quadratic_error_norm_right = 2 * norm_errors_right_1 * jax.lax.stop_gradient(norm_errors_right_2)
-            barrier_loss_norm_right = args.barrier_coef * quadratic_error_norm_right.sum()
-
-            
-            barrier_loss = barrier_loss_left + barrier_loss_right + barrier_loss_norm_right
-
-            # Compute graph drawing loss for complex eigenvectors
-            # E[(ψ_real(s)*((1+δ)φ_real(s) - φ_real(s')) + ψ_imag(s)*((1+δ)φ_imag(s) - φ_imag(s')))^2]
-            # The δ parameter shifts eigenvalues: L = (1+δ)I - M
-            graph_products_real = (
-                jax.lax.stop_gradient(psi_real) 
-                * ((1+args.delta)*phi_real - next_phi_real)
-            ).mean(0, keepdims=True)
-            graph_products_imag = (
-                jax.lax.stop_gradient(psi_imag) 
-                * ((1+args.delta)*phi_imag - next_phi_imag)
-            ).mean(0, keepdims=True)
-            graph_products_real_reverse = (
-                jax.lax.stop_gradient(next_phi_real) 
-                * ((1+args.delta)*next_psi_real - psi_real)
-                ).mean(0, keepdims=True)
-            graph_products_imag_reverse = (
-                jax.lax.stop_gradient(next_phi_imag) 
-                * ((1+args.delta)*next_psi_imag - psi_imag)
-            ).mean(0, keepdims=True)
-
-            graph_loss_direct = ((graph_products_real + graph_products_imag)**2).sum()
-            graph_loss_reverse = ((graph_products_real_reverse + graph_products_imag_reverse)**2).sum()
-            graph_loss = graph_loss_direct + graph_loss_reverse
+            # Compute Control Lyapunov Function (CLF) loss
+            f_x_dot_V_x_norm = 2 * graph_loss * norm_error
+            clf_x_norm_num = f_x_dot_V_x_norm + args.lambda_x * V_x_norm
+            barrier_x_norm = jnp.maximum(0, clf_x_norm_num) / (norm_nabla_V_x_norm_sq + 1e-8)
+            u_x_norm_real = barrier_x_norm * 2 * norm_error * x_r
+            u_x_norm_imag = barrier_x_norm * 2 * norm_error * x_i
+            clf_loss_real = (x_r * jax.lax.stop_gradient(u_x_norm_real)).mean()
+            clf_loss_imag = (x_i * jax.lax.stop_gradient(u_x_norm_imag)).mean()
+            clf_loss = clf_loss_real + clf_loss_imag
 
             # Total loss
-            positive_loss = graph_loss + dual_loss_pos + barrier_loss
-            negative_loss = dual_loss_neg
-            allo = positive_loss + negative_loss
+            total_loss = graph_loss + clf_loss
 
             # Auxiliary metrics
             aux = {
+                'total_loss': total_loss,
                 'graph_loss': graph_loss,
-                'dual_loss': dual_loss_pos,
-                'dual_loss_neg': dual_loss_neg,
-                'barrier_loss': barrier_loss,
-                'approx_eigenvalue_sum_real': eigenvalue_sum_real,
-                'approx_eigenvalue_sum_imag': eigenvalue_sum_imag,
+                'clf_loss': clf_loss,
+                'graph_loss_real': graph_loss_real,
+                'graph_loss_imag': graph_loss_imag,
+                'clf_loss_real': clf_loss_real,
+                'clf_loss_imag': clf_loss_imag,
+                'lambda_real': lambda_r,
+                'lambda_imag': lambda_i,
+                'V_x_norm': V_x_norm,
+                'norm_x_sq': norm_x_sq,
+                'barrier_x_norm': barrier_x_norm,
             }
 
-            # Add dual variables and errors to aux
-            for i in range(min(11, args.num_eigenvectors)):
-                # Diagonal duals for left and right eigenvectors
-                aux[f'dual_left_real_{i}'] = dual_variables_left_real[i, i]
-                aux[f'dual_left_imag_{i}'] = dual_variables_left_imag[i, i]
-                aux[f'dual_right_real_{i}'] = dual_variables_right_real[i, i]
-                aux[f'dual_right_imag_{i}'] = dual_variables_right_imag[i, i]
-                # Combined eigenvalue estimate (average of left and right duals)
-                aux[f'dual_real_{i}'] = -0.5 * (dual_variables_left_real[i, i] + dual_variables_right_real[i, i])
-                aux[f'dual_imag_{i}'] = -0.5 * (dual_variables_left_imag[i, i] + dual_variables_right_imag[i, i])
-
-                # Add diagonal errors for each eigenvector (biorthogonality)
-                aux[f'error_left_real_{i}'] = error_matrix_left_real_1[i, i]
-                aux[f'error_left_imag_{i}'] = error_matrix_left_imag_1[i, i]
-                aux[f'error_right_real_{i}'] = error_matrix_right_real_1[i, i]
-                aux[f'error_right_imag_{i}'] = error_matrix_right_imag_1[i, i]
-
-                # Add norm constraint errors for right eigenvectors
-                aux[f'error_norm_right_{i}'] = norm_errors_right_1[i]
-
-                # Track both off-diagonal duals and errors
-                for j in range(0, min(2, i)):
-                    aux[f'dual_left_real_{i}_{j}'] = dual_variables_left_real[i, j]
-                    aux[f'dual_left_imag_{i}_{j}'] = dual_variables_left_imag[i, j]
-                    aux[f'dual_right_real_{i}_{j}'] = dual_variables_right_real[i, j]
-                    aux[f'dual_right_imag_{i}_{j}'] = dual_variables_right_imag[i, j]
-                    aux[f'error_left_real_{i}_{j}'] = error_matrix_left_real_1[i, j]
-                    aux[f'error_left_imag_{i}_{j}'] = error_matrix_left_imag_1[i, j]
-                    aux[f'error_right_real_{i}_{j}'] = error_matrix_right_real_1[i, j]
-                    aux[f'error_right_imag_{i}_{j}'] = error_matrix_right_imag_1[i, j]
-
-            # Compute total errors for monitoring
-            total_error_left_real = jnp.abs(error_matrix_left_real_1).sum()
-            total_error_left_imag = jnp.abs(error_matrix_left_imag_1).sum()
-            total_error_right_real = jnp.abs(error_matrix_right_real_1).sum()
-            total_error_right_imag = jnp.abs(error_matrix_right_imag_1).sum()
-
-            aux['total_error'] = total_error_left_real + total_error_left_imag + total_error_right_real + total_error_right_imag
-            aux['total_norm_error'] = jnp.linalg.norm(error_matrix_left_real_1, 'fro') + jnp.linalg.norm(error_matrix_left_imag_1, 'fro') + \
-                                       jnp.linalg.norm(error_matrix_right_real_1, 'fro') + jnp.linalg.norm(error_matrix_right_imag_1, 'fro')
-
-            # Error for first two eigenvectors (useful for debugging)
-            k_debug = min(2, args.num_eigenvectors)
-            aux['total_two_component_error'] = jnp.abs(error_matrix_left_real_1[:k_debug, :k_debug]).sum() + \
-                                                 jnp.abs(error_matrix_left_imag_1[:k_debug, :k_debug]).sum() + \
-                                                 jnp.abs(error_matrix_right_real_1[:k_debug, :k_debug]).sum() + \
-                                                 jnp.abs(error_matrix_right_imag_1[:k_debug, :k_debug]).sum()
-
-            # Distance to constraint manifold (same as total_norm_error)
-            aux['distance_to_constraint_manifold'] = aux['total_norm_error']
-
-            # Distance to origin (norm of eigenvector parameters)
-            aux['distance_to_origin'] = jnp.linalg.norm(psi_real) + jnp.linalg.norm(psi_imag) + \
-                                         jnp.linalg.norm(phi_real) + jnp.linalg.norm(phi_imag)
-
-            return allo, aux
+            return total_loss, aux
 
         # Compute loss and gradients
-        (allo, aux), grads = jax.value_and_grad(
+        (total_loss, aux), grads = jax.value_and_grad(
             encoder_loss, has_aux=True)(encoder_state.params)
 
         # Apply optimizer updates
@@ -2037,7 +1152,7 @@ def learn_eigenvectors(args):
         grad_norm = jnp.linalg.norm(grads_vector)
         aux['grad_norm'] = grad_norm
 
-        return new_encoder_state, allo, aux
+        return new_encoder_state, total_loss, aux
 
     # Start the training process
     if checkpoint_data is None:
@@ -2117,7 +1232,7 @@ def learn_eigenvectors(args):
             'grid_width': env.width,
             'grid_height': env.height,
             'door_markers': door_markers,
-            'num_eigenvectors': args.num_eigenvectors,
+            'num_eigenvectors': 1,
             'gamma': args.gamma,
         }
         with open(results_dir / "viz_metadata.pkl", 'wb') as f:
@@ -2138,7 +1253,7 @@ def learn_eigenvectors(args):
 
             # Visualize right eigenvectors (real part)
             visualize_multiple_eigenvectors(
-                eigenvector_indices=list(range(args.num_eigenvectors)),
+                eigenvector_indices=list(range(1)),
                 eigendecomposition=eigendecomp_viz,
                 canonical_states=canonical_states,
                 grid_width=env.width,
@@ -2146,7 +1261,7 @@ def learn_eigenvectors(args):
                 portals=door_markers if door_markers else None,
                 eigenvector_type='right',
                 component='real',
-                ncols=min(4, args.num_eigenvectors),
+                ncols=min(4, 1),
                 wall_color='gray',
                 save_path=str(plots_dir / "ground_truth_right_eigenvectors_real.png"),
                 shared_colorbar=True
@@ -2155,7 +1270,7 @@ def learn_eigenvectors(args):
 
             # Visualize right eigenvectors (imaginary part)
             visualize_multiple_eigenvectors(
-                eigenvector_indices=list(range(args.num_eigenvectors)),
+                eigenvector_indices=list(range(1)),
                 eigendecomposition=eigendecomp_viz,
                 canonical_states=canonical_states,
                 grid_width=env.width,
@@ -2163,7 +1278,7 @@ def learn_eigenvectors(args):
                 portals=door_markers if door_markers else None,
                 eigenvector_type='right',
                 component='imag',
-                ncols=min(4, args.num_eigenvectors),
+                ncols=min(4, 1),
                 wall_color='gray',
                 save_path=str(plots_dir / "ground_truth_right_eigenvectors_imag.png"),
                 shared_colorbar=True
@@ -2172,7 +1287,7 @@ def learn_eigenvectors(args):
 
             # Visualize left eigenvectors (real part)
             visualize_multiple_eigenvectors(
-                eigenvector_indices=list(range(args.num_eigenvectors)),
+                eigenvector_indices=list(range(1)),
                 eigendecomposition=eigendecomp_viz,
                 canonical_states=canonical_states,
                 grid_width=env.width,
@@ -2180,7 +1295,7 @@ def learn_eigenvectors(args):
                 portals=door_markers if door_markers else None,
                 eigenvector_type='left',
                 component='real',
-                ncols=min(4, args.num_eigenvectors),
+                ncols=min(4, 1),
                 wall_color='gray',
                 save_path=str(plots_dir / "ground_truth_left_eigenvectors_real.png"),
                 shared_colorbar=True
@@ -2189,7 +1304,7 @@ def learn_eigenvectors(args):
 
             # Visualize left eigenvectors (imaginary part)
             visualize_multiple_eigenvectors(
-                eigenvector_indices=list(range(args.num_eigenvectors)),
+                eigenvector_indices=list(range(1)),
                 eigendecomposition=eigendecomp_viz,
                 canonical_states=canonical_states,
                 grid_width=env.width,
@@ -2197,7 +1312,7 @@ def learn_eigenvectors(args):
                 portals=door_markers if door_markers else None,
                 eigenvector_type='left',
                 component='imag',
-                ncols=min(4, args.num_eigenvectors),
+                ncols=min(4, 1),
                 wall_color='gray',
                 save_path=str(plots_dir / "ground_truth_left_eigenvectors_imag.png"),
                 shared_colorbar=True
@@ -2251,7 +1366,7 @@ def learn_eigenvectors(args):
 
         # Update
         update_start = time.time()
-        encoder_state, allo, metrics = update_encoder(
+        encoder_state, total_loss, metrics = update_encoder(
             encoder_state,
             coords_batch,
             next_coords_batch,
@@ -2276,8 +1391,6 @@ def learn_eigenvectors(args):
             # 1. Arbitrary complex scaling of eigenvectors
             # 2. Adjoint vs. true left eigenvector relationship (via sampling distribution)
             cosine_sims = compute_complex_cosine_similarities_with_normalization(
-                learned_left_real=features_dict['left_real'],
-                learned_left_imag=features_dict['left_imag'],
                 learned_right_real=features_dict['right_real'],
                 learned_right_imag=features_dict['right_imag'],
                 gt_left_real=gt_left_real,
@@ -2292,7 +1405,7 @@ def learn_eigenvectors(args):
             steps_completed = gradient_step - start_step
             metrics_dict = {
                 "gradient_step": gradient_step,
-                "allo": float(allo.item()),
+                "total_loss": float(total_loss.item()),
                 "sps": int(steps_completed / max(elapsed_time, 1e-6)),  # Steps since start/resume
             }
             for k, v in metrics.items():
@@ -2305,11 +1418,9 @@ def learn_eigenvectors(args):
             metrics_history.append(metrics_dict)
 
             if gradient_step % (args.log_freq * 10) == 0:
-                left_sim = cosine_sims['left_cosine_sim_avg']
                 right_sim = cosine_sims['right_cosine_sim_avg']
-                print(f"Step {gradient_step}: loss={allo.item():.4f}, "
-                      f"total_error={metrics['total_error'].item():.4f}, "
-                      f"left_sim={left_sim:.4f}, right_sim={right_sim:.4f}")
+                print(f"Step {gradient_step}: total_loss={total_loss.item():.4f}, "
+                      f"right_sim={right_sim:.4f}")
         log_time = time.time() - log_start
 
         # Collect timing samples (last 1000 steps for statistics)
@@ -2347,21 +1458,15 @@ def learn_eigenvectors(args):
             features_dict = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
 
             # Save raw eigenvectors
-            np.save(results_dir / "latest_learned_left_real.npy", np.array(features_dict['left_real']))
-            np.save(results_dir / "latest_learned_left_imag.npy", np.array(features_dict['left_imag']))
             np.save(results_dir / "latest_learned_right_real.npy", np.array(features_dict['right_real']))
             np.save(results_dir / "latest_learned_right_imag.npy", np.array(features_dict['right_imag']))
 
             # Compute and save normalized eigenvectors
             normalized_features = normalize_eigenvectors_for_comparison(
-                left_real=features_dict['left_real'],
-                left_imag=features_dict['left_imag'],
                 right_real=features_dict['right_real'],
                 right_imag=features_dict['right_imag'],
                 sampling_probs=sampling_probs
             )
-            np.save(results_dir / "latest_learned_left_real_normalized.npy", np.array(normalized_features['left_real']))
-            np.save(results_dir / "latest_learned_left_imag_normalized.npy", np.array(normalized_features['left_imag']))
             np.save(results_dir / "latest_learned_right_real_normalized.npy", np.array(normalized_features['right_real']))
             np.save(results_dir / "latest_learned_right_imag_normalized.npy", np.array(normalized_features['right_imag']))
 
@@ -2369,58 +1474,13 @@ def learn_eigenvectors(args):
             if args.plot_during_training:
                 # Create a temporary eigendecomposition dict for visualization
                 learned_eigendecomp = {
-                    'eigenvalues': jnp.zeros(args.num_eigenvectors, dtype=jnp.complex64),
-                    'eigenvalues_real': jnp.zeros(args.num_eigenvectors),
-                    'eigenvalues_imag': jnp.zeros(args.num_eigenvectors),
+                    'eigenvalues': jnp.zeros(1, dtype=jnp.complex64),
+                    'eigenvalues_real': jnp.zeros(1),
+                    'eigenvalues_imag': jnp.zeros(1),
                     'right_eigenvectors_real': features_dict['right_real'],
                     'right_eigenvectors_imag': features_dict['right_imag'],
-                    'left_eigenvectors_real': features_dict['left_real'],
-                    'left_eigenvectors_imag': features_dict['left_imag'],
                 }
 
-                visualize_multiple_eigenvectors(
-                    eigenvector_indices=list(range(args.num_eigenvectors)),
-                    eigendecomposition=learned_eigendecomp,
-                    canonical_states=canonical_states,
-                    grid_width=env.width,
-                    grid_height=env.height,
-                    portals=door_markers if door_markers else None,
-                    eigenvector_type='right',
-                    component='real',
-                    ncols=min(4, args.num_eigenvectors),
-                    wall_color='gray',
-                    save_path=str(plots_dir / "learned_eigenvectors_latest.png"),
-                    shared_colorbar=True
-                )
-                plt.close()
-
-                # Plot learning curves
-                plot_learning_curves(metrics_history, str(plots_dir / "learning_curves.png"))
-
-                # Plot dual variable evolution vs ground truth eigenvalues
-                plot_dual_variable_evolution(
-                    metrics_history,
-                    gt_eigenvalues,
-                    args.gamma,
-                    str(plots_dir / "dual_variable_evolution.png"),
-                    num_eigenvectors=args.num_eigenvectors,
-                    ground_truth_eigenvalues_simple=gt_eigenvalues_simple if 'gt_eigenvalues_simple' in locals() else None,
-                    ground_truth_eigenvalues_weighted=gt_eigenvalues_weighted if 'gt_eigenvalues_weighted' in locals() else None
-                )
-
-                # Plot cosine similarity evolution
-                plot_cosine_similarity_evolution(
-                    metrics_history,
-                    str(plots_dir / "cosine_similarity_evolution.png"),
-                    num_eigenvectors=args.num_eigenvectors
-                )
-
-                # Plot all duals evolution (left, right, combined)
-                plot_all_duals_evolution(
-                    metrics_history,
-                    str(plots_dir / "all_duals_evolution.png"),
-                    num_eigenvectors=min(6, args.num_eigenvectors)
-                )
             else:
                 # Just log progress
                 if gradient_step % (args.plot_freq * 5) == 0:
@@ -2472,47 +1532,22 @@ def learn_eigenvectors(args):
     final_features_dict = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
 
     # Save raw eigenvectors
-    np.save(results_dir / "final_learned_left_real.npy", np.array(final_features_dict['left_real']))
-    np.save(results_dir / "final_learned_left_imag.npy", np.array(final_features_dict['left_imag']))
     np.save(results_dir / "final_learned_right_real.npy", np.array(final_features_dict['right_real']))
     np.save(results_dir / "final_learned_right_imag.npy", np.array(final_features_dict['right_imag']))
 
-    # Save dual variables (eigenvalue estimates)
-    # Extract diagonal elements and average left/right duals
-    diagonal_duals_left_real = jnp.diag(encoder_state.params['duals_left_real'])
-    diagonal_duals_left_imag = jnp.diag(encoder_state.params['duals_left_imag'])
-    diagonal_duals_right_real = jnp.diag(encoder_state.params['duals_right_real'])
-    diagonal_duals_right_imag = jnp.diag(encoder_state.params['duals_right_imag'])
-
-    learned_eigenvalues_real = -0.5 * (diagonal_duals_left_real + diagonal_duals_right_real)
-    learned_eigenvalues_imag = -0.5 * (diagonal_duals_left_imag + diagonal_duals_right_imag)
-
-    np.save(results_dir / "learned_duals_real.npy", np.array(learned_eigenvalues_real))
-    np.save(results_dir / "learned_duals_imag.npy", np.array(learned_eigenvalues_imag))
-
-    # Also save full dual matrices for debugging
-    np.save(results_dir / "duals_left_real.npy", np.array(encoder_state.params['duals_left_real']))
-    np.save(results_dir / "duals_left_imag.npy", np.array(encoder_state.params['duals_left_imag']))
-    np.save(results_dir / "duals_right_real.npy", np.array(encoder_state.params['duals_right_real']))
-    np.save(results_dir / "duals_right_imag.npy", np.array(encoder_state.params['duals_right_imag']))
-
     # Compute and save normalized eigenvectors
     final_normalized_features = normalize_eigenvectors_for_comparison(
-        left_real=final_features_dict['left_real'],
-        left_imag=final_features_dict['left_imag'],
         right_real=final_features_dict['right_real'],
         right_imag=final_features_dict['right_imag'],
         sampling_probs=sampling_probs
     )
-    np.save(results_dir / "final_learned_left_real_normalized.npy", np.array(final_normalized_features['left_real']))
-    np.save(results_dir / "final_learned_left_imag_normalized.npy", np.array(final_normalized_features['left_imag']))
     np.save(results_dir / "final_learned_right_real_normalized.npy", np.array(final_normalized_features['right_real']))
     np.save(results_dir / "final_learned_right_imag_normalized.npy", np.array(final_normalized_features['right_imag']))
 
     # Optionally create final comparison plots
     if args.plot_during_training:
         # Determine which eigenvector to plot (skip constant eigenvector 0 if multiple exist)
-        evec_idx = 0 if args.num_eigenvectors == 1 else 1
+        evec_idx = 0 if 1 == 1 else 1
 
         # Create 3-column comparison: Ground Truth | Raw | Normalized
         # Right eigenvectors (real part)
@@ -2562,55 +1597,6 @@ def learn_eigenvectors(args):
 
         plt.tight_layout()
         plt.savefig(plots_dir / "final_comparison_right.png", dpi=300, bbox_inches='tight')
-        plt.close()
-
-        # Left eigenvectors (real part)
-        fig, axes = plt.subplots(1, 3, figsize=(18, 8))
-
-        visualize_eigenvector_on_grid(
-            eigenvector_idx=evec_idx,
-            eigenvector_values=np.array(gt_left_real[:, evec_idx]),
-            canonical_states=canonical_states,
-            grid_width=env.width,
-            grid_height=env.height,
-            portals=door_markers if door_markers else None,
-            title=f'Ground Truth Left {evec_idx} (Real)',
-            ax=axes[0],
-            cmap='RdBu_r',
-            show_colorbar=True,
-            wall_color='gray'
-        )
-
-        visualize_eigenvector_on_grid(
-            eigenvector_idx=evec_idx,
-            eigenvector_values=np.array(final_features_dict['left_real'][:, evec_idx]),
-            canonical_states=canonical_states,
-            grid_width=env.width,
-            grid_height=env.height,
-            portals=door_markers if door_markers else None,
-            title=f'Raw Learned Left {evec_idx} (Real)',
-            ax=axes[1],
-            cmap='RdBu_r',
-            show_colorbar=True,
-            wall_color='gray'
-        )
-
-        visualize_eigenvector_on_grid(
-            eigenvector_idx=evec_idx,
-            eigenvector_values=np.array(final_normalized_features['left_real'][:, evec_idx]),
-            canonical_states=canonical_states,
-            grid_width=env.width,
-            grid_height=env.height,
-            portals=door_markers if door_markers else None,
-            title=f'Normalized Learned Left {evec_idx} (Real)',
-            ax=axes[2],
-            cmap='RdBu_r',
-            show_colorbar=True,
-            wall_color='gray'
-        )
-
-        plt.tight_layout()
-        plt.savefig(plots_dir / "final_comparison_left.png", dpi=300, bbox_inches='tight')
         plt.close()
 
     print(f"\nData exported. Use generate_plots_complex.py to create visualizations.")

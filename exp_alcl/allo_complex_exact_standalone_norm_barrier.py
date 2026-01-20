@@ -1,31 +1,6 @@
 """
 Standalone test of exact gradient dynamics for learning complex eigenvectors.
-
-This implementation aligns strictly with the "Stability analysis" derivation.
-
-The dynamical system minimizes the Lagrangian:
-    L(Θ) = L_graph(Θ) + L_bi-orth(Θ) + L_barrier(Θ)
-
-    - Primal variables: X (left eigenvectors u), Y (right eigenvectors v)
-    - Dual variables:   ε (epsilon, real constraints), ζ (zeta, imaginary constraints)
-    - Objective:        |Re(<x, Ly>_ρ)| (Absolute value graph loss)
-
-Gradient Dynamics:
-
-1. For left eigenvector x (denoted u in some contexts, but x here for consistency):
-   ∇_x = sign[Re(<x, Ly>_ρ)] * D Λ y
-         - Σ_{k} (ε_{x,ik} - i*ζ_{x,ik} - b*h_bar_{x,ik}) * D y_k
-
-2. For right eigenvector y (denoted v in some contexts):
-   ∇_y = sign[Re(<x, Ly>_ρ)] * Λ^T D x
-         - Σ_{k} (ε_{y,ik} + i*ζ_{y,ik} - b*h_{y,ik}) * D x_k
-
-3. For dual variables (Gradient Ascent):
-   g_{ε} = Re(h)
-   g_{ζ} = Im(h)
-
-Update Rule:
-   Θ[t+1] = Θ[t] - α * ∇_Θ
+Modified to include normalization barrier: (<x,x> - 1)^2
 """
 
 import numpy as np
@@ -95,7 +70,7 @@ def compute_exact_gradients(
     b: float,                # Barrier coefficient
 ) -> Dict[str, np.ndarray]:
     """
-    Compute exact gradients ∇_Θ according to the 'Stability analysis' section.
+    Compute exact gradients ∇_Θ including the new normalization barrier.
     """
     n_states, d = X_real.shape
     D_diag = np.diag(D)
@@ -133,7 +108,6 @@ def compute_exact_gradients(
     h_y_imag = h_y_imag * mask
 
     # Dual gradients are exactly the constraint errors
-    # g_ε = Re(h), g_ζ = Im(h)
     g_epsilon_x = h_x_real.copy()
     g_epsilon_y = h_y_real.copy()
     g_zeta_x = h_x_imag.copy()
@@ -146,6 +120,9 @@ def compute_exact_gradients(
     # -------------------------------------------------------------------
     # 2. Primal Gradients (Eigensystem)
     # -------------------------------------------------------------------
+    norm_errors_x = []
+    norm_errors_y = []
+
     for i in range(d):
         x_i_real = X_real[:, i]
         x_i_imag = X_imag[:, i]
@@ -173,35 +150,43 @@ def compute_exact_gradients(
         g_yi_real = sign_term * LTD_x_i_real
         g_yi_imag = sign_term * LTD_x_i_imag
 
-        # --- L_bi-orth and L_barrier Terms ---
+        # --- L_norm Term (NEW) ---
+        # L_norm = b/2 * (<x, x> - 1)^2
+        # Gradient = 2 * b * (<x, x> - 1) * D x
         
-        # Update for x_i: Sum over k <= i
-        # Coeff: (ε_{ik}^x - i*ζ_{ik}^x - b * conj(h_{ik}^x))
-        # Note: The derivation has -b*h_bar. 
-        # h_bar = h_real - i*h_imag.
-        # So full term is: (ε - b*h_real) + i(-ζ + b*h_imag)
+        # For X
+        norm_sq_x = x_i_real @ DX_real[:, i] + x_i_imag @ DX_imag[:, i]
+        norm_err_x = norm_sq_x - 1.0
+        norm_errors_x.append(norm_err_x)
+        
+        g_xi_real += 2 * b * norm_err_x * DX_real[:, i]
+        g_xi_imag += 2 * b * norm_err_x * DX_imag[:, i]
+
+        # For Y
+        norm_sq_y = y_i_real @ DY_real[:, i] + y_i_imag @ DY_imag[:, i]
+        norm_err_y = norm_sq_y - 1.0
+        norm_errors_y.append(norm_err_y)
+        
+        g_yi_real += 2 * b * norm_err_y * DY_real[:, i]
+        g_yi_imag += 2 * b * norm_err_y * DY_imag[:, i]
+
+        # --- L_bi-orth and L_barrier (Existing Constraints) ---
         for k in range(i + 1):
             # Real part of coeff: ε - b * Re(h)
             coef_real = epsilon_x[i, k] - b * h_x_real[i, k]
-            # Imag part of coeff: -ζ + b * Im(h)  (Matches -i(ζ - b*Im(h)))
+            # Imag part of coeff: -ζ + b * Im(h)
             coef_imag = -zeta_x[i, k] + b * h_x_imag[i, k]
 
             # Term: - Coeff * (D y_k)
             D_y_k_real = DY_real[:, k]
             D_y_k_imag = DY_imag[:, k]
 
-            # Complex multiplication: -(A + iB)(C + iD)
-            # Real: -(AC - BD) = -AC + BD
             term_real = -coef_real * D_y_k_real + coef_imag * D_y_k_imag
-            # Imag: -(AD + BC) = -AD - BC
             term_imag = -coef_real * D_y_k_imag - coef_imag * D_y_k_real
 
             g_xi_real += term_real
             g_xi_imag += term_imag
 
-        # Update for y_i: Sum over k <= i
-        # Coeff: (ε_{ik}^y + i*ζ_{ik}^y - b * h_{ik}^y)
-        # Full term: (ε - b*h_real) + i(ζ - b*h_imag)
         for k in range(i + 1):
             # Real part of coeff: ε - b * Re(h)
             coef_real = epsilon_y[i, k] - b * h_y_real[i, k]
@@ -212,7 +197,6 @@ def compute_exact_gradients(
             D_x_k_real = DX_real[:, k]
             D_x_k_imag = DX_imag[:, k]
 
-            # Complex multiplication: -(A + iB)(C + iD)
             term_real = -coef_real * D_x_k_real + coef_imag * D_x_k_imag
             term_imag = -coef_real * D_x_k_imag - coef_imag * D_x_k_real
 
@@ -237,6 +221,8 @@ def compute_exact_gradients(
         'h_x_imag': h_x_imag,
         'h_y_real': h_y_real,
         'h_y_imag': h_y_imag,
+        'norm_err_x': np.array(norm_errors_x),
+        'norm_err_y': np.array(norm_errors_y),
     }
 
 def compute_cosine_similarity(learned: np.ndarray, gt: np.ndarray, D: np.ndarray = None) -> float:
@@ -269,10 +255,10 @@ def run_experiment(
     seed: int = 42,
 ):
     """Run the exact gradient dynamics simulation."""
-    print(f"=" * 60)
-    print(f"Testing exact gradient dynamics")
+    print(f"=" * 80)
+    print(f"Testing exact gradient dynamics with Norm Barrier")
     print(f"  n_states={n_states}, d={d}, lr={learning_rate}, b={barrier_coef}")
-    print(f"=" * 60)
+    print(f"=" * 80)
 
     L = create_complex_laplacian(n_states, seed=seed)
     D = np.ones(n_states) / n_states
@@ -304,8 +290,8 @@ def run_experiment(
     mask = np.tril(np.ones((d, d)))
 
     print(f"\nStarting optimization...")
-    print(f"{'Step':>8} {'Constr Err':>12} {'Grad Norm':>12} {'Left Sim':>10} {'Right Sim':>10} {'λ Est Real':>12}")
-    print("-" * 70)
+    print(f"{'Step':>8} {'Constr Err':>12} {'Norm Err':>12} {'Grad Norm':>12} {'Left Sim':>10} {'Right Sim':>10} {'λ Est Real':>12}")
+    print("-" * 90)
 
     history = []
 
@@ -323,7 +309,6 @@ def run_experiment(
         Y_imag -= learning_rate * grads['g_Y_imag']
 
         # Update Dual: Gradient Ascent (maximization)
-        # Θ[t+1] = Θ[t] - α * (-∇_dual) = Θ[t] + α * ∇_dual
         epsilon_x += learning_rate * grads['g_epsilon_x']
         epsilon_y += learning_rate * grads['g_epsilon_y']
         zeta_x += learning_rate * grads['g_zeta_x']
@@ -337,6 +322,8 @@ def run_experiment(
             constraint_err = (np.abs(grads['h_x_real']).sum() + np.abs(grads['h_x_imag']).sum() +
                               np.abs(grads['h_y_real']).sum() + np.abs(grads['h_y_imag']).sum())
             
+            norm_err = np.sum(np.abs(grads['norm_err_x'])) + np.sum(np.abs(grads['norm_err_y']))
+
             grad_norm = np.sqrt(
                 np.sum(grads['g_X_real']**2) + np.sum(grads['g_X_imag']**2) +
                 np.sum(grads['g_Y_real']**2) + np.sum(grads['g_Y_imag']**2)
@@ -354,21 +341,21 @@ def run_experiment(
                 left_sims.append(compute_cosine_similarity(l_vec, gt_left[:, i], D))
                 right_sims.append(compute_cosine_similarity(r_vec, gt_right[:, i], None))
                 
-                # Eigenvalue estimate from duals ε
                 ev_ests_real.append(-0.5 * (epsilon_x[i, i] + epsilon_y[i, i]))
 
             avg_l = np.mean(left_sims)
             avg_r = np.mean(right_sims)
 
             history.append({
-                'step': step, 'constraint_error': constraint_err,
+                'step': step, 'constraint_error': constraint_err, 'norm_error': norm_err,
                 'grad_norm': grad_norm, 'left_sim': avg_l, 'right_sim': avg_r
             })
 
-            print(f"{step:>8} {constraint_err:>12.6f} {grad_norm:>12.6f} {avg_l:>10.4f} {avg_r:>10.4f} {ev_ests_real[0]:>12.6f}")
+            print(f"{step:>8} {constraint_err:>12.6f} {norm_err:>12.6f} {grad_norm:>12.6f} {avg_l:>10.4f} {avg_r:>10.4f} {ev_ests_real[0]:>12.6f}")
 
     print(f"\nFinal Result (Step {num_steps}):")
     print(f"  Constraint Error: {history[-1]['constraint_error']:.6f}")
+    print(f"  Norm Error: {history[-1]['norm_error']:.6f}")
     print(f"  Left Sim: {history[-1]['left_sim']:.4f}")
     
     converged = history[-1]['constraint_error'] < 0.1 and history[-1]['left_sim'] > 0.9
@@ -448,9 +435,6 @@ def analyze_stability(n_states=10, d=1, b=4.0, seed=42):
     vals = ed['eigenvalues']
     
     # Primal Fixed Point
-    # NOTE: The left eigenvectors returned by compute_eigendecomposition are 'u' (standard).
-    # The variable 'x' in our dynamics satisfies <x, y>_rho = x^T D y = delta.
-    # Since u^T y = delta, we have x^T D = u^T => x = D^{-1} u.
     left_u = ed['left']
     left_x = left_u / D[:, None] # Metric correction
     
@@ -461,29 +445,19 @@ def analyze_stability(n_states=10, d=1, b=4.0, seed=42):
     Y_i_star = np.imag(ed['right'])
     
     # Dual Fixed Point
-    # The duals correspond to the values of the constraints.
-    # For graph loss = |Re <x, Ly>|, the stationary condition implies
-    # the duals converge roughly to the eigenvalue components.
-    # Simplified estimate: ε_ii ≈ -2 * Re(λ), ζ_ii ≈ -2 * Im(λ)
-    # (Checking exact stationarity is complex, so we initialize duals at 0 
-    # or the eigenvalue estimate. Let's use 0 for the "unconstrained" check 
-    # or the eigenvalue estimate if we want to be precise.)
     ep_x_star = np.zeros((d,d))
     ep_y_star = np.zeros((d,d))
     ze_x_star = np.zeros((d,d))
     ze_y_star = np.zeros((d,d))
     
-    # Set diagonals to match the eigenvalue forces (heuristic for stationarity)
     for k in range(d):
         re_val = np.real(vals[k])
         im_val = np.imag(vals[k])
         sign_re = np.sign(re_val) if np.abs(re_val) > 1e-9 else 1.0
 
-        # Epsilon must be positive to match magnitude
-        ep_x_star[k,k] = sign_re * re_val  # effectively |Re(λ)|
+        ep_x_star[k,k] = sign_re * re_val
         ep_y_star[k,k] = sign_re * re_val
 
-        # Zeta opposes the imaginary rotation
         ze_x_star[k,k] = -sign_re * im_val
         ze_y_star[k,k] = -sign_re * im_val
 
@@ -494,8 +468,7 @@ def analyze_stability(n_states=10, d=1, b=4.0, seed=42):
         ep_x_star, ep_y_star, ze_x_star, ze_y_star
     )
     
-    # 3. Compute Jacobian numerically (Finite Differences)
-    # J_{ij} = dF_i / dTheta_j
+    # 3. Compute Jacobian numerically
     epsilon = 1e-6
     N = len(Theta_star)
     Jacobian = np.zeros((N, N))
@@ -536,15 +509,13 @@ def analyze_stability(n_states=10, d=1, b=4.0, seed=42):
     plt.grid(True, alpha=0.3)
     plt.show()
 
-
-
 def main():
     print("\n" + "=" * 70)
-    print("  EXACT GRADIENT DYNAMICS TEST")
+    print("  EXACT GRADIENT DYNAMICS TEST (WITH NORM BARRIER)")
     print("=" * 70)
 
     # Use smaller learning rate because 'sign' gradient is more aggressive
-    run_experiment(n_states=10, d=1, learning_rate=0.0005, num_steps=30000, log_freq=1000, barrier_coef=4.0)
+    run_experiment(n_states=10, d=1, learning_rate=0.0005, num_steps=600000, log_freq=5000, barrier_coef=4.0)
 
     # Stability Analysis
     # Test with current settings
