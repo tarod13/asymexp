@@ -54,6 +54,8 @@ class CoordinateEncoder(nn.Module):
 
         Returns:
             features_dict: Dictionary containing:
+                - left_real: (batch_size, num_features) left eigenvector real components
+                - left_imag: (batch_size, num_features) left eigenvector imaginary components
                 - right_real: (batch_size, num_features) right eigenvector real components
                 - right_imag: (batch_size, num_features) right eigenvector imaginary components
         """
@@ -72,6 +74,16 @@ class CoordinateEncoder(nn.Module):
         # Separate heads for each component with independent transformations
         # Each head has at least one independent layer before the final prediction
 
+        # Left real head
+        left_real_hidden = nn.Dense(self.hidden_dim)(x)
+        left_real_hidden = nn.relu(left_real_hidden)
+        left_real = nn.Dense(1)(left_real_hidden)
+
+        # Left imaginary head
+        left_imag_hidden = nn.Dense(self.hidden_dim)(x)
+        left_imag_hidden = nn.relu(left_imag_hidden)
+        left_imag = nn.Dense(1)(left_imag_hidden)
+
         # Right real head
         right_real_hidden = nn.Dense(self.hidden_dim)(x)
         right_real_hidden = nn.relu(right_real_hidden)
@@ -83,6 +95,8 @@ class CoordinateEncoder(nn.Module):
         right_imag = nn.Dense(1)(right_imag_hidden)
 
         features_dict = {
+            'left_real': left_real,
+            'left_imag': left_imag,
             'right_real': right_real,
             'right_imag': right_imag,
         }
@@ -250,6 +264,7 @@ class Args:
     gamma: float = 0.2  # Discount factor for successor representation
     delta: float = 0.1  # Eigenvalue shift parameter: L = (1+δ)I - M (improves numerical stability)
     lambda_x: float = 10.0  # Exponential decay parameter for CLF
+    lambda_xy: float = 10.0  # Exponential decay parameter for CLF for xy phase
 
     # Episodic replay buffer
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
@@ -445,6 +460,8 @@ def compute_complex_cosine_similarities(
 
 
 def normalize_eigenvectors_for_comparison(
+    left_real: jnp.ndarray,
+    left_imag: jnp.ndarray,
     right_real: jnp.ndarray,
     right_imag: jnp.ndarray,
     sampling_probs: jnp.ndarray,
@@ -461,18 +478,27 @@ def normalize_eigenvectors_for_comparison(
        - Divide by that component (fixes arbitrary phase)
        - Normalize to unit norm
 
+    2. For LEFT eigenvectors:
+       - Multiply by the largest component from corresponding right eigenvector
+       - Multiply by the norm of the corresponding right eigenvector (before normalization)
+       - Scale each entry by the stationary state distribution (to convert from adjoint)
+
     This ensures proper comparison between learned and ground truth eigenvectors while
     accounting for:
     - Arbitrary complex scaling freedom
     - Adjoint vs. true left eigenvector relationship
 
     Args:
+        left_real: Left eigenvector real parts [num_states, num_eigenvectors]
+        left_imag: Left eigenvector imaginary parts [num_states, num_eigenvectors]
         right_real: Right eigenvector real parts [num_states, num_eigenvectors]
         right_imag: Right eigenvector imaginary parts [num_states, num_eigenvectors]
         sampling_probs: State distribution probabilities [num_states]
 
     Returns:
         Dictionary containing:
+            - 'left_real': Normalized left eigenvector real parts
+            - 'left_imag': Normalized left eigenvector imaginary parts
             - 'right_real': Normalized right eigenvector real parts
             - 'right_imag': Normalized right eigenvector imaginary parts
     """
@@ -482,6 +508,8 @@ def normalize_eigenvectors_for_comparison(
     # Normalize eigenvectors
     normalized_right_real = jnp.zeros_like(right_real)
     normalized_right_imag = jnp.zeros_like(right_imag)
+    normalized_left_real = jnp.zeros_like(left_real)
+    normalized_left_imag = jnp.zeros_like(left_imag)
 
     for i in range(num_components):
         # Step 1: Process right eigenvectors
@@ -505,13 +533,41 @@ def normalize_eigenvectors_for_comparison(
         normalized_right_real = normalized_right_real.at[:, i].set(scaled_right_real / (right_norm + 1e-10))
         normalized_right_imag = normalized_right_imag.at[:, i].set(scaled_right_imag / (right_norm + 1e-10))
 
+        # Step 2: Process left eigenvectors (complementary normalization)
+        left_r = left_real[:, i]
+        left_i = left_imag[:, i]
+
+        # Compute the original norm of the right eigenvector (before normalization)
+        original_right_norm = jnp.sqrt(jnp.sum(right_r**2 + right_i**2))
+
+        # Multiply by max component (conjugate for complex multiplication)
+        # (a + bi) * (c + di) = (ac - bd) + i(ad + bc)
+        scaled_left_real = (left_r * max_component_real - left_i * max_component_imag)
+        scaled_left_imag = (left_r * max_component_imag + left_i * max_component_real)
+
+        # Multiply by the original norm of the right eigenvector
+        scaled_left_real = scaled_left_real * original_right_norm
+        scaled_left_imag = scaled_left_imag * original_right_norm
+
+        # Scale each entry by the stationary state distribution
+        # This converts from adjoint eigenvectors to true left eigenvectors
+        scaled_left_real = scaled_left_real * sampling_probs
+        scaled_left_imag = scaled_left_imag * sampling_probs
+
+        normalized_left_real = normalized_left_real.at[:, i].set(scaled_left_real)
+        normalized_left_imag = normalized_left_imag.at[:, i].set(scaled_left_imag)
+
     return {
+        'left_real': normalized_left_real,
+        'left_imag': normalized_left_imag,
         'right_real': normalized_right_real,
         'right_imag': normalized_right_imag,
     }
 
 
 def compute_complex_cosine_similarities_with_normalization(
+    learned_left_real: jnp.ndarray,
+    learned_left_imag: jnp.ndarray,
     learned_right_real: jnp.ndarray,
     learned_right_imag: jnp.ndarray,
     gt_left_real: jnp.ndarray,
@@ -558,12 +614,21 @@ def compute_complex_cosine_similarities_with_normalization(
     """
     # Normalize learned eigenvectors only (ground truth is already normalized)
     learned_normalized = normalize_eigenvectors_for_comparison(
+        left_real=learned_left_real,
+        left_imag=learned_left_imag,
         right_real=learned_right_real,
         right_imag=learned_right_imag,
         sampling_probs=sampling_probs
     )
 
-    # For right eigenvectors: use as is (no conjugate needed)
+    # For left eigenvectors
+    left_sims = compute_complex_cosine_similarities(
+        learned_normalized['left_real'], learned_normalized['left_imag'],  # Conjugate
+        gt_left_real, gt_left_imag,  # Ground truth (already normalized)
+        prefix="left_"
+    )
+
+    # For right eigenvectors
     right_sims = compute_complex_cosine_similarities(
         learned_normalized['right_real'], learned_normalized['right_imag'],
         gt_right_real, gt_right_imag,  # Ground truth (already normalized)
@@ -572,6 +637,7 @@ def compute_complex_cosine_similarities_with_normalization(
 
     # Combine results
     result = {}
+    result.update(left_sims)
     result.update(right_sims)
 
     return result
@@ -1068,46 +1134,110 @@ def learn_eigenvectors(args):
             # features_1 contains: left_real, left_imag, right_real, right_imag
             x_r = features_1['right_real']  # Right eigenvectors, real part
             x_i = features_1['right_imag']  # Right eigenvectors, imaginary part
+            y_r = features_2['left_real']
+            y_i = features_2['left_imag']
 
             x_r_2 = features_2['right_real']
             x_i_2 = features_2['right_imag']
 
             next_x_r = next_features['right_real']
             next_x_i = next_features['right_imag']
+            next_y_r = next_features['left_real']
+            next_y_i = next_features['left_imag']
 
             # Get sizes
             n = x_r.shape[0]
 
             # Compute current unnormalized eigenvalue estimates
-            lambda_r = (x_r * next_x_r).mean() + (x_i * next_x_i).mean()
-            lambda_i = (x_r * next_x_i).mean() - (x_i * next_x_r).mean()
+            lambda_x_r = (x_r * next_x_r).mean() + (x_i * next_x_i).mean()
+            lambda_x_i = (x_r * next_x_i).mean() - (x_i * next_x_r).mean()
+            lambda_y_r = (y_r * next_y_r).mean() + (y_i * next_y_i).mean()
+            lambda_y_i = (y_r * next_y_i).mean() - (y_i * next_y_r).mean()
 
             # Compute squared norms
             norm_x_r_sq = (x_r ** 2).mean()
             norm_x_i_sq = (x_i ** 2).mean()
             norm_x_sq = norm_x_r_sq + norm_x_i_sq
 
-            # Compute graph losses
-            f_x_real = - next_x_r  + lambda_r * x_r - lambda_i * x_i
-            f_x_imag = - next_x_i  + lambda_i * x_r + lambda_r * x_i
-            graph_loss_real = (x_r * jax.lax.stop_gradient(f_x_real)).mean()
-            graph_loss_imag = (x_i * jax.lax.stop_gradient(f_x_imag)).mean()
-            graph_loss = graph_loss_real + graph_loss_imag
+            norm_y_r_sq = (next_y_r ** 2).mean()
+            norm_y_i_sq = (next_y_i ** 2).mean()
+            norm_y_sq = norm_y_r_sq + norm_y_i_sq
 
-            # Compute Lyapunov metrics
-            norm_error = norm_x_sq - 1
-            V_x_norm = norm_error ** 2 / 2
-            norm_nabla_V_x_norm_sq = 4 * norm_x_sq * norm_error ** 2
+            # Compute graph losses
+            f_x_real = - next_x_r  + lambda_x_r * x_r - lambda_x_i * x_i
+            f_x_imag = - next_x_i  + lambda_x_i * x_r + lambda_x_r * x_i
+            f_y_real = - y_r  + lambda_y_r * next_y_r - lambda_y_i * next_y_i
+            f_y_imag = - y_i  + lambda_y_i * next_y_r + lambda_y_r * next_y_i
+
+            graph_loss_x_real = (x_r * jax.lax.stop_gradient(f_x_real)).mean()
+            graph_loss_x_imag = (x_i * jax.lax.stop_gradient(f_x_imag)).mean()
+            graph_loss_x = graph_loss_x_real + graph_loss_x_imag
+
+            graph_loss_y_real = (next_y_r * jax.lax.stop_gradient(f_y_real)).mean()
+            graph_loss_y_imag = (next_y_i * jax.lax.stop_gradient(f_y_imag)).mean()
+            graph_loss_y = graph_loss_y_real + graph_loss_y_imag
+
+            graph_loss = graph_loss_x + graph_loss_y
+
+            # Compute Lyapunov functions and their gradients
+            # 1. For x norm
+            norm_x_error = norm_x_sq - 1
+            V_x_norm = norm_x_error ** 2 / 2
+            nabla_x_r_V_x_norm = 2 * norm_x_error * x_r
+            nabla_x_i_V_x_norm = 2 * norm_x_error * x_i
+            nabla_y_r_V_x_norm = jnp.zeros_like(y_r)
+            nabla_y_i_V_x_norm = jnp.zeros_like(y_i)
+
+            # 2. For y norm
+            norm_y_error = norm_y_sq - 1
+            V_y_norm = norm_y_error ** 2 / 2
+            nabla_x_r_V_y_norm = jnp.zeros_like(x_r)
+            nabla_x_i_V_y_norm = jnp.zeros_like(x_i)
+            nabla_y_r_V_y_norm = 2 * norm_y_error * next_y_r
+            nabla_y_i_V_y_norm = 2 * norm_y_error * next_y_i
+
+            # 3. For xy phase
+            phase_xy = (y_r * x_i).mean() - (y_i * x_r).mean()
+            V_xy_phase = phase_xy ** 2 / 2
+            nabla_x_r_V_xy_phase = - phase_xy * y_i
+            nabla_x_i_V_xy_phase = phase_xy * y_r
+            nabla_y_r_V_xy_phase = phase_xy * next_x_i
+            nabla_y_i_V_xy_phase = - phase_xy * next_x_r
+
+            # 4. Global
+            V = V_x_norm + V_y_norm + V_xy_phase
+            nabla_x_r_V = nabla_x_r_V_x_norm + nabla_x_r_V_y_norm + nabla_x_r_V_xy_phase
+            nabla_x_i_V = nabla_x_i_V_x_norm + nabla_x_i_V_y_norm + nabla_x_i_V_xy_phase
+            nabla_y_r_V = nabla_y_r_V_x_norm + nabla_y_r_V_y_norm + nabla_y_r_V_xy_phase
+            nabla_y_i_V = nabla_y_i_V_x_norm + nabla_y_i_V_y_norm + nabla_y_i_V_xy_phase
+
+            norm_nabla_x_r_V_sq = (nabla_x_r_V ** 2).mean()
+            norm_nabla_x_i_V_sq = (nabla_x_i_V ** 2).mean()
+            norm_nabla_y_r_V_sq = (nabla_y_r_V ** 2).mean()
+            norm_nabla_y_i_V_sq = (nabla_y_i_V ** 2).mean()
+            norm_nabla_V_sq = (
+                norm_nabla_x_r_V_sq + norm_nabla_x_i_V_sq 
+                + norm_nabla_y_r_V_sq + norm_nabla_y_i_V_sq
+            )
 
             # Compute Control Lyapunov Function (CLF) loss
-            f_x_dot_V_x_norm = 2 * graph_loss * norm_error
-            clf_x_norm_num = f_x_dot_V_x_norm + args.lambda_x * V_x_norm
-            barrier_x_norm = jnp.maximum(0, clf_x_norm_num) / (norm_nabla_V_x_norm_sq + 1e-8)
-            u_x_norm_real = barrier_x_norm * 2 * norm_error * x_r
-            u_x_norm_imag = barrier_x_norm * 2 * norm_error * x_i
-            clf_loss_real = (x_r * jax.lax.stop_gradient(u_x_norm_real)).mean()
-            clf_loss_imag = (x_i * jax.lax.stop_gradient(u_x_norm_imag)).mean()
-            clf_loss = clf_loss_real + clf_loss_imag
+            f_x_r_dot_nabla_V = (f_x_real * nabla_x_r_V).mean()
+            f_x_i_dot_nabla_V = (f_x_imag * nabla_x_i_V).mean()
+            f_y_r_dot_nabla_V = (f_y_real * nabla_y_r_V).mean()
+            f_y_i_dot_nabla_V = (f_y_imag * nabla_y_i_V).mean()
+            f_dot_nabla_V = f_x_r_dot_nabla_V + f_x_i_dot_nabla_V + f_y_r_dot_nabla_V + f_y_i_dot_nabla_V
+
+            clf_num = f_dot_nabla_V + args.lambda_x * V
+            barrier = jnp.maximum(0, clf_num) / (norm_nabla_V_sq + 1e-8)
+            u_x_r = barrier * nabla_x_r_V
+            u_x_i = barrier * nabla_x_i_V
+            u_y_r = barrier * nabla_y_r_V
+            u_y_i = barrier * nabla_y_i_V
+            clf_loss_x_r = (x_r * jax.lax.stop_gradient(u_x_r)).mean()
+            clf_loss_x_i = (x_i * jax.lax.stop_gradient(u_x_i)).mean()
+            clf_loss_y_r = (next_y_r * jax.lax.stop_gradient(u_y_r)).mean()
+            clf_loss_y_i = (next_y_i * jax.lax.stop_gradient(u_y_i)).mean()
+            clf_loss = clf_loss_x_r + clf_loss_x_i + clf_loss_y_r + clf_loss_y_i
 
             # Total loss
             total_loss = graph_loss + clf_loss
@@ -1117,15 +1247,24 @@ def learn_eigenvectors(args):
                 'total_loss': total_loss,
                 'graph_loss': graph_loss,
                 'clf_loss': clf_loss,
-                'graph_loss_real': graph_loss_real,
-                'graph_loss_imag': graph_loss_imag,
-                'clf_loss_real': clf_loss_real,
-                'clf_loss_imag': clf_loss_imag,
-                'lambda_real': lambda_r,
-                'lambda_imag': lambda_i,
+                'graph_loss_x_real': graph_loss_x_real,
+                'graph_loss_x_imag': graph_loss_x_imag,
+                'clf_loss_x_real': clf_loss_x_r,
+                'clf_loss_x_imag': clf_loss_x_i,
+                'graph_loss_y_real': graph_loss_y_real,
+                'graph_loss_y_imag': graph_loss_y_imag,
+                'clf_loss_y_real': clf_loss_y_r,
+                'clf_loss_y_imag': clf_loss_y_i,
+                'lambda_x_real': lambda_x_r,
+                'lambda_x_imag': lambda_x_i,
+                'lambda_y_real': lambda_y_r,
+                'lambda_y_imag': lambda_y_i,
                 'V_x_norm': V_x_norm,
+                'V_y_norm': V_y_norm,
+                'V_xy_phase': V_xy_phase,
                 'norm_x_sq': norm_x_sq,
-                'barrier_x_norm': barrier_x_norm,
+                'norm_y_sq': norm_y_sq,
+                'barrier': barrier,
             }
 
             return total_loss, aux
@@ -1391,6 +1530,8 @@ def learn_eigenvectors(args):
             # 1. Arbitrary complex scaling of eigenvectors
             # 2. Adjoint vs. true left eigenvector relationship (via sampling distribution)
             cosine_sims = compute_complex_cosine_similarities_with_normalization(
+                learned_left_real=features_dict['left_real'],
+                learned_left_imag=features_dict['left_imag'],
                 learned_right_real=features_dict['right_real'],
                 learned_right_imag=features_dict['right_imag'],
                 gt_left_real=gt_left_real,
@@ -1419,8 +1560,9 @@ def learn_eigenvectors(args):
 
             if gradient_step % (args.log_freq * 10) == 0:
                 right_sim = cosine_sims['right_cosine_sim_avg']
+                left_sim = cosine_sims['left_cosine_sim_avg']
                 print(f"Step {gradient_step}: total_loss={total_loss.item():.4f}, "
-                      f"right_sim={right_sim:.4f}")
+                      f"left_sim={left_sim:.4f}, right_sim={right_sim:.4f}")
         log_time = time.time() - log_start
 
         # Collect timing samples (last 1000 steps for statistics)
@@ -1458,15 +1600,21 @@ def learn_eigenvectors(args):
             features_dict = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
 
             # Save raw eigenvectors
+            np.save(results_dir / "latest_learned_left_real.npy", np.array(features_dict['left_real']))
+            np.save(results_dir / "latest_learned_left_imag.npy", np.array(features_dict['left_imag']))
             np.save(results_dir / "latest_learned_right_real.npy", np.array(features_dict['right_real']))
             np.save(results_dir / "latest_learned_right_imag.npy", np.array(features_dict['right_imag']))
 
             # Compute and save normalized eigenvectors
             normalized_features = normalize_eigenvectors_for_comparison(
+                left_real=features_dict['left_real'],
+                left_imag=features_dict['left_imag'],
                 right_real=features_dict['right_real'],
                 right_imag=features_dict['right_imag'],
                 sampling_probs=sampling_probs
             )
+            np.save(results_dir / "latest_learned_left_real_normalized.npy", np.array(normalized_features['left_real']))
+            np.save(results_dir / "latest_learned_left_imag_normalized.npy", np.array(normalized_features['left_imag']))
             np.save(results_dir / "latest_learned_right_real_normalized.npy", np.array(normalized_features['right_real']))
             np.save(results_dir / "latest_learned_right_imag_normalized.npy", np.array(normalized_features['right_imag']))
 
@@ -1477,6 +1625,8 @@ def learn_eigenvectors(args):
                     'eigenvalues': jnp.zeros(1, dtype=jnp.complex64),
                     'eigenvalues_real': jnp.zeros(1),
                     'eigenvalues_imag': jnp.zeros(1),
+                    'left_eigenvectors_real': features_dict['left_real'],
+                    'left_eigenvectors_imag': features_dict['left_imag'],
                     'right_eigenvectors_real': features_dict['right_real'],
                     'right_eigenvectors_imag': features_dict['right_imag'],
                 }
@@ -1532,15 +1682,21 @@ def learn_eigenvectors(args):
     final_features_dict = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
 
     # Save raw eigenvectors
+    np.save(results_dir / "final_learned_left_real.npy", np.array(final_features_dict['left_real']))
+    np.save(results_dir / "final_learned_left_imag.npy", np.array(final_features_dict['left_imag']))
     np.save(results_dir / "final_learned_right_real.npy", np.array(final_features_dict['right_real']))
     np.save(results_dir / "final_learned_right_imag.npy", np.array(final_features_dict['right_imag']))
 
     # Compute and save normalized eigenvectors
     final_normalized_features = normalize_eigenvectors_for_comparison(
+        left_real=final_features_dict['left_real'],
+        left_imag=final_features_dict['left_imag'],
         right_real=final_features_dict['right_real'],
         right_imag=final_features_dict['right_imag'],
         sampling_probs=sampling_probs
     )
+    np.save(results_dir / "final_learned_left_real_normalized.npy", np.array(final_normalized_features['left_real']))
+    np.save(results_dir / "final_learned_left_imag_normalized.npy", np.array(final_normalized_features['left_imag']))
     np.save(results_dir / "final_learned_right_real_normalized.npy", np.array(final_normalized_features['right_real']))
     np.save(results_dir / "final_learned_right_imag_normalized.npy", np.array(final_normalized_features['right_imag']))
 
