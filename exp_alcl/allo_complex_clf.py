@@ -1508,9 +1508,9 @@ def learn_eigenvectors(args):
         """Multiple inner products for multiple vectors."""
         return jnp.einsum('ij,ik->jk', a, b) / a.shape[0]
     
-    def agg_dim(x):
+    def agg_dim(x, kp=False):
         """Aggregate over batch dimension."""
-        return jnp.sum(x, axis=-1, keepdims=True)
+        return jnp.sum(x, axis=-1, keepdims=kp)
 
     # Define the update function
     @jax.jit
@@ -1638,10 +1638,10 @@ def learn_eigenvectors(args):
             corr_xy_real = jnp.tril(corr_xy_real, k=-1)
             corr_xy_imag = jnp.tril(corr_xy_imag, k=-1)
 
-            V_xy_corr_real = agg_dim(corr_xy_real ** 2) / 2  #(Shape: (1,k))
-            V_xy_corr_imag = agg_dim(corr_xy_imag ** 2) / 2
-            V_yx_corr_real = agg_dim(corr_yx_real ** 2) / 2
-            V_yx_corr_imag = agg_dim(corr_yx_imag ** 2) / 2
+            V_xy_corr_real = agg_dim(corr_xy_real ** 2, kp=True) / 2  #(Shape: (1,k))
+            V_xy_corr_imag = agg_dim(corr_xy_imag ** 2, kp=True) / 2
+            V_yx_corr_real = agg_dim(corr_yx_real ** 2, kp=True) / 2
+            V_yx_corr_imag = agg_dim(corr_yx_imag ** 2, kp=True) / 2
             V_xy_corr = V_xy_corr_real + V_xy_corr_imag + V_yx_corr_real + V_yx_corr_imag
 
             nabla_x_r_jk_V_xy_corr_real = 2 * corr_xy_real.reshape(1, k, k) * y_r.reshape(n, 1, k)  #(Shape: (n,k,k))
