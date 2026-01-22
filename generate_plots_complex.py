@@ -40,6 +40,7 @@ from exp_alcl.allo_complex import (
     plot_all_duals_evolution,
     normalize_eigenvectors_for_comparison
 )
+from exp_alcl.allo_complex_clf import plot_eigenvector_comparison
 from exp_complex_basis.eigenvector_visualization import (
     visualize_multiple_eigenvectors,
     visualize_eigenvector_on_grid,
@@ -299,187 +300,77 @@ def plot_ground_truth(data, plots_dir):
 
 
 def plot_latest_learned(data, plots_dir):
-    """Generate learned eigenvector plots for the latest checkpoint."""
+    """Generate comparison plots (GT | Raw | Normalized) for the latest checkpoint."""
     if data['latest_learned'] is None:
         print("Skipping latest learned eigenvectors plot (data not available)")
         return
 
-    print("Plotting latest learned eigenvectors...")
+    if data['latest_learned_normalized'] is None:
+        print("Skipping latest learned comparison (normalized data not available)")
+        return
+
+    print("Plotting latest learned eigenvector comparison (GT | Raw | Normalized)...")
 
     viz_meta = data['viz_metadata']
-    num_eigs = viz_meta['num_eigenvectors']
     latest = data['latest_learned']
+    latest_norm = data['latest_learned_normalized']
 
-    # Create eigendecomposition dict
-    learned_eigendecomp = {
-        'eigenvalues': np.zeros(num_eigs, dtype=np.complex64),
-        'eigenvalues_real': np.zeros(num_eigs),
-        'eigenvalues_imag': np.zeros(num_eigs),
-        'right_eigenvectors_real': latest['right_real'],
-        'right_eigenvectors_imag': latest['right_imag'],
-        'left_eigenvectors_real': latest['left_real'],
-        'left_eigenvectors_imag': latest['left_imag'],
-    }
-
-    # Plot right eigenvectors (real parts)
-    visualize_multiple_eigenvectors(
-        eigenvector_indices=list(range(num_eigs)),
-        eigendecomposition=learned_eigendecomp,
+    plot_eigenvector_comparison(
+        learned_left_real=latest['left_real'],
+        learned_left_imag=latest['left_imag'],
+        learned_right_real=latest['right_real'],
+        learned_right_imag=latest['right_imag'],
+        gt_left_real=data['gt_left_real'],
+        gt_left_imag=data['gt_left_imag'],
+        gt_right_real=data['gt_right_real'],
+        gt_right_imag=data['gt_right_imag'],
+        normalized_left_real=latest_norm['left_real'],
+        normalized_left_imag=latest_norm['left_imag'],
+        normalized_right_real=latest_norm['right_real'],
+        normalized_right_imag=latest_norm['right_imag'],
         canonical_states=viz_meta['canonical_states'],
         grid_width=viz_meta['grid_width'],
         grid_height=viz_meta['grid_height'],
-        portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        eigenvector_type='right',
-        component='real',
-        ncols=min(4, num_eigs),
-        wall_color='gray',
-        save_path=str(plots_dir / "learned_right_eigenvectors_real_latest.png"),
-        shared_colorbar=True
+        save_dir=str(plots_dir),
+        door_markers=viz_meta['door_markers'] if viz_meta.get('door_markers') else None,
     )
-    plt.close()
-
-    # Plot right eigenvectors (imaginary parts)
-    visualize_multiple_eigenvectors(
-        eigenvector_indices=list(range(num_eigs)),
-        eigendecomposition=learned_eigendecomp,
-        canonical_states=viz_meta['canonical_states'],
-        grid_width=viz_meta['grid_width'],
-        grid_height=viz_meta['grid_height'],
-        portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        eigenvector_type='right',
-        component='imag',
-        ncols=min(4, num_eigs),
-        wall_color='gray',
-        save_path=str(plots_dir / "learned_right_eigenvectors_imag_latest.png"),
-        shared_colorbar=True
-    )
-    plt.close()
-
-    # Plot left eigenvectors (real parts)
-    visualize_multiple_eigenvectors(
-        eigenvector_indices=list(range(num_eigs)),
-        eigendecomposition=learned_eigendecomp,
-        canonical_states=viz_meta['canonical_states'],
-        grid_width=viz_meta['grid_width'],
-        grid_height=viz_meta['grid_height'],
-        portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        eigenvector_type='left',
-        component='real',
-        ncols=min(4, num_eigs),
-        wall_color='gray',
-        save_path=str(plots_dir / "learned_left_eigenvectors_real_latest.png"),
-        shared_colorbar=True
-    )
-    plt.close()
-
-    # Plot left eigenvectors (imaginary parts)
-    visualize_multiple_eigenvectors(
-        eigenvector_indices=list(range(num_eigs)),
-        eigendecomposition=learned_eigendecomp,
-        canonical_states=viz_meta['canonical_states'],
-        grid_width=viz_meta['grid_width'],
-        grid_height=viz_meta['grid_height'],
-        portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        eigenvector_type='left',
-        component='imag',
-        ncols=min(4, num_eigs),
-        wall_color='gray',
-        save_path=str(plots_dir / "learned_left_eigenvectors_imag_latest.png"),
-        shared_colorbar=True
-    )
-    plt.close()
 
 
 def plot_final_learned(data, plots_dir):
-    """Generate final learned eigenvector plots."""
+    """Generate comparison plots (GT | Raw | Normalized) for final learned eigenvectors."""
     if data['final_learned'] is None:
         print("Skipping final learned eigenvectors plot (data not available)")
         return
 
-    print("Plotting final learned eigenvectors...")
+    if data['final_learned_normalized'] is None:
+        print("Skipping final learned comparison (normalized data not available)")
+        return
+
+    print("Plotting final learned eigenvector comparison (GT | Raw | Normalized)...")
 
     viz_meta = data['viz_metadata']
-    num_eigs = viz_meta['num_eigenvectors']
     final = data['final_learned']
+    final_norm = data['final_learned_normalized']
 
-    # Create eigendecomposition dict
-    learned_eigendecomp = {
-        'eigenvalues': np.zeros(num_eigs, dtype=np.complex64),
-        'eigenvalues_real': np.zeros(num_eigs),
-        'eigenvalues_imag': np.zeros(num_eigs),
-        'right_eigenvectors_real': final['right_real'],
-        'right_eigenvectors_imag': final['right_imag'],
-        'left_eigenvectors_real': final['left_real'],
-        'left_eigenvectors_imag': final['left_imag'],
-    }
-
-    # Plot right eigenvectors (real parts)
-    visualize_multiple_eigenvectors(
-        eigenvector_indices=list(range(num_eigs)),
-        eigendecomposition=learned_eigendecomp,
+    plot_eigenvector_comparison(
+        learned_left_real=final['left_real'],
+        learned_left_imag=final['left_imag'],
+        learned_right_real=final['right_real'],
+        learned_right_imag=final['right_imag'],
+        gt_left_real=data['gt_left_real'],
+        gt_left_imag=data['gt_left_imag'],
+        gt_right_real=data['gt_right_real'],
+        gt_right_imag=data['gt_right_imag'],
+        normalized_left_real=final_norm['left_real'],
+        normalized_left_imag=final_norm['left_imag'],
+        normalized_right_real=final_norm['right_real'],
+        normalized_right_imag=final_norm['right_imag'],
         canonical_states=viz_meta['canonical_states'],
         grid_width=viz_meta['grid_width'],
         grid_height=viz_meta['grid_height'],
-        portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        eigenvector_type='right',
-        component='real',
-        ncols=min(4, num_eigs),
-        wall_color='gray',
-        save_path=str(plots_dir / "learned_right_eigenvectors_real_final.png"),
-        shared_colorbar=True
+        save_dir=str(plots_dir),
+        door_markers=viz_meta['door_markers'] if viz_meta.get('door_markers') else None,
     )
-    plt.close()
-
-    # Plot right eigenvectors (imaginary parts)
-    visualize_multiple_eigenvectors(
-        eigenvector_indices=list(range(num_eigs)),
-        eigendecomposition=learned_eigendecomp,
-        canonical_states=viz_meta['canonical_states'],
-        grid_width=viz_meta['grid_width'],
-        grid_height=viz_meta['grid_height'],
-        portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        eigenvector_type='right',
-        component='imag',
-        ncols=min(4, num_eigs),
-        wall_color='gray',
-        save_path=str(plots_dir / "learned_right_eigenvectors_imag_final.png"),
-        shared_colorbar=True
-    )
-    plt.close()
-
-    # Plot left eigenvectors (real parts)
-    visualize_multiple_eigenvectors(
-        eigenvector_indices=list(range(num_eigs)),
-        eigendecomposition=learned_eigendecomp,
-        canonical_states=viz_meta['canonical_states'],
-        grid_width=viz_meta['grid_width'],
-        grid_height=viz_meta['grid_height'],
-        portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        eigenvector_type='left',
-        component='real',
-        ncols=min(4, num_eigs),
-        wall_color='gray',
-        save_path=str(plots_dir / "learned_left_eigenvectors_real_final.png"),
-        shared_colorbar=True
-    )
-    plt.close()
-
-    # Plot left eigenvectors (imaginary parts)
-    visualize_multiple_eigenvectors(
-        eigenvector_indices=list(range(num_eigs)),
-        eigendecomposition=learned_eigendecomp,
-        canonical_states=viz_meta['canonical_states'],
-        grid_width=viz_meta['grid_width'],
-        grid_height=viz_meta['grid_height'],
-        portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        eigenvector_type='left',
-        component='imag',
-        ncols=min(4, num_eigs),
-        wall_color='gray',
-        save_path=str(plots_dir / "learned_left_eigenvectors_imag_final.png"),
-        shared_colorbar=True
-    )
-    plt.close()
 
 
 def plot_learning_metrics(data, plots_dir):
@@ -541,136 +432,6 @@ def plot_sampling_dist(data, plots_dir):
     )
 
 
-def plot_final_comparison(data, plots_dir):
-    """Generate final comparison plots (ground truth vs raw vs normalized)."""
-    if data['final_learned'] is None:
-        print("Skipping final comparison (final learned data not available)")
-        return
-
-    print("Plotting final comparison...")
-
-    viz_meta = data['viz_metadata']
-
-    # Determine which eigenvector to plot
-    # If only 1 eigenvector available, use index 0; otherwise use index 1 (skip constant)
-    num_eigenvectors = data['gt_right_real'].shape[1]
-    evec_idx = 0 if num_eigenvectors == 1 else 1
-    evec_label = evec_idx
-
-    # Determine number of columns based on availability of normalized eigenvectors
-    num_cols = 3 if data['final_learned_normalized'] is not None else 2
-
-    # Compare right eigenvectors (real parts)
-    fig, axes = plt.subplots(1, num_cols, figsize=(6 * num_cols, 8))
-    # Ensure axes is iterable even with single column (though we always have 2 or 3)
-    if num_cols == 1:
-        axes = [axes]
-
-    # Plot ground truth right eigenvector (real part)
-    visualize_eigenvector_on_grid(
-        eigenvector_idx=evec_label,
-        eigenvector_values=data['gt_right_real'][:, evec_idx],
-        canonical_states=viz_meta['canonical_states'],
-        grid_width=viz_meta['grid_width'],
-        grid_height=viz_meta['grid_height'],
-        portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        title=f'Ground Truth Right Eigenvector {evec_label} (Real)',
-        ax=axes[0],
-        cmap='RdBu_r',
-        show_colorbar=True,
-        wall_color='gray'
-    )
-
-    # Plot raw learned right eigenvector (real part)
-    visualize_eigenvector_on_grid(
-        eigenvector_idx=evec_label,
-        eigenvector_values=data['final_learned']['right_real'][:, evec_idx],
-        canonical_states=viz_meta['canonical_states'],
-        grid_width=viz_meta['grid_width'],
-        grid_height=viz_meta['grid_height'],
-        portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        title=f'Raw Learned Right {evec_label} (Real)',
-        ax=axes[1],
-        cmap='RdBu_r',
-        show_colorbar=True,
-        wall_color='gray'
-    )
-
-    # Plot normalized learned right eigenvector if available
-    if num_cols == 3:
-        visualize_eigenvector_on_grid(
-            eigenvector_idx=evec_label,
-            eigenvector_values=data['final_learned_normalized']['right_real'][:, evec_idx],
-            canonical_states=viz_meta['canonical_states'],
-            grid_width=viz_meta['grid_width'],
-            grid_height=viz_meta['grid_height'],
-            portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-            title=f'Normalized Learned Right {evec_label} (Real)',
-            ax=axes[2],
-            cmap='RdBu_r',
-            show_colorbar=True,
-            wall_color='gray'
-        )
-
-    plt.tight_layout()
-    plt.savefig(plots_dir / "final_comparison_right_real.png", dpi=300, bbox_inches='tight')
-    plt.close()
-
-    # Compare left eigenvectors (real parts)
-    fig, axes = plt.subplots(1, num_cols, figsize=(6 * num_cols, 8))
-    # Ensure axes is iterable even with single column (though we always have 2 or 3)
-    if num_cols == 1:
-        axes = [axes]
-
-    # Plot ground truth left eigenvector (real part)
-    visualize_eigenvector_on_grid(
-        eigenvector_idx=evec_label,
-        eigenvector_values=data['gt_left_real'][:, evec_idx],
-        canonical_states=viz_meta['canonical_states'],
-        grid_width=viz_meta['grid_width'],
-        grid_height=viz_meta['grid_height'],
-        portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        title=f'Ground Truth Left Eigenvector {evec_label} (Real)',
-        ax=axes[0],
-        cmap='RdBu_r',
-        show_colorbar=True,
-        wall_color='gray'
-    )
-
-    # Plot raw learned left eigenvector (real part)
-    visualize_eigenvector_on_grid(
-        eigenvector_idx=evec_label,
-        eigenvector_values=data['final_learned']['left_real'][:, evec_idx],
-        canonical_states=viz_meta['canonical_states'],
-        grid_width=viz_meta['grid_width'],
-        grid_height=viz_meta['grid_height'],
-        portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-        title=f'Raw Learned Left {evec_label} (Real)',
-        ax=axes[1],
-        cmap='RdBu_r',
-        show_colorbar=True,
-        wall_color='gray'
-    )
-
-    # Plot normalized learned left eigenvector if available
-    if num_cols == 3:
-        visualize_eigenvector_on_grid(
-            eigenvector_idx=evec_label,
-            eigenvector_values=data['final_learned_normalized']['left_real'][:, evec_idx],
-            canonical_states=viz_meta['canonical_states'],
-            grid_width=viz_meta['grid_width'],
-            grid_height=viz_meta['grid_height'],
-            portals=viz_meta['door_markers'] if viz_meta['door_markers'] else None,
-            title=f'Normalized Learned Left {evec_label} (Real)',
-            ax=axes[2],
-            cmap='RdBu_r',
-            show_colorbar=True,
-            wall_color='gray'
-        )
-
-    plt.tight_layout()
-    plt.savefig(plots_dir / "final_comparison_left_real.png", dpi=300, bbox_inches='tight')
-    plt.close()
 
 
 def main():
@@ -708,11 +469,6 @@ def main():
         '--skip-metrics',
         action='store_true',
         help='Skip plotting learning curves, dual evolution, and cosine similarity'
-    )
-    parser.add_argument(
-        '--skip-comparison',
-        action='store_true',
-        help='Skip plotting final comparison'
     )
     parser.add_argument(
         '--skip-sampling-dist',
@@ -756,9 +512,6 @@ def main():
 
     if not args.skip_sampling_dist:
         plot_sampling_dist(data, plots_dir)
-
-    if not args.skip_comparison:
-        plot_final_comparison(data, plots_dir)
 
     print(f"\n✓ All plots saved to {plots_dir}")
     return 0
