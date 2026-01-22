@@ -43,6 +43,7 @@ from exp_alcl.episodic_replay_buffer import EpisodicReplayBuffer
 
 # Simple MLP network for (x,y) coordinates
 class CoordinateEncoder(nn.Module):
+    num_eigenvector_pairs: int
     hidden_dim: int = 256
     num_hidden_layers: int = 3
 
@@ -77,22 +78,22 @@ class CoordinateEncoder(nn.Module):
         # Left real head
         left_real_hidden = nn.Dense(self.hidden_dim)(x)
         left_real_hidden = nn.relu(left_real_hidden)
-        left_real = nn.Dense(1)(left_real_hidden)
+        left_real = nn.Dense(self.num_eigenvector_pairs)(left_real_hidden)
 
         # Left imaginary head
         left_imag_hidden = nn.Dense(self.hidden_dim)(x)
         left_imag_hidden = nn.relu(left_imag_hidden)
-        left_imag = nn.Dense(1)(left_imag_hidden)
+        left_imag = nn.Dense(self.num_eigenvector_pairs)(left_imag_hidden)
 
         # Right real head
         right_real_hidden = nn.Dense(self.hidden_dim)(x)
         right_real_hidden = nn.relu(right_real_hidden)
-        right_real = nn.Dense(1)(right_real_hidden)
+        right_real = nn.Dense(self.num_eigenvector_pairs)(right_real_hidden)
 
         # Right imaginary head
         right_imag_hidden = nn.Dense(self.hidden_dim)(x)
         right_imag_hidden = nn.relu(right_imag_hidden)
-        right_imag = nn.Dense(1)(right_imag_hidden)
+        right_imag = nn.Dense(self.num_eigenvector_pairs)(right_imag_hidden)
 
         features_dict = {
             'left_real': left_real,
@@ -254,6 +255,7 @@ class Args:
     door_seed: int = 42  # Seed for door placement
 
     # Model
+    num_eigenvector_pairs: int = 4  # Number of complex eigenvector pairs to learn
     hidden_dim: int = 256
     num_hidden_layers: int = 3
 
@@ -1489,6 +1491,18 @@ def learn_eigenvectors(args):
     def sg(z):
         """Stop gradient utility function."""
         return jax.lax.stop_gradient(z)
+    
+    def ip(a, b):
+        """Inner product that keeps dimensions."""
+        return jnp.mean(a * b, axis=0, keepdims=True)
+    
+    def multi_ip(a, b):
+        """Multiple inner products for multiple vectors."""
+        return jnp.einsum('ij,ik->jk', a, b) / a.shape[0]
+    
+    def agg_dim(x):
+        """Aggregate over batch dimension."""
+        return jnp.sum(x, axis=-1, keepdims=True)
 
     # Define the update function
     @jax.jit
@@ -1519,29 +1533,29 @@ def learn_eigenvectors(args):
             next_y_i = next_features['left_imag']
 
             # Get sizes
-            n = x_r.shape[0]
+            n, k = x_r.shape
 
-            # Compute current unnormalized eigenvalue estimates
-            lambda_x_r = (x_r * next_x_r).mean() + (x_i * next_x_i).mean()
-            lambda_x_i = (x_r * next_x_i).mean() - (x_i * next_x_r).mean()
-            lambda_y_r = (y_r * next_y_r).mean() + (y_i * next_y_i).mean()
-            lambda_y_i = (y_r * next_y_i).mean() - (y_i * next_y_r).mean()
+            # Compute current unnormalized eigenvalue estimates (Shape: (1,k))
+            lambda_x_r = ip(x_r, next_x_r) + ip(x_i, next_x_i)
+            lambda_x_i = ip(x_r, next_x_i) - ip(x_i, next_x_r)
+            lambda_y_r = ip(y_r, next_y_r) + ip(y_i, next_y_i)
+            lambda_y_i = ip(y_r, next_y_i) - ip(y_i, next_y_r)
 
-            # Compute squared norms
-            norm_x_r_sq = (x_r ** 2).mean()
-            norm_x_i_sq = (x_i ** 2).mean()
+            # Compute squared norms (Shape: (1,k))
+            norm_x_r_sq = ip(x_r, x_r)
+            norm_x_i_sq = ip(x_i, x_i)
             norm_x_sq = norm_x_r_sq + norm_x_i_sq
 
-            norm_y_r_sq = (y_r ** 2).mean()
-            norm_y_i_sq = (y_i ** 2).mean()
+            norm_y_r_sq = ip(y_r, y_r)
+            norm_y_i_sq = ip(y_i, y_i)
             norm_y_sq = norm_y_r_sq + norm_y_i_sq
 
-            next_norm_y_r_sq = (next_y_r ** 2).mean()
-            next_norm_y_i_sq = (next_y_i ** 2).mean()
+            next_norm_y_r_sq = ip(next_y_r, next_y_r)
+            next_norm_y_i_sq = ip(next_y_i, next_y_i)
             next_norm_y_sq = next_norm_y_r_sq + next_norm_y_i_sq
 
-            # Compute graph losses
-            f_x_real = - next_x_r + lambda_x_r * x_r - lambda_x_i * x_i
+            # Compute graph losses (Shape: (1,k))
+            f_x_real = - next_x_r + lambda_x_r * x_r - lambda_x_i * x_i  # (Shape: (n,k))
             f_x_imag = - next_x_i + lambda_x_i * x_r + lambda_x_r * x_i
 
             f_y_0_real = - y_r
@@ -1549,27 +1563,28 @@ def learn_eigenvectors(args):
             f_y_residual_real = lambda_y_r * y_r - lambda_y_i * y_i
             f_y_residual_imag = lambda_y_i * y_r + lambda_y_r * y_i
 
-            graph_loss_x_real = -(x_r * sg(f_x_real)).mean()
-            graph_loss_x_imag = -(x_i * sg(f_x_imag)).mean()
+            graph_loss_x_real = -ip(x_r, sg(f_x_real))  # (Shape: (1,k))
+            graph_loss_x_imag = -ip(x_i, sg(f_x_imag))
             graph_loss_x = graph_loss_x_real + graph_loss_x_imag
 
             graph_loss_y_real = -(
-                next_y_r * sg(f_y_0_real)
-                + y_r * sg(f_y_residual_real)
-            ).mean()
+                ip(next_y_r, sg(f_y_0_real))
+                + ip(y_r, sg(f_y_residual_real))
+            )
             graph_loss_y_imag = -(
-                next_y_i * sg(f_y_0_imag)
-                + y_i * sg(f_y_residual_imag)
-            ).mean()
+                ip(next_y_i, sg(f_y_0_imag))
+                + ip(y_i, sg(f_y_residual_imag))
+            )
             graph_loss_y = graph_loss_y_real + graph_loss_y_imag
 
             graph_loss = graph_loss_x + graph_loss_y
 
             # Compute Lyapunov functions and their gradients
             # 1. For x norm
-            norm_x_error = norm_x_sq - 1
+            norm_x_error = norm_x_sq - 1  # (Shape: (1,k))
             V_x_norm = norm_x_error ** 2 / 2
-            nabla_x_r_V_x_norm = 2 * norm_x_error * x_r
+
+            nabla_x_r_V_x_norm = 2 * norm_x_error * x_r  # (Shape: (n,k))
             nabla_x_i_V_x_norm = 2 * norm_x_error * x_i
             nabla_y_r_V_x_norm = jnp.zeros_like(y_r)
             nabla_y_i_V_x_norm = jnp.zeros_like(y_i)
@@ -1578,75 +1593,138 @@ def learn_eigenvectors(args):
             next_nabla_y_i_V_x_norm = jnp.zeros_like(next_y_i)
 
             # 2. For y norm
-            norm_y_error = norm_y_sq - 1
+            norm_y_error = norm_y_sq - 1  # (Shape: (1,k))
             V_y_norm = norm_y_error ** 2 / 2
-            nabla_x_r_V_y_norm = jnp.zeros_like(x_r)
+
+            nabla_x_r_V_y_norm = jnp.zeros_like(x_r)  # (Shape: (n,k))
             nabla_x_i_V_y_norm = jnp.zeros_like(x_i)
             nabla_y_r_V_y_norm = 2 * norm_y_error * y_r
             nabla_y_i_V_y_norm = 2 * norm_y_error * y_i
 
-            next_norm_y_error = next_norm_y_sq - 1
-            next_nabla_y_r_V_y_norm = 2 * next_norm_y_error * next_y_r
+            next_norm_y_error = next_norm_y_sq - 1  # (Shape: (1,k))
+
+            next_nabla_y_r_V_y_norm = 2 * next_norm_y_error * next_y_r  #(Shape: (n,k))
             next_nabla_y_i_V_y_norm = 2 * next_norm_y_error * next_y_i
 
             # 3. For xy phase
-            phase_xy = (y_r * x_i).mean() - (y_i * x_r).mean()
+            phase_xy = ip(y_r, x_i) - ip(y_i, x_r)  # (Shape: (1,k))
             V_xy_phase = phase_xy ** 2 / 2
-            nabla_x_r_V_xy_phase = - phase_xy * y_i
+
+            nabla_x_r_V_xy_phase = - phase_xy * y_i  # (Shape: (n,k))
             nabla_x_i_V_xy_phase = phase_xy * y_r
             nabla_y_r_V_xy_phase = phase_xy * x_i
             nabla_y_i_V_xy_phase = - phase_xy * x_r
 
-            next_phase_xy = (next_y_r * next_x_i).mean() - (next_y_i * next_x_r).mean()
-            next_nabla_y_r_V_xy_phase = next_phase_xy * next_x_i
+            next_phase_xy = ip(next_y_r, next_x_i) - ip(next_y_i, next_x_r)  # (Shape: (1,k))
+
+            next_nabla_y_r_V_xy_phase = next_phase_xy * next_x_i  #(Shape: (n,k))
             next_nabla_y_i_V_xy_phase = - next_phase_xy * next_x_r
 
-            # 4. Global
-            V = V_x_norm + V_y_norm + V_xy_phase
-            nabla_x_r_V = nabla_x_r_V_x_norm + nabla_x_r_V_y_norm + nabla_x_r_V_xy_phase
-            nabla_x_i_V = nabla_x_i_V_x_norm + nabla_x_i_V_y_norm + nabla_x_i_V_xy_phase
-            nabla_y_r_V = nabla_y_r_V_x_norm + nabla_y_r_V_y_norm + nabla_y_r_V_xy_phase
-            nabla_y_i_V = nabla_y_i_V_x_norm + nabla_y_i_V_y_norm + nabla_y_i_V_xy_phase
+            # 4. For crossed terms
+            corr_xy_real = multi_ip(x_r, y_r) + multi_ip(x_i, y_i)  # (Shape: (k,k)) (First index: x, second index: y)
+            corr_xy_imag = multi_ip(x_r, y_i) - multi_ip(x_i, y_r)
 
-            next_nabla_y_r_V = next_nabla_y_r_V_x_norm + next_nabla_y_r_V_y_norm + next_nabla_y_r_V_xy_phase
-            next_nabla_y_i_V = next_nabla_y_i_V_x_norm + next_nabla_y_i_V_y_norm + next_nabla_y_i_V_xy_phase
+            corr_yx_real = jnp.tril(corr_xy_real.T, k=-1)
+            corr_yx_imag = jnp.tril(corr_xy_imag.T, k=-1)
+            
+            corr_xy_real = jnp.tril(corr_xy_real, k=-1)
+            corr_xy_imag = jnp.tril(corr_xy_imag, k=-1)
 
-            norm_nabla_x_r_V_sq = (nabla_x_r_V ** 2).mean()
-            norm_nabla_x_i_V_sq = (nabla_x_i_V ** 2).mean()
-            norm_nabla_y_r_V_sq = (nabla_y_r_V ** 2).mean()
-            norm_nabla_y_i_V_sq = (nabla_y_i_V ** 2).mean()
+            V_xy_corr_real = agg_dim(corr_xy_real ** 2) / 2  #(Shape: (1,k))
+            V_xy_corr_imag = agg_dim(corr_xy_imag ** 2) / 2
+            V_yx_corr_real = agg_dim(corr_yx_real ** 2) / 2
+            V_yx_corr_imag = agg_dim(corr_yx_imag ** 2) / 2
+            V_xy_corr = V_xy_corr_real + V_xy_corr_imag + V_yx_corr_real + V_yx_corr_imag
+
+            nabla_x_r_jk_V_xy_corr_real = 2 * corr_xy_real.reshape(1, k, k) * y_r.reshape(n, 1, k)  #(Shape: (n,k,k))
+            nabla_x_i_jk_V_xy_corr_real = 2 * corr_xy_real.reshape(1, k, k) * y_i.reshape(n, 1, k)            
+
+            nabla_x_r_jk_V_xy_corr_imag = 2 * corr_xy_imag.reshape(1, k, k) * y_i.reshape(n, 1, k)  #(Shape: (n,k,k))
+            nabla_x_i_jk_V_xy_corr_imag = -2 * corr_xy_imag.reshape(1, k, k) * y_r.reshape(n, 1, k)
+            
+            nabla_y_r_jk_V_yx_corr_real = 2 * corr_yx_real.reshape(1, k, k) * x_r.reshape(n, 1, k)  #(Shape: (n,k,k))
+            nabla_y_i_jk_V_yx_corr_real = 2 * corr_yx_real.reshape(1, k, k) * x_i.reshape(n, 1, k)
+            
+            nabla_y_r_jk_V_yx_corr_imag = -2 * corr_yx_imag.reshape(1, k, k) * x_i.reshape(n, 1, k)  #(Shape: (n,k,k))
+            nabla_y_i_jk_V_yx_corr_imag = 2 * corr_yx_imag.reshape(1, k, k) * x_r.reshape(n, 1, k)
+
+            nabla_x_r_V_xy_corr_real = agg_dim(nabla_x_r_jk_V_xy_corr_real)  #(Shape: (n,k))
+            nabla_x_i_V_xy_corr_real = agg_dim(nabla_x_i_jk_V_xy_corr_real)
+            nabla_x_r_V_xy_corr_imag = agg_dim(nabla_x_r_jk_V_xy_corr_imag)
+            nabla_x_i_V_xy_corr_imag = agg_dim(nabla_x_i_jk_V_xy_corr_imag)
+
+            nabla_y_r_V_xy_corr_real = agg_dim(nabla_y_r_jk_V_yx_corr_real)  #(Shape: (n,k))
+            nabla_y_i_V_xy_corr_real = agg_dim(nabla_y_i_jk_V_yx_corr_real)
+            nabla_y_r_V_xy_corr_imag = agg_dim(nabla_y_r_jk_V_yx_corr_imag)
+            nabla_y_i_V_xy_corr_imag = agg_dim(nabla_y_i_jk_V_yx_corr_imag)
+
+            next_corr_xy_real = multi_ip(next_x_r, next_y_r) + multi_ip(next_x_i, next_y_i)  # (Shape: (k,k)) (First index: x, second index: y)
+            next_corr_xy_imag = multi_ip(next_x_r, next_y_i) - multi_ip(next_x_i, next_y_r)
+
+            next_corr_yx_real = jnp.tril(next_corr_xy_real.T, k=-1)
+            next_corr_yx_imag = jnp.tril(next_corr_xy_imag.T, k=-1)
+
+            next_nabla_y_r_jk_V_xy_corr_real = 2 * next_corr_yx_real.reshape(1, k, k) * next_x_r.reshape(n, 1, k)  #(Shape: (n,k,k))
+            next_nabla_y_i_jk_V_xy_corr_real = 2 * next_corr_yx_real.reshape(1, k, k) * next_x_i.reshape(n, 1, k)
+            next_nabla_y_r_jk_V_xy_corr_imag = -2 * next_corr_yx_imag.reshape(1, k, k) * next_x_i.reshape(n, 1, k)  #(Shape: (n,k,k))
+            next_nabla_y_i_jk_V_xy_corr_imag = 2 * next_corr_yx_imag.reshape(1, k, k) * next_x_r.reshape(n, 1, k)
+            
+            next_nabla_y_r_V_xy_corr_real = agg_dim(next_nabla_y_r_jk_V_xy_corr_real)  #(Shape: (n,k))
+            next_nabla_y_i_V_xy_corr_real = agg_dim(next_nabla_y_i_jk_V_xy_corr_real)
+            next_nabla_y_r_V_xy_corr_imag = agg_dim(next_nabla_y_r_jk_V_xy_corr_imag)
+            next_nabla_y_i_V_xy_corr_imag = agg_dim(next_nabla_y_i_jk_V_xy_corr_imag)
+
+            # 5. Global
+            V = V_x_norm + V_y_norm + V_xy_phase + V_xy_corr  # (Shape: (1,k))
+            nabla_x_r_V = nabla_x_r_V_x_norm + nabla_x_r_V_y_norm + nabla_x_r_V_xy_phase + nabla_x_r_V_xy_corr_real + nabla_x_r_V_xy_corr_imag  # Shape: (n,k)
+            nabla_x_i_V = nabla_x_i_V_x_norm + nabla_x_i_V_y_norm + nabla_x_i_V_xy_phase + nabla_x_i_V_xy_corr_real + nabla_x_i_V_xy_corr_imag
+            nabla_y_r_V = nabla_y_r_V_x_norm + nabla_y_r_V_y_norm + nabla_y_r_V_xy_phase + nabla_y_r_V_xy_corr_real + nabla_y_r_V_xy_corr_imag
+            nabla_y_i_V = nabla_y_i_V_x_norm + nabla_y_i_V_y_norm + nabla_y_i_V_xy_phase + nabla_y_i_V_xy_corr_real + nabla_y_i_V_xy_corr_imag
+
+            next_nabla_y_r_V = next_nabla_y_r_V_x_norm + next_nabla_y_r_V_y_norm + next_nabla_y_r_V_xy_phase + next_nabla_y_r_V_xy_corr_real + next_nabla_y_r_V_xy_corr_imag
+            next_nabla_y_i_V = next_nabla_y_i_V_x_norm + next_nabla_y_i_V_y_norm + next_nabla_y_i_V_xy_phase + next_nabla_y_i_V_xy_corr_real + next_nabla_y_i_V_xy_corr_imag
+
+            norm_nabla_x_r_V_sq = ip(nabla_x_r_V, nabla_x_r_V)  # (Shape: (1,k))
+            norm_nabla_x_i_V_sq = ip(nabla_x_i_V, nabla_x_i_V)
+            norm_nabla_y_r_V_sq = ip(nabla_y_r_V, nabla_y_r_V)
+            norm_nabla_y_i_V_sq = ip(nabla_y_i_V, nabla_y_i_V)
             norm_nabla_V_sq = (
                 norm_nabla_x_r_V_sq + norm_nabla_x_i_V_sq 
                 + norm_nabla_y_r_V_sq + norm_nabla_y_i_V_sq
-            )
+            ).sum()  # Sum over all eigenvectors (Shape: ())
 
             # Compute Control Lyapunov Function (CLF) loss
-            f_x_r_dot_nabla_V = (f_x_real * nabla_x_r_V).mean()
-            f_x_i_dot_nabla_V = (f_x_imag * nabla_x_i_V).mean()
+            f_x_r_dot_nabla_V = ip(f_x_real, nabla_x_r_V)  # (Shape: (1,k))
+            f_x_i_dot_nabla_V = ip(f_x_imag, nabla_x_i_V)
 
             f_y_r_dot_nabla_V = (
-                f_y_0_real * next_nabla_y_r_V
-                + f_y_residual_real * nabla_y_r_V
-            ).mean()
+                ip(f_y_0_real, next_nabla_y_r_V)
+                + ip(f_y_residual_real, nabla_y_r_V)
+            )
             f_y_i_dot_nabla_V = (
-                f_y_0_imag * next_nabla_y_i_V
-                + f_y_residual_imag * nabla_y_i_V
-            ).mean()
+                ip(f_y_0_imag, next_nabla_y_i_V)
+                + ip(f_y_residual_imag, nabla_y_i_V)
+            )
 
             f_dot_nabla_V = f_x_r_dot_nabla_V + f_x_i_dot_nabla_V + f_y_r_dot_nabla_V + f_y_i_dot_nabla_V
 
-            clf_num = f_dot_nabla_V + args.lambda_x * V
+            clf_num = (f_dot_nabla_V + args.lambda_x * V).sum()  # Sum over all eigenvectors (Shape: ())
             barrier = jnp.maximum(0, clf_num) / (norm_nabla_V_sq + 1e-8)
 
-            u_x_r = barrier * nabla_x_r_V
+            u_x_r = barrier * nabla_x_r_V  # (Shape: (n,k))
             u_x_i = barrier * nabla_x_i_V
             u_y_r = barrier * nabla_y_r_V
             u_y_i = barrier * nabla_y_i_V
 
-            clf_loss_x_r = (x_r * sg(u_x_r)).mean()
-            clf_loss_x_i = (x_i * sg(u_x_i)).mean()
-            clf_loss_y_r = (y_r * sg(u_y_r)).mean()
-            clf_loss_y_i = (y_i * sg(u_y_i)).mean()
+            clf_loss_x_r_k = ip(x_r, sg(u_x_r))  # (Shape: (1,k))
+            clf_loss_x_i_k = ip(x_i, sg(u_x_i))
+            clf_loss_y_r_k = ip(y_r, sg(u_y_r))
+            clf_loss_y_i_k = ip(y_i, sg(u_y_i))
+
+            clf_loss_x_r = clf_loss_x_r_k.sum()  # Sum over all eigenvectors (Shape: ())
+            clf_loss_x_i = clf_loss_x_i_k.sum()
+            clf_loss_y_r = clf_loss_y_r_k.sum()
+            clf_loss_y_i = clf_loss_y_i_k.sum()
 
             clf_loss = clf_loss_x_r + clf_loss_x_i + clf_loss_y_r + clf_loss_y_i
 
