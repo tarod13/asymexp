@@ -843,16 +843,16 @@ def plot_eigenvector_comparison(
     """
     Create comparison plots between ground truth and learned eigenvectors.
 
-    Generates separate plots for:
+    Generates separate plots for each eigenvector pair:
     - Right eigenvector (real and imaginary parts)
     - Left eigenvector (real and imaginary parts)
 
     Each plot shows: Ground Truth | Raw Learned | Normalized Learned
 
     Args:
-        learned_*: Raw learned eigenvector components [num_states, 1]
-        gt_*: Ground truth eigenvector components [num_states, 1]
-        normalized_*: Normalized learned eigenvector components [num_states, 1]
+        learned_*: Raw learned eigenvector components [num_states, num_eigenvector_pairs]
+        gt_*: Ground truth eigenvector components [num_states, num_eigenvector_pairs]
+        normalized_*: Normalized learned eigenvector components [num_states, num_eigenvector_pairs]
         canonical_states: Array of canonical state indices
         grid_width, grid_height: Grid dimensions
         save_dir: Directory to save plots
@@ -860,6 +860,9 @@ def plot_eigenvector_comparison(
     """
     from pathlib import Path
     save_dir = Path(save_dir)
+
+    # Get number of eigenvector pairs
+    num_eigenvector_pairs = learned_right_real.shape[1]
 
     # Helper function to create a comparison plot
     def create_comparison_plot(gt_vals, learned_vals, normalized_vals, title_prefix, save_name):
@@ -915,29 +918,33 @@ def plot_eigenvector_comparison(
 
     print("Generating eigenvector comparison plots...")
 
-    # Right eigenvector - Real part
-    create_comparison_plot(
-        gt_right_real[:, 0], learned_right_real[:, 0], normalized_right_real[:, 0],
-        'Right Eigenvector (φ) - Real Part', 'comparison_right_real.png'
-    )
+    # Generate plots for each eigenvector pair
+    for i in range(num_eigenvector_pairs):
+        suffix = f"_{i}" if num_eigenvector_pairs > 1 else ""
 
-    # Right eigenvector - Imaginary part
-    create_comparison_plot(
-        gt_right_imag[:, 0], learned_right_imag[:, 0], normalized_right_imag[:, 0],
-        'Right Eigenvector (φ) - Imaginary Part', 'comparison_right_imag.png'
-    )
+        # Right eigenvector - Real part
+        create_comparison_plot(
+            gt_right_real[:, i], learned_right_real[:, i], normalized_right_real[:, i],
+            f'Right Eigenvector {i} (φ) - Real Part', f'comparison_right_real{suffix}.png'
+        )
 
-    # Left eigenvector - Real part
-    create_comparison_plot(
-        gt_left_real[:, 0], learned_left_real[:, 0], normalized_left_real[:, 0],
-        'Left Eigenvector (ψ) - Real Part', 'comparison_left_real.png'
-    )
+        # Right eigenvector - Imaginary part
+        create_comparison_plot(
+            gt_right_imag[:, i], learned_right_imag[:, i], normalized_right_imag[:, i],
+            f'Right Eigenvector {i} (φ) - Imaginary Part', f'comparison_right_imag{suffix}.png'
+        )
 
-    # Left eigenvector - Imaginary part
-    create_comparison_plot(
-        gt_left_imag[:, 0], learned_left_imag[:, 0], normalized_left_imag[:, 0],
-        'Left Eigenvector (ψ) - Imaginary Part', 'comparison_left_imag.png'
-    )
+        # Left eigenvector - Real part
+        create_comparison_plot(
+            gt_left_real[:, i], learned_left_real[:, i], normalized_left_real[:, i],
+            f'Left Eigenvector {i} (ψ) - Real Part', f'comparison_left_real{suffix}.png'
+        )
+
+        # Left eigenvector - Imaginary part
+        create_comparison_plot(
+            gt_left_imag[:, i], learned_left_imag[:, i], normalized_left_imag[:, i],
+            f'Left Eigenvector {i} (ψ) - Imaginary Part', f'comparison_left_imag{suffix}.png'
+        )
 
     print("Eigenvector comparison plots complete.")
 
@@ -1198,20 +1205,20 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     laplacian_matrix = compute_laplacian(transition_matrix, args.gamma, delta=args.delta)
     eigendecomp = compute_eigendecomposition(
         laplacian_matrix,
-        k=1,
+        k=args.num_eigenvector_pairs,
         ascending=False  # For Laplacians, we want smallest eigenvalues
     )
 
-    print(f"\nSmallest {min(5, 1)} eigenvalues (complex):")
+    print(f"\nSmallest {min(5, args.num_eigenvector_pairs)} eigenvalues (complex):")
     print("  Eigenvalue (real + imag)")
-    for i in range(min(5, 1)):
+    for i in range(min(5, args.num_eigenvector_pairs)):
         ev_real = eigendecomp['eigenvalues_real'][i]
         ev_imag = eigendecomp['eigenvalues_imag'][i]
         print(f"  λ_{i}: {ev_real:.6f} + {ev_imag:.6f}i")
 
     # Print ranges of eigenvector values to debug visualization issues
-    print(f"\nEigenvector value ranges (first {min(5, 1)} eigenvectors):")
-    for i in range(min(5, 1)):
+    print(f"\nEigenvector value ranges (first {min(5, args.num_eigenvector_pairs)} eigenvectors):")
+    for i in range(min(5, args.num_eigenvector_pairs)):
         # Right eigenvectors
         right_real = eigendecomp['right_eigenvectors_real'][:, i]
         right_imag = eigendecomp['right_eigenvectors_imag'][:, i]
@@ -1426,6 +1433,7 @@ def learn_eigenvectors(args):
 
     # Initialize the encoder
     encoder = CoordinateEncoder(
+        num_eigenvector_pairs=args.num_eigenvector_pairs,
         hidden_dim=args.hidden_dim,
         num_hidden_layers=args.num_hidden_layers,
     )
@@ -1500,9 +1508,9 @@ def learn_eigenvectors(args):
         """Multiple inner products for multiple vectors."""
         return jnp.einsum('ij,ik->jk', a, b) / a.shape[0]
     
-    def agg_dim(x):
+    def agg_dim(x, kp=False):
         """Aggregate over batch dimension."""
-        return jnp.sum(x, axis=-1, keepdims=True)
+        return jnp.sum(x, axis=-1, keepdims=kp)
 
     # Define the update function
     @jax.jit
@@ -1577,7 +1585,7 @@ def learn_eigenvectors(args):
             )
             graph_loss_y = graph_loss_y_real + graph_loss_y_imag
 
-            graph_loss = graph_loss_x + graph_loss_y
+            graph_loss = (graph_loss_x + graph_loss_y).sum()  # Sum over all eigenvectors (Shape: ())
 
             # Compute Lyapunov functions and their gradients
             # 1. For x norm
@@ -1630,10 +1638,10 @@ def learn_eigenvectors(args):
             corr_xy_real = jnp.tril(corr_xy_real, k=-1)
             corr_xy_imag = jnp.tril(corr_xy_imag, k=-1)
 
-            V_xy_corr_real = agg_dim(corr_xy_real ** 2) / 2  #(Shape: (1,k))
-            V_xy_corr_imag = agg_dim(corr_xy_imag ** 2) / 2
-            V_yx_corr_real = agg_dim(corr_yx_real ** 2) / 2
-            V_yx_corr_imag = agg_dim(corr_yx_imag ** 2) / 2
+            V_xy_corr_real = agg_dim(corr_xy_real ** 2, kp=True) / 2  #(Shape: (1,k))
+            V_xy_corr_imag = agg_dim(corr_xy_imag ** 2, kp=True) / 2
+            V_yx_corr_real = agg_dim(corr_yx_real ** 2, kp=True) / 2
+            V_yx_corr_imag = agg_dim(corr_yx_imag ** 2, kp=True) / 2
             V_xy_corr = V_xy_corr_real + V_xy_corr_imag + V_yx_corr_real + V_yx_corr_imag
 
             nabla_x_r_jk_V_xy_corr_real = 2 * corr_xy_real.reshape(1, k, k) * y_r.reshape(n, 1, k)  #(Shape: (n,k,k))
@@ -1731,28 +1739,28 @@ def learn_eigenvectors(args):
             # Total loss
             total_loss = graph_loss + clf_loss
 
-            # Auxiliary metrics
+            # Auxiliary metrics (average over eigenvector pairs for logging)
             aux = {
                 'total_loss': total_loss,
                 'graph_loss': graph_loss,
                 'clf_loss': clf_loss,
-                'graph_loss_x_real': graph_loss_x_real,
-                'graph_loss_x_imag': graph_loss_x_imag,
+                'graph_loss_x_real': graph_loss_x_real.sum(),
+                'graph_loss_x_imag': graph_loss_x_imag.sum(),
                 'clf_loss_x_real': clf_loss_x_r,
                 'clf_loss_x_imag': clf_loss_x_i,
-                'graph_loss_y_real': graph_loss_y_real,
-                'graph_loss_y_imag': graph_loss_y_imag,
+                'graph_loss_y_real': graph_loss_y_real.sum(),
+                'graph_loss_y_imag': graph_loss_y_imag.sum(),
                 'clf_loss_y_real': clf_loss_y_r,
                 'clf_loss_y_imag': clf_loss_y_i,
-                'lambda_x_real': lambda_x_r,
-                'lambda_x_imag': lambda_x_i,
-                'lambda_y_real': lambda_y_r,
-                'lambda_y_imag': lambda_y_i,
-                'V_x_norm': V_x_norm,
-                'V_y_norm': V_y_norm,
-                'V_xy_phase': V_xy_phase,
-                'norm_x_sq': norm_x_sq,
-                'norm_y_sq': norm_y_sq,
+                'lambda_x_real': lambda_x_r.mean(),
+                'lambda_x_imag': lambda_x_i.mean(),
+                'lambda_y_real': lambda_y_r.mean(),
+                'lambda_y_imag': lambda_y_i.mean(),
+                'V_x_norm': V_x_norm.mean(),
+                'V_y_norm': V_y_norm.mean(),
+                'V_xy_phase': V_xy_phase.mean(),
+                'norm_x_sq': norm_x_sq.mean(),
+                'norm_y_sq': norm_y_sq.mean(),
                 'barrier': barrier,
             }
 
@@ -1860,7 +1868,7 @@ def learn_eigenvectors(args):
             'grid_width': env.width,
             'grid_height': env.height,
             'door_markers': door_markers,
-            'num_eigenvectors': 1,
+            'num_eigenvectors': args.num_eigenvector_pairs,
             'gamma': args.gamma,
         }
         with open(results_dir / "viz_metadata.pkl", 'wb') as f:
@@ -1881,7 +1889,7 @@ def learn_eigenvectors(args):
 
             # Visualize right eigenvectors (real part)
             visualize_multiple_eigenvectors(
-                eigenvector_indices=list(range(1)),
+                eigenvector_indices=list(range(args.num_eigenvector_pairs)),
                 eigendecomposition=eigendecomp_viz,
                 canonical_states=canonical_states,
                 grid_width=env.width,
@@ -1889,7 +1897,7 @@ def learn_eigenvectors(args):
                 portals=door_markers if door_markers else None,
                 eigenvector_type='right',
                 component='real',
-                ncols=min(4, 1),
+                ncols=min(4, args.num_eigenvector_pairs),
                 wall_color='gray',
                 save_path=str(plots_dir / "ground_truth_right_eigenvectors_real.png"),
                 shared_colorbar=True
@@ -1898,7 +1906,7 @@ def learn_eigenvectors(args):
 
             # Visualize right eigenvectors (imaginary part)
             visualize_multiple_eigenvectors(
-                eigenvector_indices=list(range(1)),
+                eigenvector_indices=list(range(args.num_eigenvector_pairs)),
                 eigendecomposition=eigendecomp_viz,
                 canonical_states=canonical_states,
                 grid_width=env.width,
@@ -1906,7 +1914,7 @@ def learn_eigenvectors(args):
                 portals=door_markers if door_markers else None,
                 eigenvector_type='right',
                 component='imag',
-                ncols=min(4, 1),
+                ncols=min(4, args.num_eigenvector_pairs),
                 wall_color='gray',
                 save_path=str(plots_dir / "ground_truth_right_eigenvectors_imag.png"),
                 shared_colorbar=True
@@ -1915,7 +1923,7 @@ def learn_eigenvectors(args):
 
             # Visualize left eigenvectors (real part)
             visualize_multiple_eigenvectors(
-                eigenvector_indices=list(range(1)),
+                eigenvector_indices=list(range(args.num_eigenvector_pairs)),
                 eigendecomposition=eigendecomp_viz,
                 canonical_states=canonical_states,
                 grid_width=env.width,
@@ -1923,7 +1931,7 @@ def learn_eigenvectors(args):
                 portals=door_markers if door_markers else None,
                 eigenvector_type='left',
                 component='real',
-                ncols=min(4, 1),
+                ncols=min(4, args.num_eigenvector_pairs),
                 wall_color='gray',
                 save_path=str(plots_dir / "ground_truth_left_eigenvectors_real.png"),
                 shared_colorbar=True
@@ -1932,7 +1940,7 @@ def learn_eigenvectors(args):
 
             # Visualize left eigenvectors (imaginary part)
             visualize_multiple_eigenvectors(
-                eigenvector_indices=list(range(1)),
+                eigenvector_indices=list(range(args.num_eigenvector_pairs)),
                 eigendecomposition=eigendecomp_viz,
                 canonical_states=canonical_states,
                 grid_width=env.width,
@@ -1940,7 +1948,7 @@ def learn_eigenvectors(args):
                 portals=door_markers if door_markers else None,
                 eigenvector_type='left',
                 component='imag',
-                ncols=min(4, 1),
+                ncols=min(4, args.num_eigenvector_pairs),
                 wall_color='gray',
                 save_path=str(plots_dir / "ground_truth_left_eigenvectors_imag.png"),
                 shared_colorbar=True
@@ -2111,9 +2119,9 @@ def learn_eigenvectors(args):
             if args.plot_during_training:
                 # Create a temporary eigendecomposition dict for visualization
                 learned_eigendecomp = {
-                    'eigenvalues': jnp.zeros(1, dtype=jnp.complex64),
-                    'eigenvalues_real': jnp.zeros(1),
-                    'eigenvalues_imag': jnp.zeros(1),
+                    'eigenvalues': jnp.zeros(args.num_eigenvector_pairs, dtype=jnp.complex64),
+                    'eigenvalues_real': jnp.zeros(args.num_eigenvector_pairs),
+                    'eigenvalues_imag': jnp.zeros(args.num_eigenvector_pairs),
                     'left_eigenvectors_real': features_dict['left_real'],
                     'left_eigenvectors_imag': features_dict['left_imag'],
                     'right_eigenvectors_real': features_dict['right_real'],
@@ -2231,10 +2239,16 @@ def learn_eigenvectors(args):
     print("  - learning_curves.png: Training losses, Lyapunov functions, norms")
     print("  - cosine_similarity_evolution.png: Left/right eigenvector similarity over time")
     print("  - auxiliary_metrics.png: Eigenvalue estimates, norms, Lyapunov functions")
-    print("  - comparison_right_real.png: Right eigenvector (real) comparison")
-    print("  - comparison_right_imag.png: Right eigenvector (imag) comparison")
-    print("  - comparison_left_real.png: Left eigenvector (real) comparison")
-    print("  - comparison_left_imag.png: Left eigenvector (imag) comparison")
+    if args.num_eigenvector_pairs == 1:
+        print("  - comparison_right_real.png: Right eigenvector (real) comparison")
+        print("  - comparison_right_imag.png: Right eigenvector (imag) comparison")
+        print("  - comparison_left_real.png: Left eigenvector (real) comparison")
+        print("  - comparison_left_imag.png: Left eigenvector (imag) comparison")
+    else:
+        print(f"  - comparison_right_real_i.png: Right eigenvector i (real) comparison (i=0..{args.num_eigenvector_pairs-1})")
+        print(f"  - comparison_right_imag_i.png: Right eigenvector i (imag) comparison (i=0..{args.num_eigenvector_pairs-1})")
+        print(f"  - comparison_left_real_i.png: Left eigenvector i (real) comparison (i=0..{args.num_eigenvector_pairs-1})")
+        print(f"  - comparison_left_imag_i.png: Left eigenvector i (imag) comparison (i=0..{args.num_eigenvector_pairs-1})")
 
     print(f"\nAll results saved to: {results_dir}")
 
