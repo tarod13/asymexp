@@ -1197,7 +1197,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     eigendecomp = compute_eigendecomposition(
         laplacian_matrix,
         k=1,
-        ascending=True  # For Laplacians, we want smallest eigenvalues
+        ascending=False  # For Laplacians, we want smallest eigenvalues
     )
 
     print(f"\nSmallest {min(5, 1)} eigenvalues (complex):")
@@ -1486,6 +1486,10 @@ def learn_eigenvectors(args):
 
     encoder.apply = jax.jit(encoder.apply)
 
+    def sg(z):
+        """Stop gradient utility function."""
+        return jax.lax.stop_gradient(z)
+
     # Define the update function
     @jax.jit
     def update_encoder(
@@ -1506,11 +1510,8 @@ def learn_eigenvectors(args):
             # features_1 contains: left_real, left_imag, right_real, right_imag
             x_r = features_1['right_real']  # Right eigenvectors, real part
             x_i = features_1['right_imag']  # Right eigenvectors, imaginary part
-            y_r = features_2['left_real']
-            y_i = features_2['left_imag']
-
-            x_r_2 = features_2['right_real']
-            x_i_2 = features_2['right_imag']
+            y_r = features_1['left_real']
+            y_i = features_1['left_imag']
 
             next_x_r = next_features['right_real']
             next_x_i = next_features['right_imag']
@@ -1531,22 +1532,35 @@ def learn_eigenvectors(args):
             norm_x_i_sq = (x_i ** 2).mean()
             norm_x_sq = norm_x_r_sq + norm_x_i_sq
 
-            norm_y_r_sq = (next_y_r ** 2).mean()
-            norm_y_i_sq = (next_y_i ** 2).mean()
+            norm_y_r_sq = (y_r ** 2).mean()
+            norm_y_i_sq = (y_i ** 2).mean()
             norm_y_sq = norm_y_r_sq + norm_y_i_sq
 
-            # Compute graph losses
-            f_x_real = - next_x_r  + lambda_x_r * x_r - lambda_x_i * x_i
-            f_x_imag = - next_x_i  + lambda_x_i * x_r + lambda_x_r * x_i
-            f_y_real = - y_r  + lambda_y_r * next_y_r - lambda_y_i * next_y_i
-            f_y_imag = - y_i  + lambda_y_i * next_y_r + lambda_y_r * next_y_i
+            next_norm_y_r_sq = (next_y_r ** 2).mean()
+            next_norm_y_i_sq = (next_y_i ** 2).mean()
+            next_norm_y_sq = next_norm_y_r_sq + next_norm_y_i_sq
 
-            graph_loss_x_real = (x_r * jax.lax.stop_gradient(f_x_real)).mean()
-            graph_loss_x_imag = (x_i * jax.lax.stop_gradient(f_x_imag)).mean()
+            # Compute graph losses
+            f_x_real = - next_x_r + lambda_x_r * x_r - lambda_x_i * x_i
+            f_x_imag = - next_x_i + lambda_x_i * x_r + lambda_x_r * x_i
+
+            f_y_0_real = - y_r
+            f_y_0_imag = - y_i
+            f_y_residual_real = lambda_y_r * y_r - lambda_y_i * y_i
+            f_y_residual_imag = lambda_y_i * y_r + lambda_y_r * y_i
+
+            graph_loss_x_real = -(x_r * sg(f_x_real)).mean()
+            graph_loss_x_imag = -(x_i * sg(f_x_imag)).mean()
             graph_loss_x = graph_loss_x_real + graph_loss_x_imag
 
-            graph_loss_y_real = (next_y_r * jax.lax.stop_gradient(f_y_real)).mean()
-            graph_loss_y_imag = (next_y_i * jax.lax.stop_gradient(f_y_imag)).mean()
+            graph_loss_y_real = -(
+                next_y_r * sg(f_y_0_real)
+                + y_r * sg(f_y_residual_real)
+            ).mean()
+            graph_loss_y_imag = -(
+                next_y_i * sg(f_y_0_imag)
+                + y_i * sg(f_y_residual_imag)
+            ).mean()
             graph_loss_y = graph_loss_y_real + graph_loss_y_imag
 
             graph_loss = graph_loss_x + graph_loss_y
@@ -1559,22 +1573,33 @@ def learn_eigenvectors(args):
             nabla_x_i_V_x_norm = 2 * norm_x_error * x_i
             nabla_y_r_V_x_norm = jnp.zeros_like(y_r)
             nabla_y_i_V_x_norm = jnp.zeros_like(y_i)
+            
+            next_nabla_y_r_V_x_norm = jnp.zeros_like(next_y_r)
+            next_nabla_y_i_V_x_norm = jnp.zeros_like(next_y_i)
 
             # 2. For y norm
             norm_y_error = norm_y_sq - 1
             V_y_norm = norm_y_error ** 2 / 2
             nabla_x_r_V_y_norm = jnp.zeros_like(x_r)
             nabla_x_i_V_y_norm = jnp.zeros_like(x_i)
-            nabla_y_r_V_y_norm = 2 * norm_y_error * next_y_r
-            nabla_y_i_V_y_norm = 2 * norm_y_error * next_y_i
+            nabla_y_r_V_y_norm = 2 * norm_y_error * y_r
+            nabla_y_i_V_y_norm = 2 * norm_y_error * y_i
+
+            next_norm_y_error = next_norm_y_sq - 1
+            next_nabla_y_r_V_y_norm = 2 * next_norm_y_error * next_y_r
+            next_nabla_y_i_V_y_norm = 2 * next_norm_y_error * next_y_i
 
             # 3. For xy phase
             phase_xy = (y_r * x_i).mean() - (y_i * x_r).mean()
             V_xy_phase = phase_xy ** 2 / 2
             nabla_x_r_V_xy_phase = - phase_xy * y_i
             nabla_x_i_V_xy_phase = phase_xy * y_r
-            nabla_y_r_V_xy_phase = phase_xy * next_x_i
-            nabla_y_i_V_xy_phase = - phase_xy * next_x_r
+            nabla_y_r_V_xy_phase = phase_xy * x_i
+            nabla_y_i_V_xy_phase = - phase_xy * x_r
+
+            next_phase_xy = (next_y_r * next_x_i).mean() - (next_y_i * next_x_r).mean()
+            next_nabla_y_r_V_xy_phase = next_phase_xy * next_x_i
+            next_nabla_y_i_V_xy_phase = - next_phase_xy * next_x_r
 
             # 4. Global
             V = V_x_norm + V_y_norm + V_xy_phase
@@ -1582,6 +1607,9 @@ def learn_eigenvectors(args):
             nabla_x_i_V = nabla_x_i_V_x_norm + nabla_x_i_V_y_norm + nabla_x_i_V_xy_phase
             nabla_y_r_V = nabla_y_r_V_x_norm + nabla_y_r_V_y_norm + nabla_y_r_V_xy_phase
             nabla_y_i_V = nabla_y_i_V_x_norm + nabla_y_i_V_y_norm + nabla_y_i_V_xy_phase
+
+            next_nabla_y_r_V = next_nabla_y_r_V_x_norm + next_nabla_y_r_V_y_norm + next_nabla_y_r_V_xy_phase
+            next_nabla_y_i_V = next_nabla_y_i_V_x_norm + next_nabla_y_i_V_y_norm + next_nabla_y_i_V_xy_phase
 
             norm_nabla_x_r_V_sq = (nabla_x_r_V ** 2).mean()
             norm_nabla_x_i_V_sq = (nabla_x_i_V ** 2).mean()
@@ -1595,20 +1623,31 @@ def learn_eigenvectors(args):
             # Compute Control Lyapunov Function (CLF) loss
             f_x_r_dot_nabla_V = (f_x_real * nabla_x_r_V).mean()
             f_x_i_dot_nabla_V = (f_x_imag * nabla_x_i_V).mean()
-            f_y_r_dot_nabla_V = (f_y_real * nabla_y_r_V).mean()
-            f_y_i_dot_nabla_V = (f_y_imag * nabla_y_i_V).mean()
+
+            f_y_r_dot_nabla_V = (
+                f_y_0_real * next_nabla_y_r_V
+                + f_y_residual_real * nabla_y_r_V
+            ).mean()
+            f_y_i_dot_nabla_V = (
+                f_y_0_imag * next_nabla_y_i_V
+                + f_y_residual_imag * nabla_y_i_V
+            ).mean()
+
             f_dot_nabla_V = f_x_r_dot_nabla_V + f_x_i_dot_nabla_V + f_y_r_dot_nabla_V + f_y_i_dot_nabla_V
 
             clf_num = f_dot_nabla_V + args.lambda_x * V
             barrier = jnp.maximum(0, clf_num) / (norm_nabla_V_sq + 1e-8)
+
             u_x_r = barrier * nabla_x_r_V
             u_x_i = barrier * nabla_x_i_V
             u_y_r = barrier * nabla_y_r_V
             u_y_i = barrier * nabla_y_i_V
-            clf_loss_x_r = (x_r * jax.lax.stop_gradient(u_x_r)).mean()
-            clf_loss_x_i = (x_i * jax.lax.stop_gradient(u_x_i)).mean()
-            clf_loss_y_r = (next_y_r * jax.lax.stop_gradient(u_y_r)).mean()
-            clf_loss_y_i = (next_y_i * jax.lax.stop_gradient(u_y_i)).mean()
+
+            clf_loss_x_r = (x_r * sg(u_x_r)).mean()
+            clf_loss_x_i = (x_i * sg(u_x_i)).mean()
+            clf_loss_y_r = (y_r * sg(u_y_r)).mean()
+            clf_loss_y_i = (y_i * sg(u_y_i)).mean()
+
             clf_loss = clf_loss_x_r + clf_loss_x_i + clf_loss_y_r + clf_loss_y_i
 
             # Total loss
