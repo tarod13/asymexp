@@ -2117,16 +2117,26 @@ def learn_eigenvectors(args):
 
             # Optionally create plots during training (slower)
             if args.plot_during_training:
-                # Create a temporary eigendecomposition dict for visualization
-                learned_eigendecomp = {
-                    'eigenvalues': jnp.zeros(args.num_eigenvector_pairs, dtype=jnp.complex64),
-                    'eigenvalues_real': jnp.zeros(args.num_eigenvector_pairs),
-                    'eigenvalues_imag': jnp.zeros(args.num_eigenvector_pairs),
-                    'left_eigenvectors_real': features_dict['left_real'],
-                    'left_eigenvectors_imag': features_dict['left_imag'],
-                    'right_eigenvectors_real': features_dict['right_real'],
-                    'right_eigenvectors_imag': features_dict['right_imag'],
-                }
+                # Generate comparison plots with latest learned eigenvectors
+                plot_eigenvector_comparison(
+                    learned_left_real=np.array(features_dict['left_real']),
+                    learned_left_imag=np.array(features_dict['left_imag']),
+                    learned_right_real=np.array(features_dict['right_real']),
+                    learned_right_imag=np.array(features_dict['right_imag']),
+                    gt_left_real=np.array(gt_left_real),
+                    gt_left_imag=np.array(gt_left_imag),
+                    gt_right_real=np.array(gt_right_real),
+                    gt_right_imag=np.array(gt_right_imag),
+                    normalized_left_real=np.array(normalized_features['left_real']),
+                    normalized_left_imag=np.array(normalized_features['left_imag']),
+                    normalized_right_real=np.array(normalized_features['right_real']),
+                    normalized_right_imag=np.array(normalized_features['right_imag']),
+                    canonical_states=np.array(canonical_states),
+                    grid_width=env.width,
+                    grid_height=env.height,
+                    save_dir=str(plots_dir),
+                    door_markers=door_markers if door_markers else None,
+                )
 
             else:
                 # Just log progress
