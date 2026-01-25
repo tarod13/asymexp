@@ -268,7 +268,6 @@ class Args:
     lambda_x: float = 10.0  # Exponential decay parameter for CLF
     lambda_xy: float = 10.0  # Exponential decay parameter for CLF for xy phase
     chirality_factor: float = 0.1  # Weight for chirality term
-    ema_learning_rate: float = 0.01  # EMA update rate for eigenvalue estimates
 
     # Episodic replay buffer
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
@@ -1442,23 +1441,23 @@ def learn_eigenvectors(args):
 
     # Create optimizer
     encoder_tx = optax.adam(learning_rate=args.learning_rate)
-    lambda_tx = optax.adam(learning_rate=args.ema_learning_rate)
+    sgd_tx = optax.sgd(learning_rate=args.learning_rate)
 
     # Create masks for different parameter groups
     encoder_mask = {
         'encoder': True,
-        'lambda_real': False,
-        'lambda_imag': False,
+        'lambda_real': True,
+        'lambda_imag': True,
     }
     other_mask = {
         'encoder': False,
-        'lambda_real': True,
-        'lambda_imag': True,
+        'lambda_real': False,
+        'lambda_imag': False,
     }
 
     tx = optax.chain(
         optax.masked(encoder_tx, encoder_mask),
-        optax.masked(lambda_tx, other_mask)
+        optax.masked(sgd_tx, other_mask)
     )
 
     # Initialize or restore encoder state
@@ -1548,19 +1547,23 @@ def learn_eigenvectors(args):
             next_y_r = next_features['left_real']
             next_y_i = next_features['left_imag']
 
-            # Compute current unnormalized eigenvalue estimates (Shape: (1,k))
-            lambda_x_r = ip(x_r, next_x_r) + ip(x_i, next_x_i)
-            lambda_x_i = ip(x_r, next_x_i) - ip(x_i, next_x_r)
-            lambda_y_r = ip(y_r, next_y_r) + ip(y_i, next_y_i)
-            lambda_y_i = ip(y_r, next_y_i) - ip(y_i, next_y_r)
+            lambda_x_r = params['lambda_real'].reshape(1, -1)  # (Shape: (1,k))
+            lambda_x_i = params['lambda_imag'].reshape(1, -1)
+            lambda_y_r = params['lambda_real'].reshape(1, -1)  # Shared eigenvalues for left/right
+            lambda_y_i = -params['lambda_imag'].reshape(1, -1)
 
-            # EMA loss for eigenvalues
-            ema_lambda_r = params['lambda_real'].reshape(1, -1)  # (Shape: (1,k))
-            ema_lambda_i = params['lambda_imag'].reshape(1, -1)
-            new_lambda_real = 0.5 * (lambda_x_r + lambda_y_r)
-            new_lambda_imag = 0.5 * (lambda_x_i - lambda_y_i)
-            lambda_loss_real = ((sg(new_lambda_real) - ema_lambda_r) ** 2).sum()
-            lambda_loss_imag = ((sg(new_lambda_imag) - ema_lambda_i) ** 2).sum()
+            # Get sizes
+            n, k = x_r.shape
+
+            # Compute current unnormalized eigenvalue estimates (Shape: (1,k))
+            new_lambda_x_r = ip(x_r, next_x_r) + ip(x_i, next_x_i)
+            new_lambda_x_i = ip(x_r, next_x_i) - ip(x_i, next_x_r)
+            new_lambda_y_r = ip(y_r, next_y_r) + ip(y_i, next_y_i)
+            new_lambda_y_i = ip(y_r, next_y_i) - ip(y_i, next_y_r)
+            new_lambda_real = 0.5 * (new_lambda_x_r + new_lambda_y_r)
+            new_lambda_imag = 0.5 * (new_lambda_x_i - new_lambda_y_i)
+            lambda_loss_real = ((sg(new_lambda_real) - lambda_x_r) ** 2).sum()
+            lambda_loss_imag = ((sg(new_lambda_imag) - lambda_x_i) ** 2).sum()
             lambda_loss = lambda_loss_real + lambda_loss_imag
 
             # Compute squared norms (Shape: (1,k))
@@ -1756,12 +1759,12 @@ def learn_eigenvectors(args):
                 'graph_loss_y_imag': graph_loss_y_imag.sum(),
                 'clf_loss_y_real': clf_loss_y_r,
                 'clf_loss_y_imag': clf_loss_y_i,
-                'lambda_x_real': ema_lambda_r.mean(),
-                'lambda_x_imag': ema_lambda_i.mean(),
-                'new_lambda_x_real': lambda_x_r.mean(),
-                'new_lambda_x_imag': lambda_x_i.mean(),
-                'new_lambda_y_real': lambda_y_r.mean(),
-                'new_lambda_y_imag': lambda_y_i.mean(),
+                'lambda_x_real': lambda_x_r.mean(),
+                'lambda_x_imag': lambda_x_i.mean(),
+                'new_lambda_x_real': new_lambda_x_r.mean(),
+                'new_lambda_x_imag': new_lambda_x_i.mean(),
+                'new_lambda_y_real': new_lambda_y_r.mean(),
+                'new_lambda_y_imag': new_lambda_y_i.mean(),
                 'V_x_norm': V_x_norm.mean(),
                 'V_y_norm': V_y_norm.mean(),
                 'V_xy_phase': V_xy_phase.mean(),
