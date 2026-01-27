@@ -268,7 +268,7 @@ class Args:
     lambda_x: float = 10.0  # Exponential decay parameter for CLF
     lambda_xy: float = 10.0  # Exponential decay parameter for CLF for xy phase
     chirality_factor: float = 0.1  # Weight for chirality term
-    ema_learning_rate: float = 0.01  # EMA update rate for eigenvalue estimates
+    target_update_rate: float = 0.1  # Soft update rate for target network
 
     # Episodic replay buffer
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
@@ -1442,23 +1442,21 @@ def learn_eigenvectors(args):
 
     # Create optimizer
     encoder_tx = optax.adam(learning_rate=args.learning_rate)
-    lambda_tx = optax.adam(learning_rate=args.ema_learning_rate)
+    sgd_tx = optax.sgd(learning_rate=args.learning_rate)
 
     # Create masks for different parameter groups
     encoder_mask = {
         'encoder': True,
-        'lambda_real': False,
-        'lambda_imag': False,
+        'target_encoder': False,
     }
     other_mask = {
         'encoder': False,
-        'lambda_real': True,
-        'lambda_imag': True,
+        'target_encoder': False,
     }
 
     tx = optax.chain(
         optax.masked(encoder_tx, encoder_mask),
-        optax.masked(lambda_tx, other_mask)
+        optax.masked(sgd_tx, other_mask)
     )
 
     # Initialize or restore encoder state
@@ -1491,10 +1489,10 @@ def learn_eigenvectors(args):
         dummy_input = state_coords[:1]  # (1, 2)
 
         encoder_initial_params = encoder.init(encoder_key, dummy_input)
+        target_encoder_initial_params = encoder_initial_params.copy()
         initial_params = {
             'encoder': encoder_initial_params,
-            'lambda_real': jnp.ones((args.num_eigenvector_pairs,)),
-            'lambda_imag': jnp.zeros((args.num_eigenvector_pairs,)),
+            'target_encoder': target_encoder_initial_params,
         }
 
         encoder_state = TrainState.create(
@@ -1530,51 +1528,46 @@ def learn_eigenvectors(args):
             return jnp.einsum('ij,ik->jk', weighted_a, b) / a.shape[0]
 
         def encoder_loss(params):
-            # Compute representations for complex eigenvectors
+            # Obtain encoder parameters
             encoder_params = params['encoder']
-            features_1 = encoder.apply(encoder_params, state_coords_batch)[0]
-            features_2 = encoder.apply(encoder_params, state_coords_batch_2)[0]
+            target_params = params['target_encoder']
+
+            # Compute representations for complex eigenvectors
+            features = encoder.apply(encoder_params, state_coords_batch)[0]
             next_features = encoder.apply(encoder_params, next_state_coords_batch)[0]
+            target_features = encoder.apply(target_params, state_coords_batch)[0]
+            next_target_features = encoder.apply(target_params, next_state_coords_batch)[0]
 
             # Extract right eigenvectors (real and imaginary parts)
-            # features_1 contains: left_real, left_imag, right_real, right_imag
-            x_r = features_1['right_real']  # Right eigenvectors, real part
-            x_i = features_1['right_imag']  # Right eigenvectors, imaginary part
-            y_r = features_1['left_real']
-            y_i = features_1['left_imag']
+            # features contains: left_real, left_imag, right_real, right_imag
+            x_r = features['right_real']  # Right eigenvectors, real part
+            x_i = features['right_imag']  # Right eigenvectors, imaginary part
+            y_r = features['left_real']
+            y_i = features['left_imag']
 
             next_x_r = next_features['right_real']
             next_x_i = next_features['right_imag']
             next_y_r = next_features['left_real']
             next_y_i = next_features['left_imag']
 
+            tx_r = target_features['right_real']
+            tx_i = target_features['right_imag']
+            ty_r = target_features['left_real']
+            ty_i = target_features['left_imag']
+
+            next_tx_r = next_target_features['right_real']
+            next_tx_i = next_target_features['right_imag']
+            next_ty_r = next_target_features['left_real']
+            next_ty_i = next_target_features['left_imag']
+
+            # Get sizes
+            n, k = x_r.shape
+
             # Compute current unnormalized eigenvalue estimates (Shape: (1,k))
             lambda_x_r = ip(x_r, next_x_r) + ip(x_i, next_x_i)
             lambda_x_i = ip(x_r, next_x_i) - ip(x_i, next_x_r)
             lambda_y_r = ip(y_r, next_y_r) + ip(y_i, next_y_i)
             lambda_y_i = ip(y_r, next_y_i) - ip(y_i, next_y_r)
-
-            # EMA loss for eigenvalues
-            ema_lambda_r = params['lambda_real'].reshape(1, -1)  # (Shape: (1,k))
-            ema_lambda_i = params['lambda_imag'].reshape(1, -1)
-            new_lambda_real = 0.5 * (lambda_x_r + lambda_y_r)
-            new_lambda_imag = 0.5 * (lambda_x_i - lambda_y_i)
-            lambda_loss_real = ((sg(new_lambda_real) - ema_lambda_r) ** 2).sum()
-            lambda_loss_imag = ((sg(new_lambda_imag) - ema_lambda_i) ** 2).sum()
-            lambda_loss = lambda_loss_real + lambda_loss_imag
-
-            # Compute squared norms (Shape: (1,k))
-            norm_x_r_sq = ip(x_r, x_r)
-            norm_x_i_sq = ip(x_i, x_i)
-            norm_x_sq = norm_x_r_sq + norm_x_i_sq
-
-            norm_y_r_sq = ip(y_r, y_r)
-            norm_y_i_sq = ip(y_i, y_i)
-            norm_y_sq = norm_y_r_sq + norm_y_i_sq
-
-            next_norm_y_r_sq = ip(next_y_r, next_y_r)
-            next_norm_y_i_sq = ip(next_y_i, next_y_i)
-            next_norm_y_sq = next_norm_y_r_sq + next_norm_y_i_sq
 
             # Compute graph losses (Shape: (1,k))
             f_x_real = - next_x_r + lambda_x_r * x_r - lambda_x_i * x_i  # (Shape: (n,k))
@@ -1601,54 +1594,59 @@ def learn_eigenvectors(args):
             graph_loss = (graph_loss_x + graph_loss_y).sum()  # Sum over all eigenvectors (Shape: ())
 
             # Compute chirality loss (Shape: ())
-            x_i_normalized = x_i / jnp.sqrt(norm_x_sq)
+            norm_x_sq = ip(x_r, x_r) + ip(x_i, x_i)
+            x_i_normalized = x_i / jnp.sqrt(norm_x_sq + 1e-8)  # (Shape: (n,k))
             chirality_x = ip(sg(x_i_normalized**2), x_i_normalized)
             chirality_loss = ((chirality_x)**2).sum()
 
             # Compute Lyapunov functions and their gradients
+            # 0. Compute squared norms (Shape: (1,k))
+            norm_tx_sq = ip(tx_r, tx_r) + ip(tx_i, tx_i)
+            norm_ty_sq = ip(ty_r, ty_r) + ip(ty_i, ty_i)
+            next_norm_ty_sq = ip(next_ty_r, next_ty_r) + ip(next_ty_i, next_ty_i)
+
             # 1. For x norm
-            norm_x_error = norm_x_sq - 1  # (Shape: (1,k))
+            norm_x_error = norm_tx_sq - 1  # (Shape: (1,k))
             V_x_norm = norm_x_error ** 2 / 2
 
-            nabla_x_r_V_x_norm = 2 * norm_x_error * x_r  # (Shape: (n,k))
-            nabla_x_i_V_x_norm = 2 * norm_x_error * x_i
-            nabla_y_r_V_x_norm = jnp.zeros_like(y_r)
-            nabla_y_i_V_x_norm = jnp.zeros_like(y_i)
+            nabla_x_r_V_x_norm = 2 * norm_x_error * tx_r  # (Shape: (n,k))
+            nabla_x_i_V_x_norm = 2 * norm_x_error * tx_i
+            nabla_y_r_V_x_norm = jnp.zeros_like(ty_r)
+            nabla_y_i_V_x_norm = jnp.zeros_like(ty_i)
             
-            next_nabla_y_r_V_x_norm = jnp.zeros_like(next_y_r)
-            next_nabla_y_i_V_x_norm = jnp.zeros_like(next_y_i)
+            next_nabla_y_r_V_x_norm = jnp.zeros_like(next_ty_r)
+            next_nabla_y_i_V_x_norm = jnp.zeros_like(next_ty_i)
 
             # 2. For y norm
-            norm_y_error = norm_y_sq - 1  # (Shape: (1,k))
+            norm_y_error = norm_ty_sq - 1  # (Shape: (1,k))
             V_y_norm = norm_y_error ** 2 / 2
 
-            nabla_x_r_V_y_norm = jnp.zeros_like(x_r)  # (Shape: (n,k))
-            nabla_x_i_V_y_norm = jnp.zeros_like(x_i)
-            nabla_y_r_V_y_norm = 2 * norm_y_error * y_r
-            nabla_y_i_V_y_norm = 2 * norm_y_error * y_i
+            nabla_x_r_V_y_norm = jnp.zeros_like(tx_r)  # (Shape: (n,k))
+            nabla_x_i_V_y_norm = jnp.zeros_like(tx_i)
+            nabla_y_r_V_y_norm = 2 * norm_y_error * ty_r
+            nabla_y_i_V_y_norm = 2 * norm_y_error * ty_i
+            next_norm_y_error = next_norm_ty_sq - 1  # (Shape: (1,k))
 
-            next_norm_y_error = next_norm_y_sq - 1  # (Shape: (1,k))
-
-            next_nabla_y_r_V_y_norm = 2 * next_norm_y_error * next_y_r  #(Shape: (n,k))
-            next_nabla_y_i_V_y_norm = 2 * next_norm_y_error * next_y_i
+            next_nabla_y_r_V_y_norm = 2 * next_norm_y_error * next_ty_r  #(Shape: (n,k))
+            next_nabla_y_i_V_y_norm = 2 * next_norm_y_error * next_ty_i
 
             # 3. For xy phase
-            phase_xy = ip(y_r, x_i) - ip(y_i, x_r)  # (Shape: (1,k))
+            phase_xy = ip(ty_r, tx_i) - ip(ty_i, tx_r)  # (Shape: (1,k))
             V_xy_phase = phase_xy ** 2 / 2
 
-            nabla_x_r_V_xy_phase = - phase_xy * y_i  # (Shape: (n,k))
-            nabla_x_i_V_xy_phase = phase_xy * y_r
-            nabla_y_r_V_xy_phase = phase_xy * x_i
-            nabla_y_i_V_xy_phase = - phase_xy * x_r
+            nabla_x_r_V_xy_phase = - phase_xy * ty_i  # (Shape: (n,k))
+            nabla_x_i_V_xy_phase = phase_xy * ty_r
+            nabla_y_r_V_xy_phase = phase_xy * tx_i
+            nabla_y_i_V_xy_phase = - phase_xy * tx_r
 
-            next_phase_xy = ip(next_y_r, next_x_i) - ip(next_y_i, next_x_r)  # (Shape: (1,k))
+            next_phase_xy = ip(next_ty_r, next_tx_i) - ip(next_ty_i, next_tx_r)  # (Shape: (1,k))
 
-            next_nabla_y_r_V_xy_phase = next_phase_xy * next_x_i  #(Shape: (n,k))
-            next_nabla_y_i_V_xy_phase = - next_phase_xy * next_x_r
+            next_nabla_y_r_V_xy_phase = next_phase_xy * next_tx_i  #(Shape: (n,k))
+            next_nabla_y_i_V_xy_phase = - next_phase_xy * next_tx_r
 
             # 4. For crossed terms
-            corr_xy_real = multi_ip(x_r, y_r) + multi_ip(x_i, y_i)  # (Shape: (k,k)) (First index: x, second index: y)
-            corr_xy_imag = multi_ip(x_r, y_i) - multi_ip(x_i, y_r)
+            corr_xy_real = multi_ip(tx_r, ty_r) + multi_ip(tx_i, ty_i)  # (Shape: (k,k)) (First index: x, second index: y)
+            corr_xy_imag = multi_ip(tx_r, ty_i) - multi_ip(tx_i, ty_r)
 
             corr_xy_real_lower = jnp.tril(corr_xy_real, k=-1)
             corr_xy_imag_lower = jnp.tril(corr_xy_imag, k=-1)
@@ -1662,28 +1660,28 @@ def learn_eigenvectors(args):
             V_yx_corr_imag = jnp.sum(corr_yx_real_lower ** 2, -1).reshape(1,-1) / 2
             V_xy_corr = V_xy_corr_real + V_xy_corr_imag + V_yx_corr_real + V_yx_corr_imag
 
-            nabla_x_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_xy_real_lower, y_r)  #(Shape: (n,k))
-            nabla_x_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_xy_real_lower, y_i)            
+            nabla_x_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_xy_real_lower, ty_r)  #(Shape: (n,k))
+            nabla_x_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_xy_real_lower, ty_i)            
 
-            nabla_x_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', corr_xy_imag_lower, y_i)
-            nabla_x_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', corr_xy_imag_lower, y_r)
+            nabla_x_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', corr_xy_imag_lower, ty_i)
+            nabla_x_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', corr_xy_imag_lower, ty_r)
             
-            nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_yx_real_lower, x_r)
-            nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_yx_real_lower, x_i)
+            nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_yx_real_lower, tx_r)
+            nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_yx_real_lower, tx_i)
             
-            nabla_y_r_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', corr_yx_imag_lower, x_i)
-            nabla_y_i_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', corr_yx_imag_lower, x_r)
+            nabla_y_r_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', corr_yx_imag_lower, tx_i)
+            nabla_y_i_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', corr_yx_imag_lower, tx_r)
 
-            next_corr_xy_real = multi_ip(next_x_r, next_y_r) + multi_ip(next_x_i, next_y_i)  # (Shape: (k,k)) (First index: x, second index: y)
-            next_corr_xy_imag = multi_ip(next_x_r, next_y_i) - multi_ip(next_x_i, next_y_r)
+            next_corr_xy_real = multi_ip(next_tx_r, next_ty_r) + multi_ip(next_tx_i, next_ty_i)  # (Shape: (k,k)) (First index: x, second index: y)
+            next_corr_xy_imag = multi_ip(next_tx_r, next_ty_i) - multi_ip(next_tx_i, next_ty_r)
 
             next_corr_yx_real = jnp.tril(next_corr_xy_real.T, k=-1)
             next_corr_yx_imag = jnp.tril(next_corr_xy_imag.T, k=-1)
 
-            next_nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', next_corr_yx_real, next_x_r)  #(Shape: (n,k))
-            next_nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', next_corr_yx_real, next_x_i)
-            next_nabla_y_r_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', next_corr_yx_imag, next_x_i)
-            next_nabla_y_i_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', next_corr_yx_imag, next_x_r)
+            next_nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', next_corr_yx_real, next_tx_r)  #(Shape: (n,k))
+            next_nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', next_corr_yx_real, next_tx_i)
+            next_nabla_y_r_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', next_corr_yx_imag, next_tx_i)
+            next_nabla_y_i_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', next_corr_yx_imag, next_tx_r)
 
             # 5. Global
             V = V_x_norm + V_y_norm + V_xy_phase + V_xy_corr  # (Shape: (1,k))
@@ -1740,7 +1738,7 @@ def learn_eigenvectors(args):
             clf_loss = clf_loss_x_r + clf_loss_x_i + clf_loss_y_r + clf_loss_y_i
 
             # Total loss
-            total_loss = graph_loss + clf_loss + args.chirality_factor * chirality_loss + lambda_loss
+            total_loss = graph_loss + clf_loss + args.chirality_factor * chirality_loss
 
             # Auxiliary metrics (average over eigenvector pairs for logging)
             aux = {
@@ -1756,17 +1754,15 @@ def learn_eigenvectors(args):
                 'graph_loss_y_imag': graph_loss_y_imag.sum(),
                 'clf_loss_y_real': clf_loss_y_r,
                 'clf_loss_y_imag': clf_loss_y_i,
-                'lambda_x_real': ema_lambda_r.mean(),
-                'lambda_x_imag': ema_lambda_i.mean(),
-                'new_lambda_x_real': lambda_x_r.mean(),
-                'new_lambda_x_imag': lambda_x_i.mean(),
-                'new_lambda_y_real': lambda_y_r.mean(),
-                'new_lambda_y_imag': lambda_y_i.mean(),
+                'lambda_x_real': lambda_x_r.mean(),
+                'lambda_x_imag': lambda_x_i.mean(),
+                'lambda_y_real': lambda_y_r.mean(),
+                'lambda_y_imag': lambda_y_i.mean(),
                 'V_x_norm': V_x_norm.mean(),
                 'V_y_norm': V_y_norm.mean(),
                 'V_xy_phase': V_xy_phase.mean(),
                 'norm_x_sq': norm_x_sq.mean(),
-                'norm_y_sq': norm_y_sq.mean(),
+                'norm_y_sq': norm_ty_sq.mean(),
                 'barrier': barrier.mean(),
             }
 
@@ -1780,6 +1776,14 @@ def learn_eigenvectors(args):
         updates, new_opt_state = encoder_state.tx.update(
             grads, encoder_state.opt_state, encoder_state.params)
         new_params = optax.apply_updates(encoder_state.params, updates)
+
+        # Soft update target network parameters
+        new_target_params = optax.incremental_update(
+            new_tensors=new_params['encoder'], 
+            old_tensors=encoder_state.params['target_encoder'], 
+            step_size=args.target_update_rate
+        )
+        new_params['target_encoder'] = new_target_params
 
         # Create new state
         new_encoder_state = encoder_state.replace(
