@@ -1528,8 +1528,10 @@ def learn_eigenvectors(args):
             'dual_x_norm': jnp.zeros((1, args.num_eigenvector_pairs)),
             'dual_y_norm': jnp.zeros((1, args.num_eigenvector_pairs)),
             'dual_xy_phase': jnp.zeros((1, args.num_eigenvector_pairs)),
-            'dual_x_orth': jnp.zeros((args.num_eigenvector_pairs, args.num_eigenvector_pairs)),
-            'dual_y_orth': jnp.zeros((args.num_eigenvector_pairs, args.num_eigenvector_pairs)),
+            'dual_x_orth_real': jnp.zeros((args.num_eigenvector_pairs, args.num_eigenvector_pairs)),
+            'dual_x_orth_imag': jnp.zeros((args.num_eigenvector_pairs, args.num_eigenvector_pairs)),
+            'dual_y_orth_real': jnp.zeros((args.num_eigenvector_pairs, args.num_eigenvector_pairs)),
+            'dual_y_orth_imag': jnp.zeros((args.num_eigenvector_pairs, args.num_eigenvector_pairs)),
         }
 
         encoder_state = TrainState.create(
@@ -1708,17 +1710,17 @@ def learn_eigenvectors(args):
             V_yx_corr_imag = jnp.sum(corr_yx_real_lower ** 2, -1).reshape(1,-1) / 2
             V_xy_corr = V_xy_corr_real + V_xy_corr_imag + V_yx_corr_real + V_yx_corr_imag
 
-            nabla_x_r_V_xy_corr_real = jnp.einsum('jk,ik->ij', dual_x_corr_real + corr_xy_real_lower, y_r)  #(Shape: (n,k))
-            nabla_x_i_V_xy_corr_real = jnp.einsum('jk,ik->ij', dual_x_corr_real + corr_xy_real_lower, y_i)            
+            nabla_x_r_V_xy_corr_real = jnp.einsum('jk,ik->ij', dual_x_corr_real +  + args.barrier * corr_xy_real_lower, y_r)  #(Shape: (n,k))
+            nabla_x_i_V_xy_corr_real = jnp.einsum('jk,ik->ij', dual_x_corr_real + args.barrier * corr_xy_real_lower, y_i)            
 
-            nabla_x_r_V_xy_corr_imag = jnp.einsum('jk,ik->ij', dual_x_corr_imag + corr_xy_imag_lower, y_i)
-            nabla_x_i_V_xy_corr_imag = -jnp.einsum('jk,ik->ij', dual_x_corr_imag + corr_xy_imag_lower, y_r)
+            nabla_x_r_V_xy_corr_imag = jnp.einsum('jk,ik->ij', dual_x_corr_imag + args.barrier * corr_xy_imag_lower, y_i)
+            nabla_x_i_V_xy_corr_imag = -jnp.einsum('jk,ik->ij', dual_x_corr_imag + args.barrier * corr_xy_imag_lower, y_r)
             
-            nabla_y_r_V_xy_corr_real = jnp.einsum('jk,ik->ij', dual_y_corr_real + corr_yx_real_lower, x_r)
-            nabla_y_i_V_xy_corr_real = jnp.einsum('jk,ik->ij', dual_y_corr_real + corr_yx_real_lower, x_i)
+            nabla_y_r_V_xy_corr_real = jnp.einsum('jk,ik->ij', dual_y_corr_real + args.barrier * corr_yx_real_lower, x_r)
+            nabla_y_i_V_xy_corr_real = jnp.einsum('jk,ik->ij', dual_y_corr_real + args.barrier * corr_yx_real_lower, x_i)
             
-            nabla_y_r_V_xy_corr_imag = -jnp.einsum('jk,ik->ij', dual_y_corr_imag + corr_yx_imag_lower, x_i)
-            nabla_y_i_V_xy_corr_imag = jnp.einsum('jk,ik->ij', dual_y_corr_imag + corr_yx_imag_lower, x_r)
+            nabla_y_r_V_xy_corr_imag = -jnp.einsum('jk,ik->ij', dual_y_corr_imag + args.barrier * corr_yx_imag_lower, x_i)
+            nabla_y_i_V_xy_corr_imag = jnp.einsum('jk,ik->ij', dual_y_corr_imag + args.barrier * corr_yx_imag_lower, x_r)
 
             next_corr_xy_real = multi_ip(next_x_r, next_y_r) + multi_ip(next_x_i, next_y_i)  # (Shape: (k,k)) (First index: x, second index: y)
             next_corr_xy_imag = multi_ip(next_x_r, next_y_i) - multi_ip(next_x_i, next_y_r)
@@ -1726,10 +1728,10 @@ def learn_eigenvectors(args):
             next_corr_yx_real = jnp.tril(next_corr_xy_real.T, k=-1)
             next_corr_yx_imag = jnp.tril(next_corr_xy_imag.T, k=-1)
 
-            next_nabla_y_r_V_xy_corr_real = jnp.einsum('jk,ik->ij', dual_y_corr_real + next_corr_yx_real, next_x_r)  #(Shape: (n,k))
-            next_nabla_y_i_V_xy_corr_real = jnp.einsum('jk,ik->ij', dual_y_corr_real + next_corr_yx_real, next_x_i)
-            next_nabla_y_r_V_xy_corr_imag = -jnp.einsum('jk,ik->ij', dual_y_corr_imag + next_corr_yx_imag, next_x_i)
-            next_nabla_y_i_V_xy_corr_imag = jnp.einsum('jk,ik->ij', dual_y_corr_imag + next_corr_yx_imag, next_x_r)
+            next_nabla_y_r_V_xy_corr_real = jnp.einsum('jk,ik->ij', dual_y_corr_real +  + args.barrier * next_corr_yx_real, next_x_r)  #(Shape: (n,k))
+            next_nabla_y_i_V_xy_corr_real = jnp.einsum('jk,ik->ij', dual_y_corr_real +  + args.barrier * next_corr_yx_real, next_x_i)
+            next_nabla_y_r_V_xy_corr_imag = -jnp.einsum('jk,ik->ij', dual_y_corr_imag + args.barrier * next_corr_yx_imag, next_x_i)
+            next_nabla_y_i_V_xy_corr_imag = jnp.einsum('jk,ik->ij', dual_y_corr_imag + args.barrier * next_corr_yx_imag, next_x_r)
 
             # 5. Global
             V = V_x_norm + V_y_norm + V_xy_phase + V_xy_corr  # (Shape: (1,k))
@@ -1785,8 +1787,28 @@ def learn_eigenvectors(args):
 
             clf_loss = clf_loss_x_r + clf_loss_x_i + clf_loss_y_r + clf_loss_y_i
 
+            # Compute dual losses
+            dual_x_norm_loss = -(dual_x_norm * sg(norm_x_error)).sum()
+            dual_y_norm_loss = -(dual_y_norm * sg(norm_y_error)).sum()
+            dual_xy_phase_loss = -(dual_xy_phase * sg(phase_xy)).sum()
+            dual_x_orth_real_loss = -jnp.sum(dual_x_corr_real * sg(corr_xy_real_lower))
+            dual_x_orth_imag_loss = -jnp.sum(dual_x_corr_imag * sg(corr_xy_imag_lower))
+            dual_y_orth_real_loss = -jnp.sum(dual_y_corr_real * sg(corr_yx_real_lower))
+            dual_y_orth_imag_loss = -jnp.sum(dual_y_corr_imag * sg(corr_yx_imag_lower))
+            dual_loss = (
+                dual_x_norm_loss + dual_y_norm_loss + dual_xy_phase_loss
+                + dual_x_orth_real_loss + dual_x_orth_imag_loss
+                + dual_y_orth_real_loss + dual_y_orth_imag_loss
+            )
+
             # Total loss
-            total_loss = graph_loss + clf_loss + args.chirality_factor * chirality_loss + lambda_loss
+            total_loss = (
+                graph_loss 
+                + clf_loss 
+                + args.chirality_factor * chirality_loss 
+                + lambda_loss 
+                + dual_loss
+            )
 
             # Auxiliary metrics (average over eigenvector pairs for logging)
             aux = {
@@ -1794,6 +1816,8 @@ def learn_eigenvectors(args):
                 'graph_loss': graph_loss,
                 'clf_loss': clf_loss,
                 'chirality_loss': chirality_loss,
+                'lambda_loss': lambda_loss,
+                'dual_loss': dual_loss,
                 'graph_loss_x_real': graph_loss_x_real.sum(),
                 'graph_loss_x_imag': graph_loss_x_imag.sum(),
                 'clf_loss_x_real': clf_loss_x_r,
@@ -2117,10 +2141,15 @@ def learn_eigenvectors(args):
                 graph_loss = metrics_dict['graph_loss']
                 clf_loss = metrics_dict['clf_loss']
                 chirality_loss = metrics_dict['chirality_loss']
-                print(f"Step {gradient_step}: total_loss={total_loss.item():.4f}, "
-                        f"graph_loss={graph_loss:.4f}, clf_loss={clf_loss:.4f}, "
-                        f"chirality_loss={chirality_loss:.4f}, "
-                      f"left_sim={left_sim:.4f}, right_sim={right_sim:.4f}")
+                lambda_loss = metrics_dict['lambda_loss']
+                dual_loss = metrics_dict['dual_loss']
+                print(
+                    f"Step {gradient_step}: "
+                    f"total_l={total_loss.item():.4f}, graph_l={graph_loss:.4f}, "
+                    f"clf_l={clf_loss:.4f}, chirality_l={chirality_loss:.4f}, "
+                    f"lambda_l={lambda_loss:.4f}, dual_l={dual_loss:.4f}, "
+                    f"left_sim={left_sim:.4f}, right_sim={right_sim:.4f}"
+                )
         log_time = time.time() - log_start
 
         # Collect timing samples (last 1000 steps for statistics)
