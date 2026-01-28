@@ -1277,6 +1277,564 @@ def plot_all_duals_evolution(metrics_history: Dict, save_path: str, num_eigenvec
     print(f"All duals evolution plot saved to {save_path}")
 
 
+def plot_errors_per_component(metrics_history: Dict, save_path: str, num_eigenvectors: int = 11):
+    """
+    Plot biorthogonality errors per component in a detailed grid layout.
+
+    Creates a grid where each row is an eigenvector and columns show:
+    - Left real error, Left imag error, Right real error, Right imag error
+
+    Args:
+        metrics_history: List of metric dictionaries
+        save_path: Path to save the plot
+        num_eigenvectors: Number of eigenvectors to plot
+    """
+    steps = [m['gradient_step'] for m in metrics_history]
+
+    # Determine how many eigenvectors have error data
+    available_evs = 0
+    for i in range(num_eigenvectors):
+        if f'error_left_real_{i}' in metrics_history[0]:
+            available_evs = i + 1
+
+    num_plot = min(num_eigenvectors, available_evs)
+    if num_plot == 0:
+        print(f"No error data available for plotting")
+        return
+
+    fig, axes = plt.subplots(num_plot, 4, figsize=(20, 3 * num_plot))
+    fig.suptitle('Biorthogonality Errors Per Component (Diagonal Elements)', fontsize=16)
+
+    if num_plot == 1:
+        axes = axes.reshape(1, -1)
+
+    column_titles = ['Left Real Error', 'Left Imag Error', 'Right Real Error', 'Right Imag Error']
+    error_keys = ['error_left_real', 'error_left_imag', 'error_right_real', 'error_right_imag']
+    colors = ['blue', 'cyan', 'red', 'orange']
+
+    for i in range(num_plot):
+        for j, (key_prefix, color) in enumerate(zip(error_keys, colors)):
+            ax = axes[i, j]
+            key = f'{key_prefix}_{i}'
+
+            if key in metrics_history[0]:
+                values = [m[key] for m in metrics_history]
+                ax.plot(steps, values, color=color, linewidth=1.5)
+                ax.axhline(y=0, color='black', linestyle='--', alpha=0.3)
+
+                # Add final value annotation
+                final_val = values[-1]
+                ax.annotate(f'{final_val:.4f}', xy=(1.02, 0.5), xycoords='axes fraction',
+                           fontsize=8, va='center')
+            else:
+                ax.text(0.5, 0.5, 'N/A', ha='center', va='center', transform=ax.transAxes)
+
+            if i == 0:
+                ax.set_title(column_titles[j], fontsize=10)
+            if j == 0:
+                ax.set_ylabel(f'EV {i}', fontsize=10)
+            if i == num_plot - 1:
+                ax.set_xlabel('Step', fontsize=9)
+
+            ax.grid(True, alpha=0.3)
+            ax.tick_params(labelsize=8)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Errors per component plot saved to {save_path}")
+
+
+def plot_duals_per_component_detailed(metrics_history: Dict, ground_truth_eigenvalues: np.ndarray,
+                                       save_path: str, num_eigenvectors: int = 11):
+    """
+    Plot dual variable evolution per component with ground truth comparison.
+
+    Creates a grid where each row is an eigenvector showing:
+    - Real part: Combined dual, left dual, right dual vs ground truth
+    - Imaginary part: Combined dual, left dual, right dual vs ground truth
+
+    Args:
+        metrics_history: List of metric dictionaries
+        ground_truth_eigenvalues: Complex ground truth eigenvalues
+        save_path: Path to save the plot
+        num_eigenvectors: Number of eigenvectors to plot
+    """
+    steps = [m['gradient_step'] for m in metrics_history]
+
+    # Determine available eigenvectors
+    available_evs = 0
+    for i in range(num_eigenvectors):
+        if f'dual_real_{i}' in metrics_history[0]:
+            available_evs = i + 1
+
+    num_plot = min(num_eigenvectors, available_evs, len(ground_truth_eigenvalues))
+    if num_plot == 0:
+        print(f"No dual data available for plotting")
+        return
+
+    fig, axes = plt.subplots(num_plot, 2, figsize=(16, 3 * num_plot))
+    fig.suptitle('Dual Variables Per Component (Eigenvalue Estimates vs Ground Truth)', fontsize=16)
+
+    if num_plot == 1:
+        axes = axes.reshape(1, -1)
+
+    for i in range(num_plot):
+        gt_real = float(ground_truth_eigenvalues[i].real)
+        gt_imag = float(ground_truth_eigenvalues[i].imag)
+
+        # Left column: Real parts
+        ax_real = axes[i, 0]
+
+        if f'dual_real_{i}' in metrics_history[0]:
+            dual_real = [m[f'dual_real_{i}'] for m in metrics_history]
+            ax_real.plot(steps, dual_real, label='Combined', linewidth=2.0, color='green')
+
+        if f'dual_left_real_{i}' in metrics_history[0]:
+            dual_left_real = [-m[f'dual_left_real_{i}'] for m in metrics_history]
+            ax_real.plot(steps, dual_left_real, label='Left (negated)', linewidth=1.0,
+                        color='blue', alpha=0.6, linestyle='--')
+
+        if f'dual_right_real_{i}' in metrics_history[0]:
+            dual_right_real = [-m[f'dual_right_real_{i}'] for m in metrics_history]
+            ax_real.plot(steps, dual_right_real, label='Right (negated)', linewidth=1.0,
+                        color='red', alpha=0.6, linestyle='--')
+
+        ax_real.axhline(y=gt_real, color='black', linestyle='-', linewidth=2.5,
+                       alpha=0.4, label=f'GT: {gt_real:.4f}')
+
+        ax_real.set_ylabel(f'EV {i} Real', fontsize=10)
+        ax_real.legend(fontsize=7, loc='best')
+        ax_real.grid(True, alpha=0.3)
+        ax_real.tick_params(labelsize=8)
+
+        if i == 0:
+            ax_real.set_title('Real Part', fontsize=12)
+        if i == num_plot - 1:
+            ax_real.set_xlabel('Gradient Step', fontsize=10)
+
+        # Right column: Imaginary parts
+        ax_imag = axes[i, 1]
+
+        if f'dual_imag_{i}' in metrics_history[0]:
+            dual_imag = [m[f'dual_imag_{i}'] for m in metrics_history]
+            ax_imag.plot(steps, dual_imag, label='Combined', linewidth=2.0, color='green')
+
+        if f'dual_left_imag_{i}' in metrics_history[0]:
+            dual_left_imag = [-m[f'dual_left_imag_{i}'] for m in metrics_history]
+            ax_imag.plot(steps, dual_left_imag, label='Left (negated)', linewidth=1.0,
+                        color='blue', alpha=0.6, linestyle='--')
+
+        if f'dual_right_imag_{i}' in metrics_history[0]:
+            dual_right_imag = [-m[f'dual_right_imag_{i}'] for m in metrics_history]
+            ax_imag.plot(steps, dual_right_imag, label='Right (negated)', linewidth=1.0,
+                        color='red', alpha=0.6, linestyle='--')
+
+        ax_imag.axhline(y=gt_imag, color='black', linestyle='-', linewidth=2.5,
+                       alpha=0.4, label=f'GT: {gt_imag:.4f}')
+
+        ax_imag.set_ylabel(f'EV {i} Imag', fontsize=10)
+        ax_imag.legend(fontsize=7, loc='best')
+        ax_imag.grid(True, alpha=0.3)
+        ax_imag.tick_params(labelsize=8)
+
+        if i == 0:
+            ax_imag.set_title('Imaginary Part', fontsize=12)
+        if i == num_plot - 1:
+            ax_imag.set_xlabel('Gradient Step', fontsize=10)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Detailed duals per component plot saved to {save_path}")
+
+
+def plot_cosine_similarity_per_component(metrics_history: Dict, save_path: str,
+                                          num_eigenvectors: int = 11):
+    """
+    Plot cosine similarity evolution for each individual eigenvector component.
+
+    Creates a grid showing left and right cosine similarities for each eigenvector.
+
+    Args:
+        metrics_history: List of metric dictionaries
+        save_path: Path to save the plot
+        num_eigenvectors: Number of eigenvectors to plot
+    """
+    steps = [m['gradient_step'] for m in metrics_history]
+
+    # Determine available eigenvectors
+    available_evs = 0
+    for i in range(num_eigenvectors):
+        if f'left_cosine_sim_{i}' in metrics_history[0]:
+            available_evs = i + 1
+
+    num_plot = min(num_eigenvectors, available_evs)
+    if num_plot == 0:
+        print(f"No cosine similarity data available for per-component plotting")
+        return
+
+    # Create figure - one row per eigenvector, 2 columns (left/right)
+    fig, axes = plt.subplots(num_plot, 2, figsize=(14, 2.5 * num_plot))
+    fig.suptitle('Cosine Similarity Per Component (Left and Right Eigenvectors)', fontsize=16)
+
+    if num_plot == 1:
+        axes = axes.reshape(1, -1)
+
+    for i in range(num_plot):
+        # Left eigenvector similarity
+        ax_left = axes[i, 0]
+
+        left_key = f'left_cosine_sim_{i}'
+        left_imag_key = f'left_cosine_sim_imag_{i}'
+
+        if left_key in metrics_history[0]:
+            left_values = [m[left_key] for m in metrics_history]
+            ax_left.plot(steps, left_values, label='|Re(sim)|',
+                        linewidth=2.0, color='blue')
+
+            # Final value annotation
+            final_val = left_values[-1]
+            ax_left.annotate(f'{final_val:.4f}', xy=(steps[-1], final_val),
+                           fontsize=8, xytext=(5, 0), textcoords='offset points')
+
+        if left_imag_key in metrics_history[0]:
+            left_imag_values = [m[left_imag_key] for m in metrics_history]
+            ax_left.plot(steps, left_imag_values, label='Im(sim)',
+                        linewidth=1.0, color='cyan', alpha=0.7, linestyle='--')
+
+        ax_left.axhline(y=1.0, color='green', linestyle=':', alpha=0.5)
+        ax_left.set_ylim([-0.1, 1.1])
+        ax_left.set_ylabel(f'EV {i}', fontsize=10)
+        ax_left.legend(fontsize=7, loc='lower right')
+        ax_left.grid(True, alpha=0.3)
+        ax_left.tick_params(labelsize=8)
+
+        if i == 0:
+            ax_left.set_title('Left Eigenvector (ψ)', fontsize=12)
+        if i == num_plot - 1:
+            ax_left.set_xlabel('Gradient Step', fontsize=10)
+
+        # Right eigenvector similarity
+        ax_right = axes[i, 1]
+
+        right_key = f'right_cosine_sim_{i}'
+        right_imag_key = f'right_cosine_sim_imag_{i}'
+
+        if right_key in metrics_history[0]:
+            right_values = [m[right_key] for m in metrics_history]
+            ax_right.plot(steps, right_values, label='|Re(sim)|',
+                         linewidth=2.0, color='red')
+
+            # Final value annotation
+            final_val = right_values[-1]
+            ax_right.annotate(f'{final_val:.4f}', xy=(steps[-1], final_val),
+                            fontsize=8, xytext=(5, 0), textcoords='offset points')
+
+        if right_imag_key in metrics_history[0]:
+            right_imag_values = [m[right_imag_key] for m in metrics_history]
+            ax_right.plot(steps, right_imag_values, label='Im(sim)',
+                         linewidth=1.0, color='orange', alpha=0.7, linestyle='--')
+
+        ax_right.axhline(y=1.0, color='green', linestyle=':', alpha=0.5)
+        ax_right.set_ylim([-0.1, 1.1])
+        ax_right.legend(fontsize=7, loc='lower right')
+        ax_right.grid(True, alpha=0.3)
+        ax_right.tick_params(labelsize=8)
+
+        if i == 0:
+            ax_right.set_title('Right Eigenvector (φ)', fontsize=12)
+        if i == num_plot - 1:
+            ax_right.set_xlabel('Gradient Step', fontsize=10)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Cosine similarity per component plot saved to {save_path}")
+
+
+def plot_off_diagonal_errors(metrics_history: Dict, save_path: str, num_eigenvectors: int = 11):
+    """
+    Plot off-diagonal biorthogonality errors showing cross-eigenvector interactions.
+
+    Off-diagonal errors measure whether eigenvector i is orthogonal to eigenvector j.
+
+    Args:
+        metrics_history: List of metric dictionaries
+        save_path: Path to save the plot
+        num_eigenvectors: Number of eigenvectors to check
+    """
+    steps = [m['gradient_step'] for m in metrics_history]
+
+    # Collect all off-diagonal error pairs
+    error_pairs = []
+    for i in range(num_eigenvectors):
+        for j in range(min(2, i)):  # Based on tracking in update_encoder
+            if f'error_left_real_{i}_{j}' in metrics_history[0]:
+                error_pairs.append((i, j))
+
+    if len(error_pairs) == 0:
+        print(f"No off-diagonal error data available for plotting")
+        return
+
+    # Create 4-column plot: left real, left imag, right real, right imag
+    num_pairs = len(error_pairs)
+    fig, axes = plt.subplots(num_pairs, 4, figsize=(20, 2.5 * num_pairs))
+    fig.suptitle('Off-Diagonal Biorthogonality Errors (Cross-Eigenvector Interactions)', fontsize=16)
+
+    if num_pairs == 1:
+        axes = axes.reshape(1, -1)
+
+    column_titles = ['Left Real', 'Left Imag', 'Right Real', 'Right Imag']
+    error_prefixes = ['error_left_real', 'error_left_imag', 'error_right_real', 'error_right_imag']
+    colors = ['blue', 'cyan', 'red', 'orange']
+
+    for row, (i, j) in enumerate(error_pairs):
+        for col, (prefix, color) in enumerate(zip(error_prefixes, colors)):
+            ax = axes[row, col]
+            key = f'{prefix}_{i}_{j}'
+
+            if key in metrics_history[0]:
+                values = [m[key] for m in metrics_history]
+                ax.plot(steps, values, color=color, linewidth=1.5)
+                ax.axhline(y=0, color='black', linestyle='--', alpha=0.3)
+
+                # Final value
+                final_val = values[-1]
+                ax.annotate(f'{final_val:.4f}', xy=(1.02, 0.5), xycoords='axes fraction',
+                           fontsize=8, va='center')
+
+            if row == 0:
+                ax.set_title(column_titles[col], fontsize=10)
+            if col == 0:
+                ax.set_ylabel(f'({i},{j})', fontsize=10)
+            if row == num_pairs - 1:
+                ax.set_xlabel('Step', fontsize=9)
+
+            ax.grid(True, alpha=0.3)
+            ax.tick_params(labelsize=8)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Off-diagonal errors plot saved to {save_path}")
+
+
+def plot_norm_constraint_errors(metrics_history: Dict, save_path: str, num_eigenvectors: int = 11):
+    """
+    Plot norm constraint errors for right eigenvectors.
+
+    Norm constraint errors measure ||φ_i||² - 1, tracking whether eigenvectors
+    are properly normalized.
+
+    Args:
+        metrics_history: List of metric dictionaries
+        save_path: Path to save the plot
+        num_eigenvectors: Number of eigenvectors to plot
+    """
+    steps = [m['gradient_step'] for m in metrics_history]
+
+    # Check available norm errors
+    available_evs = 0
+    for i in range(num_eigenvectors):
+        if f'error_norm_right_{i}' in metrics_history[0]:
+            available_evs = i + 1
+
+    if available_evs == 0:
+        print(f"No norm constraint error data available for plotting")
+        return
+
+    # Create figure with all norm errors in subplots
+    ncols = min(3, available_evs)
+    nrows = (available_evs + ncols - 1) // ncols
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3 * nrows))
+    fig.suptitle('Norm Constraint Errors (||φ_i||² - 1)', fontsize=16)
+
+    if nrows == 1 and ncols == 1:
+        axes = np.array([[axes]])
+    elif nrows == 1:
+        axes = axes.reshape(1, -1)
+    elif ncols == 1:
+        axes = axes.reshape(-1, 1)
+
+    colors = plt.cm.viridis(np.linspace(0, 1, available_evs))
+
+    for i in range(available_evs):
+        row = i // ncols
+        col = i % ncols
+        ax = axes[row, col]
+
+        key = f'error_norm_right_{i}'
+        if key in metrics_history[0]:
+            values = [m[key] for m in metrics_history]
+            ax.plot(steps, values, color=colors[i], linewidth=2.0)
+            ax.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+
+            # Final value
+            final_val = values[-1]
+            ax.set_title(f'EV {i} (final: {final_val:.4f})', fontsize=10)
+
+        ax.set_xlabel('Step', fontsize=9)
+        ax.set_ylabel('Norm Error', fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(labelsize=8)
+
+    # Hide unused subplots
+    for i in range(available_evs, nrows * ncols):
+        row = i // ncols
+        col = i % ncols
+        axes[row, col].set_visible(False)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Norm constraint errors plot saved to {save_path}")
+
+
+def plot_training_summary(metrics_history: Dict, ground_truth_eigenvalues: np.ndarray,
+                          save_path: str, num_eigenvectors: int = 11):
+    """
+    Create a comprehensive training summary dashboard with key metrics.
+
+    This provides a quick overview of training progress across all major metrics.
+
+    Args:
+        metrics_history: List of metric dictionaries
+        ground_truth_eigenvalues: Complex ground truth eigenvalues
+        save_path: Path to save the plot
+        num_eigenvectors: Number of eigenvectors being trained
+    """
+    steps = [m['gradient_step'] for m in metrics_history]
+
+    fig = plt.figure(figsize=(20, 16))
+    gs = fig.add_gridspec(4, 4, hspace=0.3, wspace=0.3)
+    fig.suptitle('Training Summary Dashboard', fontsize=18, fontweight='bold')
+
+    # Row 1: Main losses (spanning 2 columns each)
+    ax_allo = fig.add_subplot(gs[0, 0:2])
+    ax_graph = fig.add_subplot(gs[0, 2:4])
+
+    if 'allo' in metrics_history[0]:
+        ax_allo.plot(steps, [m['allo'] for m in metrics_history], 'b-', linewidth=2)
+        ax_allo.set_yscale('log')
+    ax_allo.set_title('Total ALLO Loss', fontsize=12)
+    ax_allo.set_xlabel('Step')
+    ax_allo.grid(True, alpha=0.3)
+
+    if 'graph_loss' in metrics_history[0]:
+        ax_graph.plot(steps, [m['graph_loss'] for m in metrics_history], 'g-', linewidth=2)
+        ax_graph.set_yscale('log')
+    ax_graph.set_title('Graph Loss', fontsize=12)
+    ax_graph.set_xlabel('Step')
+    ax_graph.grid(True, alpha=0.3)
+
+    # Row 2: Errors and duals
+    ax_error = fig.add_subplot(gs[1, 0:2])
+    ax_dual = fig.add_subplot(gs[1, 2:4])
+
+    if 'total_error' in metrics_history[0]:
+        ax_error.plot(steps, [m['total_error'] for m in metrics_history],
+                     label='Total Error', linewidth=2)
+    if 'total_norm_error' in metrics_history[0]:
+        ax_error.plot(steps, [m['total_norm_error'] for m in metrics_history],
+                     label='Norm Error', linewidth=2, alpha=0.7)
+    ax_error.set_title('Biorthogonality Errors', fontsize=12)
+    ax_error.set_xlabel('Step')
+    ax_error.legend(fontsize=9)
+    ax_error.grid(True, alpha=0.3)
+    ax_error.set_yscale('log')
+
+    # Dual variable convergence (error magnitude)
+    num_plot = min(num_eigenvectors, len(ground_truth_eigenvalues))
+    colors = plt.cm.tab10(np.linspace(0, 1, num_plot))
+
+    for i in range(num_plot):
+        if f'dual_real_{i}' in metrics_history[0] and f'dual_imag_{i}' in metrics_history[0]:
+            dual_real = np.array([m[f'dual_real_{i}'] for m in metrics_history])
+            dual_imag = np.array([m[f'dual_imag_{i}'] for m in metrics_history])
+            gt_real = float(ground_truth_eigenvalues[i].real)
+            gt_imag = float(ground_truth_eigenvalues[i].imag)
+
+            # Error magnitude with 0.5 scaling factor
+            error = np.sqrt((0.5 * dual_real - gt_real)**2 + (0.5 * dual_imag - gt_imag)**2)
+            ax_dual.plot(steps, error, color=colors[i], linewidth=1.5, label=f'λ_{i}')
+
+    ax_dual.set_title('Eigenvalue Estimation Error', fontsize=12)
+    ax_dual.set_xlabel('Step')
+    ax_dual.set_yscale('log')
+    ax_dual.legend(fontsize=7, ncol=2, loc='upper right')
+    ax_dual.grid(True, alpha=0.3)
+
+    # Row 3: Cosine similarities
+    ax_cos_left = fig.add_subplot(gs[2, 0:2])
+    ax_cos_right = fig.add_subplot(gs[2, 2:4])
+
+    # Plot per-component cosine similarities
+    for i in range(min(num_eigenvectors, 11)):
+        left_key = f'left_cosine_sim_{i}'
+        right_key = f'right_cosine_sim_{i}'
+
+        if left_key in metrics_history[0]:
+            values = [m[left_key] for m in metrics_history]
+            ax_cos_left.plot(steps, values, color=colors[i], linewidth=1.5,
+                           label=f'ψ_{i}', alpha=0.8)
+
+        if right_key in metrics_history[0]:
+            values = [m[right_key] for m in metrics_history]
+            ax_cos_right.plot(steps, values, color=colors[i], linewidth=1.5,
+                            label=f'φ_{i}', alpha=0.8)
+
+    # Add average line
+    if 'left_cosine_sim_avg' in metrics_history[0]:
+        avg_vals = [m['left_cosine_sim_avg'] for m in metrics_history]
+        ax_cos_left.plot(steps, avg_vals, 'k-', linewidth=3, label='Average', alpha=0.7)
+
+    if 'right_cosine_sim_avg' in metrics_history[0]:
+        avg_vals = [m['right_cosine_sim_avg'] for m in metrics_history]
+        ax_cos_right.plot(steps, avg_vals, 'k-', linewidth=3, label='Average', alpha=0.7)
+
+    ax_cos_left.set_title('Left Eigenvector Cosine Similarity', fontsize=12)
+    ax_cos_left.set_xlabel('Step')
+    ax_cos_left.set_ylim([-0.05, 1.05])
+    ax_cos_left.axhline(y=1.0, color='green', linestyle=':', alpha=0.5)
+    ax_cos_left.legend(fontsize=7, ncol=4, loc='lower right')
+    ax_cos_left.grid(True, alpha=0.3)
+
+    ax_cos_right.set_title('Right Eigenvector Cosine Similarity', fontsize=12)
+    ax_cos_right.set_xlabel('Step')
+    ax_cos_right.set_ylim([-0.05, 1.05])
+    ax_cos_right.axhline(y=1.0, color='green', linestyle=':', alpha=0.5)
+    ax_cos_right.legend(fontsize=7, ncol=4, loc='lower right')
+    ax_cos_right.grid(True, alpha=0.3)
+
+    # Row 4: Component-wise errors (first 4 eigenvectors only for space)
+    for idx, ev_idx in enumerate(range(min(4, num_eigenvectors))):
+        ax = fig.add_subplot(gs[3, idx])
+
+        for key_prefix, color, label in [
+            ('error_left_real', 'blue', 'L-Re'),
+            ('error_left_imag', 'cyan', 'L-Im'),
+            ('error_right_real', 'red', 'R-Re'),
+            ('error_right_imag', 'orange', 'R-Im'),
+        ]:
+            key = f'{key_prefix}_{ev_idx}'
+            if key in metrics_history[0]:
+                values = [m[key] for m in metrics_history]
+                ax.plot(steps, values, color=color, linewidth=1.2, label=label, alpha=0.8)
+
+        ax.axhline(y=0, color='black', linestyle='--', alpha=0.3)
+        ax.set_title(f'EV {ev_idx} Errors', fontsize=10)
+        ax.set_xlabel('Step', fontsize=9)
+        ax.legend(fontsize=6, loc='best')
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(labelsize=8)
+
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Training summary dashboard saved to {save_path}")
+
+
 def state_idx_to_xy(state_idx: int, width: int) -> tuple:
     """Convert state index to (x,y) coordinates."""
     y = state_idx // width
@@ -2420,6 +2978,52 @@ def learn_eigenvectors(args):
                     metrics_history,
                     str(plots_dir / "all_duals_evolution.png"),
                     num_eigenvectors=min(6, args.num_eigenvectors)
+                )
+
+                # === New detailed per-component visualizations ===
+
+                # Plot errors per component (all eigenvectors, 4 error types each)
+                plot_errors_per_component(
+                    metrics_history,
+                    str(plots_dir / "errors_per_component.png"),
+                    num_eigenvectors=args.num_eigenvectors
+                )
+
+                # Plot detailed dual variables per component with GT comparison
+                plot_duals_per_component_detailed(
+                    metrics_history,
+                    gt_eigenvalues,
+                    str(plots_dir / "duals_per_component_detailed.png"),
+                    num_eigenvectors=args.num_eigenvectors
+                )
+
+                # Plot cosine similarity per component (individual eigenvector tracking)
+                plot_cosine_similarity_per_component(
+                    metrics_history,
+                    str(plots_dir / "cosine_similarity_per_component.png"),
+                    num_eigenvectors=args.num_eigenvectors
+                )
+
+                # Plot off-diagonal biorthogonality errors
+                plot_off_diagonal_errors(
+                    metrics_history,
+                    str(plots_dir / "off_diagonal_errors.png"),
+                    num_eigenvectors=args.num_eigenvectors
+                )
+
+                # Plot norm constraint errors
+                plot_norm_constraint_errors(
+                    metrics_history,
+                    str(plots_dir / "norm_constraint_errors.png"),
+                    num_eigenvectors=args.num_eigenvectors
+                )
+
+                # Plot comprehensive training summary dashboard
+                plot_training_summary(
+                    metrics_history,
+                    gt_eigenvalues,
+                    str(plots_dir / "training_summary.png"),
+                    num_eigenvectors=args.num_eigenvectors
                 )
             else:
                 # Just log progress
