@@ -1775,6 +1775,18 @@ def learn_eigenvectors(args):
         # Compute loss and gradients
         (total_loss, aux), grads = jax.value_and_grad(
             encoder_loss, has_aux=True)(encoder_state.params)
+        
+        # Get grad norm
+        grads_flat, _ = jax.tree_util.tree_flatten(grads)
+        grads_vector = jnp.concatenate([jnp.ravel(g) for g in grads_flat])
+        grad_norm = jnp.linalg.norm(grads_vector)
+        aux['grad_norm'] = grad_norm
+
+        # Clip gradients if necessary
+        max_norm = 1.0
+        grads = jax.tree_util.tree_map(
+            lambda g: g * (max_norm / jnp.maximum(grad_norm, max_norm)), grads
+        )
 
         # Apply optimizer updates
         updates, new_opt_state = encoder_state.tx.update(
@@ -1786,13 +1798,7 @@ def learn_eigenvectors(args):
             params=new_params,
             opt_state=new_opt_state,
             step=encoder_state.step + 1
-        )
-
-        # Get grad norm
-        grads_flat, _ = jax.tree_util.tree_flatten(grads)
-        grads_vector = jnp.concatenate([jnp.ravel(g) for g in grads_flat])
-        grad_norm = jnp.linalg.norm(grads_vector)
-        aux['grad_norm'] = grad_norm
+        )        
 
         return new_encoder_state, total_loss, aux
 
