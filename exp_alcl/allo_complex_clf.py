@@ -647,6 +647,43 @@ def compute_complex_cosine_similarities_with_normalization(
     return result
 
 
+def compute_hitting_times_from_eigenvectors(
+    left_real: jnp.ndarray,
+    left_imag: jnp.ndarray,
+    right_real: jnp.ndarray,
+    right_imag: jnp.ndarray,
+    eigenvalues_real: jnp.ndarray,
+    eigenvalues_imag: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Compute 
+
+    Args:
+        right_real: Learned right eigenvector real parts [num_states, num_eigenvectors]
+        right_imag: Learned right eigenvector imaginary parts [num_states, num_eigenvectors]
+        left_real: Ground truth left eigenvector real parts [num_states, num_eigenvectors]
+        left_imag: Ground truth left eigenvector imaginary parts [num_states, num_eigenvectors]
+        eigenvalues_real: Real parts of eigenvalues corresponding to eigenvectors [num_eigenvectors]
+        eigenvalues_imag: Imaginary parts of eigenvalues corresponding to eigenvectors [num_eigenvectors]
+
+    Returns:
+        Hitting times matrix of shape [num_states, num_states]
+    """
+    left = left_real + 1j * left_imag
+    right = right_real + 1j * right_imag
+
+    differences = right[:, jnp.newaxis, 1:] - right[jnp.newaxis, :, 1:]  # [num_states, num_states, num_eigenvectors]
+    weighted_left = left[:, 1:] / left[:, 0:1]  # [num_states, num_eigenvectors-1]
+    weighted_differences = weighted_left[:, jnp.newaxis, :] * differences  # [num_states, num_states, num_eigenvectors-1]
+    eigenvalues = eigenvalues_real + 1j * eigenvalues_imag
+    eigenvector_weights = 1.0 / (1.0 - eigenvalues[1:]) # [num_eigenvectors-1]
+    hitting_times = jnp.einsum(
+        'ijk,j->ik', jnp.real(weighted_differences), eigenvector_weights,
+    )  # [num_states, num_states]
+
+    return hitting_times
+
+
 def plot_learning_curves_one(metrics_history: list, save_path: str):
     """
     Plot comprehensive learning curves for single-eigenvector training.
@@ -2052,6 +2089,24 @@ def learn_eigenvectors(args):
                 gt_right_real=gt_right_real,
                 gt_right_imag=gt_right_imag,
                 sampling_probs=sampling_probs * is_ratio.squeeze(-1),
+            )
+
+            # Compute hitting times for learned eigenvectors and ground truth
+            hitting_times = compute_hitting_times_from_eigenvectors(
+                left_real=features_dict['left_real'],
+                left_imag=features_dict['left_imag'],
+                right_real=features_dict['right_real'],
+                right_imag=features_dict['right_imag'],
+                eigenvalues_real=encoder_state.params['lambda_real'],
+                eigenvalues_imag=encoder_state.params['lambda_imag'],
+            )
+            gt_hitting_times = compute_hitting_times_from_eigenvectors(
+                left_real=gt_left_real,
+                left_imag=gt_left_imag,
+                right_real=gt_right_real,
+                right_imag=gt_right_imag,
+                eigenvalues_real=gt_eigenvalues_real,
+                eigenvalues_imag=gt_eigenvalues_imag,
             )
 
             # Store metrics
