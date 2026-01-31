@@ -37,6 +37,9 @@ from exp_complex_basis.eigenvector_visualization import (
     visualize_multiple_eigenvectors,
     visualize_eigenvector_on_grid,
 )
+from exp_complex_basis.hitting_time_visualization import (
+    visualize_source_vs_target_hitting_times,
+)
 from exp_complex_basis.eigendecomposition import compute_eigendecomposition
 from exp_alcl.episodic_replay_buffer import EpisodicReplayBuffer
 
@@ -2318,6 +2321,63 @@ def learn_eigenvectors(args):
         door_markers=door_markers if door_markers else None,
     )
 
+    # 5. Hitting times visualization (Ground Truth vs Learned)
+    print("Generating hitting times visualizations...")
+
+    # Compute final hitting times from learned eigenvectors
+    final_hitting_times = compute_hitting_times_from_eigenvectors(
+        left_real=final_features_dict['left_real'],
+        left_imag=final_features_dict['left_imag'],
+        right_real=final_features_dict['right_real'],
+        right_imag=final_features_dict['right_imag'],
+        eigenvalues_real=encoder_state.params['lambda_real'],
+        eigenvalues_imag=encoder_state.params['lambda_imag'],
+    )
+
+    # Compute ground truth hitting times
+    final_gt_hitting_times = compute_hitting_times_from_eigenvectors(
+        left_real=gt_left_real,
+        left_imag=gt_left_imag,
+        right_real=gt_right_real,
+        right_imag=gt_right_imag,
+        eigenvalues_real=gt_eigenvalues_real,
+        eigenvalues_imag=gt_eigenvalues_imag,
+    )
+
+    # Select states to visualize (evenly spaced across state space)
+    num_states_to_viz = min(6, num_states)
+    viz_state_indices = np.linspace(0, num_states - 1, num_states_to_viz, dtype=int).tolist()
+
+    # Visualize learned hitting times
+    visualize_source_vs_target_hitting_times(
+        state_indices=viz_state_indices,
+        hitting_time_matrix=np.array(final_hitting_times),
+        canonical_states=np.array(canonical_states),
+        grid_width=env.width,
+        grid_height=env.height,
+        portals=door_markers if door_markers else None,
+        ncols=min(6, num_states_to_viz),
+        save_path=str(plots_dir / "hitting_times_learned.png"),
+        log_scale=True,
+        shared_colorbar=True,
+    )
+    plt.close()
+
+    # Visualize ground truth hitting times
+    visualize_source_vs_target_hitting_times(
+        state_indices=viz_state_indices,
+        hitting_time_matrix=np.array(final_gt_hitting_times),
+        canonical_states=np.array(canonical_states),
+        grid_width=env.width,
+        grid_height=env.height,
+        portals=door_markers if door_markers else None,
+        ncols=min(6, num_states_to_viz),
+        save_path=str(plots_dir / "hitting_times_ground_truth.png"),
+        log_scale=True,
+        shared_colorbar=True,
+    )
+    plt.close()
+
     print("\n" + "="*60)
     print("Visualization complete!")
     print("="*60)
@@ -2335,6 +2395,8 @@ def learn_eigenvectors(args):
         print(f"  - comparison_right_imag_i.png: Right eigenvector i (imag) comparison (i=0..{args.num_eigenvector_pairs-1})")
         print(f"  - comparison_left_real_i.png: Left eigenvector i (real) comparison (i=0..{args.num_eigenvector_pairs-1})")
         print(f"  - comparison_left_imag_i.png: Left eigenvector i (imag) comparison (i=0..{args.num_eigenvector_pairs-1})")
+    print("  - hitting_times_learned.png: Hitting times from learned eigenvectors")
+    print("  - hitting_times_ground_truth.png: Hitting times from ground truth eigenvectors")
 
     print(f"\nAll results saved to: {results_dir}")
 
