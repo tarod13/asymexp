@@ -36,9 +36,8 @@ from src.utils.checkpoint import (
     save_checkpoint, load_checkpoint,
 )
 from src.utils.metrics import (
-    compute_complex_cosine_similarities_with_conjugate_skipping,
+    compute_complex_cosine_similarities_with_normalization,
     compute_hitting_times_from_eigenvectors,
-    normalize_eigenvectors_for_comparison,
 )
 from exp_complex_basis.eigenvector_visualization import (
     visualize_multiple_eigenvectors,
@@ -893,42 +892,20 @@ def learn_eigenvectors(args):
             # 1. Arbitrary complex scaling of eigenvectors
             # 2. Adjoint vs. true left eigenvector relationship (via sampling distribution)
             # 3. Conjugate pairs being skipped during learning (ground truth has more eigenvectors)
-
-            # Normalize learned eigenvectors
-            learned_normalized = normalize_eigenvectors_for_comparison(
-                left_real=features_dict['left_real'],
-                left_imag=features_dict['left_imag'],
-                right_real=features_dict['right_real'],
-                right_imag=features_dict['right_imag'],
+            cosine_sims = compute_complex_cosine_similarities_with_normalization(
+                learned_left_real=features_dict['left_real'],
+                learned_left_imag=features_dict['left_imag'],
+                learned_right_real=features_dict['right_real'],
+                learned_right_imag=features_dict['right_imag'],
+                gt_left_real=gt_left_real,
+                gt_left_imag=gt_left_imag,
+                gt_right_real=gt_right_real,
+                gt_right_imag=gt_right_imag,
+                gt_eigenvalues_real=gt_eigenvalues_real,
+                gt_eigenvalues_imag=gt_eigenvalues_imag,
                 sampling_probs=sampling_probs * is_ratio.squeeze(-1),
+                skip_conjugates=True,
             )
-
-            # Compute cosine similarities with conjugate skipping for left eigenvectors
-            left_sims = compute_complex_cosine_similarities_with_conjugate_skipping(
-                learned_real=learned_normalized['left_real'],
-                learned_imag=learned_normalized['left_imag'],
-                gt_real=gt_left_real,
-                gt_imag=gt_left_imag,
-                eigenvalues_real=gt_eigenvalues_real,
-                eigenvalues_imag=gt_eigenvalues_imag,
-                prefix="left_"
-            )
-
-            # Compute cosine similarities with conjugate skipping for right eigenvectors
-            right_sims = compute_complex_cosine_similarities_with_conjugate_skipping(
-                learned_real=learned_normalized['right_real'],
-                learned_imag=learned_normalized['right_imag'],
-                gt_real=gt_right_real,
-                gt_imag=gt_right_imag,
-                eigenvalues_real=gt_eigenvalues_real,
-                eigenvalues_imag=gt_eigenvalues_imag,
-                prefix="right_"
-            )
-
-            # Combine results
-            cosine_sims = {}
-            cosine_sims.update(left_sims)
-            cosine_sims.update(right_sims)
 
             # Compute hitting times for learned eigenvectors and ground truth
             hitting_times = compute_hitting_times_from_eigenvectors(

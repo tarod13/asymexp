@@ -318,6 +318,7 @@ def compute_complex_cosine_similarities_with_normalization(
     gt_eigenvalues_real: jnp.ndarray,
     gt_eigenvalues_imag: jnp.ndarray,
     sampling_probs: jnp.ndarray,
+    skip_conjugates: bool = False,
 ) -> Dict[str, float]:
     """
     Compute cosine similarities with proper normalization for adjoint eigenvectors.
@@ -344,13 +345,20 @@ def compute_complex_cosine_similarities_with_normalization(
     the complex conjugate of learned psi when computing cosine similarities.
 
     Args:
-        learned_right_real: Learned right eigenvector real parts [num_states, num_eigenvectors]
-        learned_right_imag: Learned right eigenvector imaginary parts [num_states, num_eigenvectors]
-        gt_left_real: Ground truth left eigenvector real parts [num_states, num_eigenvectors]
-        gt_left_imag: Ground truth left eigenvector imaginary parts [num_states, num_eigenvectors]
-        gt_right_real: Ground truth right eigenvector real parts [num_states, num_eigenvectors]
-        gt_right_imag: Ground truth right eigenvector imaginary parts [num_states, num_eigenvectors]
+        learned_left_real: Learned left eigenvector real parts [num_states, num_learned]
+        learned_left_imag: Learned left eigenvector imaginary parts [num_states, num_learned]
+        learned_right_real: Learned right eigenvector real parts [num_states, num_learned]
+        learned_right_imag: Learned right eigenvector imaginary parts [num_states, num_learned]
+        gt_left_real: Ground truth left eigenvector real parts [num_states, num_gt]
+        gt_left_imag: Ground truth left eigenvector imaginary parts [num_states, num_gt]
+        gt_right_real: Ground truth right eigenvector real parts [num_states, num_gt]
+        gt_right_imag: Ground truth right eigenvector imaginary parts [num_states, num_gt]
+        gt_eigenvalues_real: Real parts of ground truth eigenvalues [num_gt]
+        gt_eigenvalues_imag: Imaginary parts of ground truth eigenvalues [num_gt]
         sampling_probs: State distribution probabilities [num_states]
+        skip_conjugates: If True, use conjugate skipping when matching learned to ground truth.
+            This is needed when conjugate eigenvectors are not directly learned but skipped.
+            Ground truth should have more eigenvectors than learned (e.g., 2x) to accommodate.
 
     Returns:
         Dictionary containing cosine similarities for left and right eigenvectors
@@ -364,18 +372,24 @@ def compute_complex_cosine_similarities_with_normalization(
         sampling_probs=sampling_probs
     )
 
+    # Select the appropriate cosine similarity function
+    if skip_conjugates:
+        cosine_sim_fn = compute_complex_cosine_similarities_with_conjugate_skipping
+    else:
+        cosine_sim_fn = compute_complex_cosine_similarities
+
     # For left eigenvectors
-    left_sims = compute_complex_cosine_similarities(
-        learned_normalized['left_real'], learned_normalized['left_imag'],  # Conjugate
-        gt_left_real, gt_left_imag,  # Ground truth (already normalized)
+    left_sims = cosine_sim_fn(
+        learned_normalized['left_real'], learned_normalized['left_imag'],
+        gt_left_real, gt_left_imag,
         gt_eigenvalues_real, gt_eigenvalues_imag,
         prefix="left_"
     )
 
     # For right eigenvectors
-    right_sims = compute_complex_cosine_similarities(
+    right_sims = cosine_sim_fn(
         learned_normalized['right_real'], learned_normalized['right_imag'],
-        gt_right_real, gt_right_imag,  # Ground truth (already normalized),
+        gt_right_real, gt_right_imag,
         gt_eigenvalues_real, gt_eigenvalues_imag,
         prefix="right_"
     )
