@@ -484,15 +484,54 @@ def learn_eigenvectors(args):
             next_nabla_y_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', next_corr_yx_imag, next_x_i)
             next_nabla_y_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', next_corr_yx_imag, next_x_r)
 
-            # 5. Global
-            V = V_x_norm + V_y_norm + V_xy_phase + V_xy_corr  # (Shape: (1,k))
-            nabla_x_r_V = nabla_x_r_V_x_norm + nabla_x_r_V_y_norm + nabla_x_r_V_xy_phase + nabla_x_r_V_xy_corr_real + nabla_x_r_V_xy_corr_imag  # Shape: (n,k)
-            nabla_x_i_V = nabla_x_i_V_x_norm + nabla_x_i_V_y_norm + nabla_x_i_V_xy_phase + nabla_x_i_V_xy_corr_real + nabla_x_i_V_xy_corr_imag
-            nabla_y_r_V = nabla_y_r_V_x_norm + nabla_y_r_V_y_norm + nabla_y_r_V_xy_phase + nabla_y_r_V_xy_corr_real + nabla_y_r_V_xy_corr_imag
-            nabla_y_i_V = nabla_y_i_V_x_norm + nabla_y_i_V_y_norm + nabla_y_i_V_xy_phase + nabla_y_i_V_xy_corr_real + nabla_y_i_V_xy_corr_imag
+            # 5. For crossed terms: <conj(y_j),x_k> should be 0
+            corr_xy_real_conj = cross_xryr - cross_xiyi  # (Shape: (k,k)) (First index: x, second index: y)
+            corr_xy_imag_conj = cross_xryi + cross_xiryr
 
-            next_nabla_y_r_V = next_nabla_y_r_V_x_norm + next_nabla_y_r_V_y_norm + next_nabla_y_r_V_xy_phase + next_nabla_y_r_V_xy_corr_real + next_nabla_y_r_V_xy_corr_imag
-            next_nabla_y_i_V = next_nabla_y_i_V_x_norm + next_nabla_y_i_V_y_norm + next_nabla_y_i_V_xy_phase + next_nabla_y_i_V_xy_corr_real + next_nabla_y_i_V_xy_corr_imag
+            corr_xy_real_lower_conj = jnp.tril(corr_xy_real_conj)
+            corr_xy_imag_lower_conj = jnp.tril(corr_xy_imag_conj)
+
+            corr_yx_real_lower_conj = jnp.tril(corr_xy_real_lower_conj.T)
+            corr_yx_imag_lower_conj = jnp.tril(corr_xy_imag_lower_conj.T)
+
+            V_xy_corr_real_conj = jnp.sum(corr_xy_real_lower_conj ** 2, -1).reshape(1,-1) / 2  #(Shape: (1,k))
+            V_xy_corr_imag_conj = jnp.sum(corr_xy_imag_lower_conj ** 2, -1).reshape(1,-1) / 2
+            V_yx_corr_real_conj = jnp.sum(corr_yx_real_lower_conj ** 2, -1).reshape(1,-1) / 2
+            V_yx_corr_imag_conj = jnp.sum(corr_yx_imag_lower_conj ** 2, -1).reshape(1,-1) / 2
+            V_xy_corr_conj = V_xy_corr_real_conj + V_xy_corr_imag_conj + V_yx_corr_real_conj + V_yx_corr_imag_conj
+
+            nabla_x_r_V_xy_corr_real_conj = 2 * jnp.einsum('jk,ik->ij', corr_xy_real_lower_conj, y_r)  #(Shape: (n,k))
+            nabla_x_i_V_xy_corr_real_conj = -2 * jnp.einsum('jk,ik->ij', corr_xy_real_lower_conj, y_i)            
+
+            nabla_x_r_V_xy_corr_imag_conj = 2 * jnp.einsum('jk,ik->ij', corr_xy_imag_lower_conj, y_i)
+            nabla_x_i_V_xy_corr_imag_conj = 2 * jnp.einsum('jk,ik->ij', corr_xy_imag_lower_conj, y_r)
+            
+            nabla_y_r_V_xy_corr_real_conj = 2 * jnp.einsum('jk,ik->ij', corr_yx_real_lower_conj, x_r)
+            nabla_y_i_V_xy_corr_real_conj = -2 * jnp.einsum('jk,ik->ij', corr_yx_real_lower_conj, x_i)
+            
+            nabla_y_r_V_xy_corr_imag_conj = 2 * jnp.einsum('jk,ik->ij', corr_yx_imag_lower_conj, x_i)
+            nabla_y_i_V_xy_corr_imag_conj = 2 * jnp.einsum('jk,ik->ij', corr_yx_imag_lower_conj, x_r)
+
+            next_corr_xy_real_conj = multi_ip(next_x_r, next_y_r) - multi_ip(next_x_i, next_y_i)  # (Shape: (k,k)) (First index: x, second index: y)
+            next_corr_xy_imag_conj = multi_ip(next_x_r, next_y_i) + multi_ip(next_x_i, next_y_r)
+
+            next_corr_yx_real_conj = jnp.tril(next_corr_xy_real_conj.T)
+            next_corr_yx_imag_conj = jnp.tril(next_corr_xy_imag_conj.T)
+
+            next_nabla_y_r_V_xy_corr_real_conj = 2 * jnp.einsum('jk,ik->ij', next_corr_yx_real_conj, next_x_r)  #(Shape: (n,k))
+            next_nabla_y_i_V_xy_corr_real_conj = -2 * jnp.einsum('jk,ik->ij', next_corr_yx_real_conj, next_x_i)
+            next_nabla_y_r_V_xy_corr_imag_conj = 2 * jnp.einsum('jk,ik->ij', next_corr_yx_imag_conj, next_x_i)
+            next_nabla_y_i_V_xy_corr_imag_conj = 2 * jnp.einsum('jk,ik->ij', next_corr_yx_imag_conj, next_x_r)
+
+            # 6. Global
+            V = V_x_norm + V_y_norm + V_xy_phase + V_xy_corr + V_xy_corr_conj  # (Shape: (1,k))
+            nabla_x_r_V = nabla_x_r_V_x_norm + nabla_x_r_V_y_norm + nabla_x_r_V_xy_phase + nabla_x_r_V_xy_corr_real + nabla_x_r_V_xy_corr_imag + nabla_x_r_V_xy_corr_real_conj + nabla_x_r_V_xy_corr_imag_conj  # Shape: (n,k)
+            nabla_x_i_V = nabla_x_i_V_x_norm + nabla_x_i_V_y_norm + nabla_x_i_V_xy_phase + nabla_x_i_V_xy_corr_real + nabla_x_i_V_xy_corr_imag + nabla_x_i_V_xy_corr_real_conj + nabla_x_i_V_xy_corr_imag_conj
+            nabla_y_r_V = nabla_y_r_V_x_norm + nabla_y_r_V_y_norm + nabla_y_r_V_xy_phase + nabla_y_r_V_xy_corr_real + nabla_y_r_V_xy_corr_imag + nabla_y_r_V_xy_corr_real_conj + nabla_y_r_V_xy_corr_imag_conj
+            nabla_y_i_V = nabla_y_i_V_x_norm + nabla_y_i_V_y_norm + nabla_y_i_V_xy_phase + nabla_y_i_V_xy_corr_real + nabla_y_i_V_xy_corr_imag + nabla_y_i_V_xy_corr_real_conj + nabla_y_i_V_xy_corr_imag_conj
+
+            next_nabla_y_r_V = next_nabla_y_r_V_x_norm + next_nabla_y_r_V_y_norm + next_nabla_y_r_V_xy_phase + next_nabla_y_r_V_xy_corr_real + next_nabla_y_r_V_xy_corr_imag + next_nabla_y_r_V_xy_corr_real_conj + next_nabla_y_r_V_xy_corr_imag_conj
+            next_nabla_y_i_V = next_nabla_y_i_V_x_norm + next_nabla_y_i_V_y_norm + next_nabla_y_i_V_xy_phase + next_nabla_y_i_V_xy_corr_real + next_nabla_y_i_V_xy_corr_imag + next_nabla_y_i_V_xy_corr_real_conj + next_nabla_y_i_V_xy_corr_imag_conj
 
             norm_nabla_x_r_V_sq = ip(nabla_x_r_V, nabla_x_r_V)  # (Shape: (1,k))
             norm_nabla_x_i_V_sq = ip(nabla_x_i_V, nabla_x_i_V)

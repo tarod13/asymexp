@@ -2,12 +2,13 @@ from typing import Dict
 import numpy as np
 import jax.numpy as jnp
 
-
-def compute_complex_cosine_similarities(
+def compute_complex_cosine_similarities_with_conjugate_skipping(
     learned_real: jnp.ndarray,
     learned_imag: jnp.ndarray,
     gt_real: jnp.ndarray,
     gt_imag: jnp.ndarray,
+    eigenvalues_real: jnp.ndarray,
+    eigenvalues_imag: jnp.ndarray,
     prefix: str = ""
 ) -> Dict[str, float]:
     """
@@ -25,6 +26,8 @@ def compute_complex_cosine_similarities(
         learned_imag: Learned eigenvector imaginary parts [num_states, num_eigenvectors]
         gt_real: Ground truth eigenvector real parts [num_states, num_eigenvectors]
         gt_imag: Ground truth eigenvector imaginary parts [num_states, num_eigenvectors]
+        eigenvalues_real: Real parts of eigenvalues corresponding to eigenvectors [num_eigenvectors]
+        eigenvalues_imag: Imaginary parts of eigenvalues corresponding to eigenvectors [num_eigenvectors]
         prefix: Prefix for metric names (e.g., "left_" or "right_")
 
     Returns:
@@ -37,12 +40,14 @@ def compute_complex_cosine_similarities(
     similarities = {}
     cosine_sims = []
 
+    j = 0
     for i in range(num_components):
-        # Extract complex vectors
+
+        # Real eigenvalue: single real eigenvector
         u_real = learned_real[:, i]
         u_imag = learned_imag[:, i]
-        v_real = gt_real[:, i]
-        v_imag = gt_imag[:, i]
+        v_real = gt_real[:, j]
+        v_imag = gt_imag[:, j]
 
         # Standard complex inner product (with conjugate): <u, v> = conj(u)^T v
         # Real part: u_real^T v_real + u_imag^T v_imag
@@ -50,6 +55,7 @@ def compute_complex_cosine_similarities(
         inner_real = jnp.dot(u_real, v_real) + jnp.dot(u_imag, v_imag)
         inner_imag = jnp.dot(u_real, v_imag) - jnp.dot(u_imag, v_real)
 
+        # Conjugate inner product: <u, conj(v)> = conj(u)^T conj(v)
         inner_real_conj = jnp.dot(u_real, v_real) - jnp.dot(u_imag, v_imag)
         inner_imag_conj = -jnp.dot(u_real, v_imag) - jnp.dot(u_imag, v_real)
 
@@ -65,12 +71,128 @@ def compute_complex_cosine_similarities(
         cos_imag_conj = inner_imag_conj / (u_norm * v_norm + 1e-10)
 
         # Take absolute value of real part
-        abs_cos_real = (cos_real**2 + cos_imag**2)**0.5
-        abs_cos_real_conj = (cos_real_conj**2 + cos_imag_conj**2)**0.5
+        abs_cos_real = (cos_real**2 + cos_imag**2).sum(-1)**0.5
+        abs_cos_real_conj = (cos_real_conj**2 + cos_imag_conj**2).sum(-1)**0.5
 
-        sim = max(float(abs_cos_real), float(abs_cos_real_conj))
-        similarities[f'{prefix}cosine_sim_{i}'] = sim
+        sim = float(max(abs_cos_real, abs_cos_real_conj))
+        similarities[f'{prefix}cosine_sim_{j}'] = sim
         cosine_sims.append(sim)
+
+        is_real_eigval = eigenvalues_imag[j] < 1e-8
+        if is_real_eigval:
+            j += 1
+        else:
+            # Skip the next component as it's part of the complex pair
+            j += 2
+
+            
+    # Average across all components
+    similarities[f'{prefix}cosine_sim_avg'] = float(np.mean(cosine_sims))
+
+    return similarities
+
+
+def compute_complex_cosine_similarities(
+    learned_real: jnp.ndarray,
+    learned_imag: jnp.ndarray,
+    gt_real: jnp.ndarray,
+    gt_imag: jnp.ndarray,
+    eigenvalues_real: jnp.ndarray,
+    eigenvalues_imag: jnp.ndarray,
+    prefix: str = ""
+) -> Dict[str, float]:
+    """
+    Compute absolute value of real part of complex cosine similarity between learned and ground truth.
+
+    Uses standard complex inner product with conjugate:
+    For complex vectors u = u_real + i·u_imag, v = v_real + i·v_imag:
+        <u, v> = conj(u)^T v = (u_real^T v_real + u_imag^T v_imag) + i(u_real^T v_imag - u_imag^T v_real)
+        ||u|| = sqrt(u_real^T u_real + u_imag^T u_imag)
+        cos(θ) = <u, v> / (||u|| ||v||)
+        Result: |cos(θ)|
+
+    Args:
+        learned_real: Learned eigenvector real parts [num_states, num_eigenvectors]
+        learned_imag: Learned eigenvector imaginary parts [num_states, num_eigenvectors]
+        gt_real: Ground truth eigenvector real parts [num_states, num_eigenvectors]
+        gt_imag: Ground truth eigenvector imaginary parts [num_states, num_eigenvectors]
+        eigenvalues_real: Real parts of eigenvalues corresponding to eigenvectors [num_eigenvectors]
+        eigenvalues_imag: Imaginary parts of eigenvalues corresponding to eigenvectors [num_eigenvectors]
+        prefix: Prefix for metric names (e.g., "left_" or "right_")
+
+    Returns:
+        Dictionary containing:
+            - {prefix}cosine_sim_{i}: Absolute value of real part of cosine similarity for component i
+            - {prefix}cosine_sim_avg: Average across all components
+    """
+    num_components = learned_real.shape[1]
+
+    similarities = {}
+    cosine_sims = []
+
+    j =0
+    while j < num_components:
+        is_real_eigval = eigenvalues_imag[j] < 1e-8
+        if is_real_eigval:
+            # Real eigenvalue: single real eigenvector
+            u_real = learned_real[:, j]
+            u_imag = learned_imag[:, j]
+            v_real = gt_real[:, j]
+            v_imag = gt_imag[:, j]
+
+            # Standard complex inner product (with conjugate): <u, v> = conj(u)^T v
+            # Real part: u_real^T v_real + u_imag^T v_imag
+            # Imag part: u_real^T v_imag - u_imag^T v_real
+            inner_real = jnp.dot(u_real, v_real) + jnp.dot(u_imag, v_imag)
+            inner_imag = jnp.dot(u_real, v_imag) - jnp.dot(u_imag, v_real)
+
+            # Magnitudes: ||u|| = sqrt(u_real^T u_real + u_imag^T u_imag)
+            u_norm = jnp.sqrt(jnp.dot(u_real, u_real) + jnp.dot(u_imag, u_imag))
+            v_norm = jnp.sqrt(jnp.dot(v_real, v_real) + jnp.dot(v_imag, v_imag))
+
+            # Complex cosine similarity
+            cos_real = inner_real / (u_norm * v_norm + 1e-10)
+            cos_imag = inner_imag / (u_norm * v_norm + 1e-10)
+
+            # Take absolute value of real part
+            abs_cos_real = (cos_real**2 + cos_imag**2).sum(-1)**0.5
+
+            sim = float(abs_cos_real)
+            similarities[f'{prefix}cosine_sim_{j}'] = sim
+            cosine_sims.append(sim)
+
+            j += 1
+
+        else:
+            # Extract complex vectors
+            u_real = learned_real[:, j:j+2]
+            u_imag = learned_imag[:, j:j+2]
+            v_real = gt_real[:, j:j+2]
+            v_imag = gt_imag[:, j:j+2]
+
+            # Standard complex inner product (with conjugate): <u, v> = conj(u)^T v
+            # Real part: u_real^T v_real + u_imag^T v_imag
+            # Imag part: u_real^T v_imag - u_imag^T v_real
+            inner_real = jnp.einsum('ij,ik->jk', u_real, v_real) + jnp.einsum('ij,ik->jk', u_imag, v_imag)
+            inner_imag = jnp.einsum('ij,ik->jk', u_real, v_imag) - jnp.einsum('ij,ik->jk', u_imag, v_real)
+
+            # Magnitudes: ||u|| = sqrt(u_real^T u_real + u_imag^T u_imag)
+            u_norm = jnp.sqrt(jnp.einsum('ij,ij->j', u_real, u_real) + jnp.einsum('ij,ij->j', u_imag, u_imag)).reshape(-1, 1)
+            v_norm = jnp.sqrt(jnp.einsum('ij,ij->j', v_real, v_real) + jnp.einsum('ij,ij->j', v_imag, v_imag)).reshape(1, -1)
+
+            # Complex cosine similarity
+            cos_real = inner_real / (u_norm * v_norm + 1e-10)
+            cos_imag = inner_imag / (u_norm * v_norm + 1e-10)
+
+            # Take absolute value of real part
+            abs_cos_real = (cos_real**2 + cos_imag**2).sum(-1)**0.5
+
+            similarities[f'{prefix}cosine_sim_{j}'] = float(abs_cos_real[0])
+            similarities[f'{prefix}cosine_sim_{j+1}'] = float(abs_cos_real[1])
+            cosine_sims.append(float(abs_cos_real[0]))
+            cosine_sims.append(float(abs_cos_real[1]))
+
+            j += 2
 
     # Average across all components
     similarities[f'{prefix}cosine_sim_avg'] = float(np.mean(cosine_sims))
@@ -193,6 +315,8 @@ def compute_complex_cosine_similarities_with_normalization(
     gt_left_imag: jnp.ndarray,
     gt_right_real: jnp.ndarray,
     gt_right_imag: jnp.ndarray,
+    gt_eigenvalues_real: jnp.ndarray,
+    gt_eigenvalues_imag: jnp.ndarray,
     sampling_probs: jnp.ndarray,
 ) -> Dict[str, float]:
     """
@@ -244,13 +368,15 @@ def compute_complex_cosine_similarities_with_normalization(
     left_sims = compute_complex_cosine_similarities(
         learned_normalized['left_real'], learned_normalized['left_imag'],  # Conjugate
         gt_left_real, gt_left_imag,  # Ground truth (already normalized)
+        gt_eigenvalues_real, gt_eigenvalues_imag,
         prefix="left_"
     )
 
     # For right eigenvectors
     right_sims = compute_complex_cosine_similarities(
         learned_normalized['right_real'], learned_normalized['right_imag'],
-        gt_right_real, gt_right_imag,  # Ground truth (already normalized)
+        gt_right_real, gt_right_imag,  # Ground truth (already normalized),
+        gt_eigenvalues_real, gt_eigenvalues_imag,
         prefix="right_"
     )
 
