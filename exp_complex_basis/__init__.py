@@ -8,13 +8,6 @@ This package provides tools to:
 4. Handle multiple environments with batched processing
 """
 
-from .eigendecomposition import (
-    compute_eigendecomposition,
-    compute_eigendecomposition_batched,
-    get_nonsymmetrized_transition_matrix,
-    analyze_eigenvalue_spectrum,
-)
-
 from .eigenvector_visualization import (
     visualize_eigenvector_on_grid,
     visualize_eigenvector_components,
@@ -24,10 +17,6 @@ from .eigenvector_visualization import (
 )
 
 __all__ = [
-    "compute_eigendecomposition",
-    "compute_eigendecomposition_batched",
-    "get_nonsymmetrized_transition_matrix",
-    "analyze_eigenvalue_spectrum",
     "visualize_eigenvector_on_grid",
     "visualize_eigenvector_components",
     "visualize_multiple_eigenvectors",

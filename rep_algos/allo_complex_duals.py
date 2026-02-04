@@ -37,8 +37,8 @@ from exp_complex_basis.eigenvector_visualization import (
     visualize_multiple_eigenvectors,
     visualize_eigenvector_on_grid,
 )
-from exp_complex_basis.eigendecomposition import compute_eigendecomposition
-from exp_alcl.episodic_replay_buffer import EpisodicReplayBuffer
+from src.utils.laplacian import compute_eigendecomposition
+from src.utils.episodic_replay_buffer import EpisodicReplayBuffer
 
 
 # Simple MLP network for (x,y) coordinates
