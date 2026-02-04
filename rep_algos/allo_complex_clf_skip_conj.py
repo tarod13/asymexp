@@ -25,12 +25,13 @@ import matplotlib.pyplot as plt
 from src.config.ded_clf import Args
 from src.envs.gridworld import GridWorldEnv
 from src.utils.envs import create_gridworld_env
+from src.nets import CoordinateEncoder
+from src.utils.laplacian import compute_eigendecomposition
+
 from src.utils.interaction import (
     create_replay_buffer_only,
     collect_data_and_compute_eigenvectors,
 )
-
-from src.nets import CoordinateEncoder
 
 from src.utils.checkpoint import (
     save_checkpoint, load_checkpoint,
@@ -43,7 +44,7 @@ from src.utils.metrics import (
 from exp_complex_basis.eigenvector_visualization import (
     visualize_multiple_eigenvectors,
 )
-from exp_complex_basis.eigendecomposition import compute_eigendecomposition
+
 from exp_complex_basis.hitting_time_visualization import (
     visualize_source_vs_target_hitting_times,
 )

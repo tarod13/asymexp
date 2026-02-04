@@ -371,13 +371,13 @@ def learn_eigenvectors(args):
             next_norm_y_sq = next_norm_y_r_sq + next_norm_y_i_sq
 
             # Compute graph losses (Shape: (1,k))
-            f_x_real = - next_x_r + lambda_x_r * x_r - lambda_x_i * x_i  # (Shape: (n,k))
-            f_x_imag = - next_x_i + lambda_x_i * x_r + lambda_x_r * x_i
+            f_x_real = - next_x_r + ema_lambda_r * x_r - ema_lambda_i * x_i  # (Shape: (n,k))
+            f_x_imag = - next_x_i + ema_lambda_i * x_r + ema_lambda_r * x_i
 
             f_y_0_real = - y_r
             f_y_0_imag = - y_i
-            f_y_residual_real = lambda_y_r * y_r - lambda_y_i * y_i
-            f_y_residual_imag = lambda_y_i * y_r + lambda_y_r * y_i
+            f_y_residual_real = ema_lambda_r * y_r + ema_lambda_i * y_i
+            f_y_residual_imag = -ema_lambda_i * y_r + ema_lambda_r * y_i
 
             graph_loss_x_real = ip(x_r, sg(f_x_real))  # (Shape: (1,k))
             graph_loss_x_imag = ip(x_i, sg(f_x_imag))

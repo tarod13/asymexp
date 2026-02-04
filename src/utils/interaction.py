@@ -2,11 +2,8 @@ import numpy as np
 import jax.numpy as jnp
 
 from src.config.ded_clf import Args
-
 from src.data_collection import collect_transition_counts_and_episodes
-from exp_complex_basis.eigendecomposition import compute_eigendecomposition
-from exp_alcl.episodic_replay_buffer import EpisodicReplayBuffer
-
+from src.utils.episodic_replay_buffer import EpisodicReplayBuffer
 from src.utils.envs import get_canonical_free_states
 
 from src.envs.door_gridworld import (
@@ -17,6 +14,7 @@ from src.envs.door_gridworld import (
 from src.utils.laplacian import (
     get_transition_matrix,
     compute_sampling_distribution,
+    compute_eigendecomposition,
     compute_laplacian,
 )
 
