@@ -175,16 +175,16 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         ascending=True  # For Laplacians, we want smallest eigenvalues
     )
 
-    print(f"\nSmallest {min(5, args.num_eigenvector_pairs)} eigenvalues (complex):")
+    print(f"\nSmallest {args.num_eigenvector_pairs} eigenvalues (complex):")
     print("  Eigenvalue (real + imag)")
-    for i in range(min(5, args.num_eigenvector_pairs)):
+    for i in range(args.num_eigenvector_pairs):
         ev_real = eigendecomp['eigenvalues_real'][i]
         ev_imag = eigendecomp['eigenvalues_imag'][i]
         print(f"  λ_{i}: {ev_real:.6f} + {ev_imag:.6f}i")
 
     # Print ranges of eigenvector values to debug visualization issues
-    print(f"\nEigenvector value ranges (first {min(5, args.num_eigenvector_pairs)} eigenvectors):")
-    for i in range(min(5, args.num_eigenvector_pairs)):
+    print(f"\nEigenvector value ranges (first {args.num_eigenvector_pairs} eigenvectors):")
+    for i in range(args.num_eigenvector_pairs):
         # Right eigenvectors
         right_real = eigendecomp['right_eigenvectors_real'][:, i]
         right_imag = eigendecomp['right_eigenvectors_imag'][:, i]

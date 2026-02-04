@@ -71,8 +71,8 @@ def compute_complex_cosine_similarities_with_conjugate_skipping(
         cos_imag_conj = inner_imag_conj / (u_norm * v_norm + 1e-10)
 
         # Take absolute value of real part
-        abs_cos_real = (cos_real**2 + cos_imag**2).sum(-1)**0.5
-        abs_cos_real_conj = (cos_real_conj**2 + cos_imag_conj**2).sum(-1)**0.5
+        abs_cos_real = (cos_real**2 + cos_imag**2)**0.5
+        abs_cos_real_conj = (cos_real_conj**2 + cos_imag_conj**2)**0.5
 
         sim = float(max(abs_cos_real, abs_cos_real_conj))
         similarities[f'{prefix}cosine_sim_{j}'] = sim
@@ -155,7 +155,7 @@ def compute_complex_cosine_similarities(
             cos_imag = inner_imag / (u_norm * v_norm + 1e-10)
 
             # Take absolute value of real part
-            abs_cos_real = (cos_real**2 + cos_imag**2).sum(-1)**0.5
+            abs_cos_real = (cos_real**2 + cos_imag**2)**0.5
 
             sim = float(abs_cos_real)
             similarities[f'{prefix}cosine_sim_{j}'] = sim

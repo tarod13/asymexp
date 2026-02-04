@@ -38,6 +38,7 @@ from src.utils.checkpoint import (
 from src.utils.metrics import (
     compute_complex_cosine_similarities_with_normalization,
     compute_hitting_times_from_eigenvectors,
+    normalize_eigenvectors_for_comparison,
 )
 from exp_complex_basis.eigenvector_visualization import (
     visualize_multiple_eigenvectors,
@@ -499,11 +500,11 @@ def learn_eigenvectors(args):
             corr_xy_real_conj = cross_xryr - cross_xiyi  # (Shape: (k,k)) (First index: x, second index: y)
             corr_xy_imag_conj = cross_xryi + cross_xiryr
 
-            corr_xy_real_lower_conj = jnp.tril(corr_xy_real_conj)
-            corr_xy_imag_lower_conj = jnp.tril(corr_xy_imag_conj)
+            corr_xy_real_lower_conj = jnp.tril(corr_xy_real_conj, k=-1)
+            corr_xy_imag_lower_conj = jnp.tril(corr_xy_imag_conj, k=-1)
 
-            corr_yx_real_lower_conj = jnp.tril(corr_xy_real_lower_conj.T)
-            corr_yx_imag_lower_conj = jnp.tril(corr_xy_imag_lower_conj.T)
+            corr_yx_real_lower_conj = jnp.tril(corr_xy_real_lower_conj.T, k=-1)
+            corr_yx_imag_lower_conj = jnp.tril(corr_xy_imag_lower_conj.T, k=-1)
 
             V_xy_corr_real_conj = jnp.sum(corr_xy_real_lower_conj ** 2, -1).reshape(1,-1) / 2  #(Shape: (1,k))
             V_xy_corr_imag_conj = jnp.sum(corr_xy_imag_lower_conj ** 2, -1).reshape(1,-1) / 2
@@ -526,8 +527,8 @@ def learn_eigenvectors(args):
             next_corr_xy_real_conj = multi_ip(next_x_r, next_y_r) - multi_ip(next_x_i, next_y_i)  # (Shape: (k,k)) (First index: x, second index: y)
             next_corr_xy_imag_conj = multi_ip(next_x_r, next_y_i) + multi_ip(next_x_i, next_y_r)
 
-            next_corr_yx_real_conj = jnp.tril(next_corr_xy_real_conj.T)
-            next_corr_yx_imag_conj = jnp.tril(next_corr_xy_imag_conj.T)
+            next_corr_yx_real_conj = jnp.tril(next_corr_xy_real_conj.T, k=-1)
+            next_corr_yx_imag_conj = jnp.tril(next_corr_xy_imag_conj.T, k=-1)
 
             next_nabla_y_r_V_xy_corr_real_conj = 2 * jnp.einsum('jk,ik->ij', next_corr_yx_real_conj, next_x_r)  #(Shape: (n,k))
             next_nabla_y_i_V_xy_corr_real_conj = -2 * jnp.einsum('jk,ik->ij', next_corr_yx_real_conj, next_x_i)
