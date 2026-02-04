@@ -43,6 +43,7 @@ from src.utils.metrics import (
 from exp_complex_basis.eigenvector_visualization import (
     visualize_multiple_eigenvectors,
 )
+from exp_complex_basis.eigendecomposition import compute_eigendecomposition
 from exp_complex_basis.hitting_time_visualization import (
     visualize_source_vs_target_hitting_times,
 )
@@ -177,16 +178,27 @@ def learn_eigenvectors(args):
             sampling_probs, door_config, data_env, replay_buffer, transition_matrix = \
                 collect_data_and_compute_eigenvectors(env, args)
 
+        # Compute larger eigendecomposition for ground truth (2x learned size)
+        # This is needed because conjugates are skipped during learning, so we need
+        # more ground truth eigenvectors to compare against
+        num_gt_eigenvectors = 2 * args.num_eigenvector_pairs
+        gt_eigendecomp = compute_eigendecomposition(
+            laplacian_matrix,
+            k=num_gt_eigenvectors,
+            ascending=True  # For Laplacians, we want smallest eigenvalues
+        )
+
         # Extract ground truth eigenvalues and eigenvectors (complex)
-        gt_eigenvalues = eigendecomp['eigenvalues']  # Complex eigenvalues
-        gt_eigenvalues_real = eigendecomp['eigenvalues_real']
-        gt_eigenvalues_imag = eigendecomp['eigenvalues_imag']
-        gt_left_real = eigendecomp['left_eigenvectors_real']
-        gt_left_imag = eigendecomp['left_eigenvectors_imag']
-        gt_right_real = eigendecomp['right_eigenvectors_real']
-        gt_right_imag = eigendecomp['right_eigenvectors_imag']
+        gt_eigenvalues = gt_eigendecomp['eigenvalues']  # Complex eigenvalues
+        gt_eigenvalues_real = gt_eigendecomp['eigenvalues_real']
+        gt_eigenvalues_imag = gt_eigendecomp['eigenvalues_imag']
+        gt_left_real = gt_eigendecomp['left_eigenvectors_real']
+        gt_left_imag = gt_eigendecomp['left_eigenvectors_imag']
+        gt_right_real = gt_eigendecomp['right_eigenvectors_real']
+        gt_right_imag = gt_eigendecomp['right_eigenvectors_imag']
 
     print(f"\nState coordinates shape: {state_coords.shape}")
+    print(f"Learning {args.num_eigenvector_pairs} eigenvector pairs (conjugates skipped)")
     print(f"Ground truth right eigenvectors shape: {gt_right_real.shape}")
     print(f"Ground truth left eigenvectors shape: {gt_left_real.shape}")
 
@@ -488,11 +500,11 @@ def learn_eigenvectors(args):
             corr_xy_real_conj = cross_xryr - cross_xiyi  # (Shape: (k,k)) (First index: x, second index: y)
             corr_xy_imag_conj = cross_xryi + cross_xiryr
 
-            corr_xy_real_lower_conj = jnp.tril(corr_xy_real_conj)
-            corr_xy_imag_lower_conj = jnp.tril(corr_xy_imag_conj)
+            corr_xy_real_lower_conj = jnp.tril(corr_xy_real_conj, k=-1)
+            corr_xy_imag_lower_conj = jnp.tril(corr_xy_imag_conj, k=-1)
 
-            corr_yx_real_lower_conj = jnp.tril(corr_xy_real_lower_conj.T)
-            corr_yx_imag_lower_conj = jnp.tril(corr_xy_imag_lower_conj.T)
+            corr_yx_real_lower_conj = jnp.tril(corr_xy_real_lower_conj.T, k=-1)
+            corr_yx_imag_lower_conj = jnp.tril(corr_xy_imag_lower_conj.T, k=-1)
 
             V_xy_corr_real_conj = jnp.sum(corr_xy_real_lower_conj ** 2, -1).reshape(1,-1) / 2  #(Shape: (1,k))
             V_xy_corr_imag_conj = jnp.sum(corr_xy_imag_lower_conj ** 2, -1).reshape(1,-1) / 2
@@ -515,8 +527,8 @@ def learn_eigenvectors(args):
             next_corr_xy_real_conj = multi_ip(next_x_r, next_y_r) - multi_ip(next_x_i, next_y_i)  # (Shape: (k,k)) (First index: x, second index: y)
             next_corr_xy_imag_conj = multi_ip(next_x_r, next_y_i) + multi_ip(next_x_i, next_y_r)
 
-            next_corr_yx_real_conj = jnp.tril(next_corr_xy_real_conj.T)
-            next_corr_yx_imag_conj = jnp.tril(next_corr_xy_imag_conj.T)
+            next_corr_yx_real_conj = jnp.tril(next_corr_xy_real_conj.T, k=-1)
+            next_corr_yx_imag_conj = jnp.tril(next_corr_xy_imag_conj.T, k=-1)
 
             next_nabla_y_r_V_xy_corr_real_conj = 2 * jnp.einsum('jk,ik->ij', next_corr_yx_real_conj, next_x_r)  #(Shape: (n,k))
             next_nabla_y_i_V_xy_corr_real_conj = -2 * jnp.einsum('jk,ik->ij', next_corr_yx_real_conj, next_x_i)
@@ -876,10 +888,11 @@ def learn_eigenvectors(args):
             # Compute learned eigenvectors on all states for cosine similarity
             features_dict = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
 
-            # Compute complex cosine similarities with proper normalization
+            # Compute complex cosine similarities with conjugate skipping
             # This accounts for:
             # 1. Arbitrary complex scaling of eigenvectors
             # 2. Adjoint vs. true left eigenvector relationship (via sampling distribution)
+            # 3. Conjugate pairs being skipped during learning (ground truth has more eigenvectors)
             cosine_sims = compute_complex_cosine_similarities_with_normalization(
                 learned_left_real=features_dict['left_real'],
                 learned_left_imag=features_dict['left_imag'],
@@ -892,6 +905,7 @@ def learn_eigenvectors(args):
                 gt_eigenvalues_real=gt_eigenvalues_real,
                 gt_eigenvalues_imag=gt_eigenvalues_imag,
                 sampling_probs=sampling_probs * is_ratio.squeeze(-1),
+                skip_conjugates=True,
             )
 
             # Compute hitting times for learned eigenvectors and ground truth
