@@ -402,6 +402,95 @@ def compute_complex_cosine_similarities_with_normalization(
     return result
 
 
+def enforce_conjugate_pairs(
+    left_real: jnp.ndarray,
+    left_imag: jnp.ndarray,
+    right_real: jnp.ndarray,
+    right_imag: jnp.ndarray,
+    eigenvalues_real: jnp.ndarray,
+    eigenvalues_imag: jnp.ndarray,
+    imag_threshold: float = 1e-6,
+    conjugate_tolerance: float = 0.5,
+):
+    """
+    Enforce conjugate structure for consecutive eigenvector pairs.
+
+    For learned eigenvectors, imperfections mean that pairs (k, k+1) that should
+    be complex conjugates don't perfectly satisfy v_{k+1} = conj(v_k). This
+    function detects such pairs and enforces exact conjugation by averaging:
+
+    For a detected conjugate pair at indices k, k+1:
+        - Real parts: (real_k + real_{k+1}) / 2  (should be identical)
+        - Imag parts: (imag_k - imag_{k+1}) / 2 for k, negated for k+1
+
+    Detection: consecutive eigenvalues with |imag| > imag_threshold and
+    imaginary parts that are approximately opposite (relative error < conjugate_tolerance).
+
+    Args:
+        left_real, left_imag: Left eigenvectors [num_states, num_eigenvectors]
+        right_real, right_imag: Right eigenvectors [num_states, num_eigenvectors]
+        eigenvalues_real, eigenvalues_imag: Eigenvalues [num_eigenvectors]
+        imag_threshold: Minimum |imag(eigenvalue)| to consider a pair complex
+        conjugate_tolerance: Maximum relative sum |imag_k + imag_{k+1}| / max(|imag_k|, |imag_{k+1}|)
+
+    Returns:
+        Tuple of (left_real, left_imag, right_real, right_imag,
+                  eigenvalues_real, eigenvalues_imag) with conjugate pairs enforced
+    """
+    n_eig = eigenvalues_real.shape[0]
+
+    out_left_real = jnp.array(left_real)
+    out_left_imag = jnp.array(left_imag)
+    out_right_real = jnp.array(right_real)
+    out_right_imag = jnp.array(right_imag)
+    out_eig_real = jnp.array(eigenvalues_real)
+    out_eig_imag = jnp.array(eigenvalues_imag)
+
+    k = 0
+    while k < n_eig - 1:
+        imag_k = float(eigenvalues_imag[k])
+        imag_k1 = float(eigenvalues_imag[k + 1])
+
+        max_abs_imag = max(abs(imag_k), abs(imag_k1))
+
+        # Both must have non-negligible imaginary parts
+        if max_abs_imag > imag_threshold:
+            # Check if imaginary parts are approximately opposite
+            sum_imag = abs(imag_k + imag_k1)
+            if sum_imag < conjugate_tolerance * max_abs_imag:
+                # Enforce conjugate structure for eigenvalues
+                avg_eig_real = (float(eigenvalues_real[k]) + float(eigenvalues_real[k + 1])) / 2.0
+                avg_eig_imag = (imag_k - imag_k1) / 2.0
+                out_eig_real = out_eig_real.at[k].set(avg_eig_real)
+                out_eig_real = out_eig_real.at[k + 1].set(avg_eig_real)
+                out_eig_imag = out_eig_imag.at[k].set(avg_eig_imag)
+                out_eig_imag = out_eig_imag.at[k + 1].set(-avg_eig_imag)
+
+                # Enforce conjugate structure for right eigenvectors
+                avg_right_real = (right_real[:, k] + right_real[:, k + 1]) / 2.0
+                avg_right_imag = (right_imag[:, k] - right_imag[:, k + 1]) / 2.0
+                out_right_real = out_right_real.at[:, k].set(avg_right_real)
+                out_right_real = out_right_real.at[:, k + 1].set(avg_right_real)
+                out_right_imag = out_right_imag.at[:, k].set(avg_right_imag)
+                out_right_imag = out_right_imag.at[:, k + 1].set(-avg_right_imag)
+
+                # Enforce conjugate structure for left eigenvectors
+                avg_left_real = (left_real[:, k] + left_real[:, k + 1]) / 2.0
+                avg_left_imag = (left_imag[:, k] - left_imag[:, k + 1]) / 2.0
+                out_left_real = out_left_real.at[:, k].set(avg_left_real)
+                out_left_real = out_left_real.at[:, k + 1].set(avg_left_real)
+                out_left_imag = out_left_imag.at[:, k].set(avg_left_imag)
+                out_left_imag = out_left_imag.at[:, k + 1].set(-avg_left_imag)
+
+                k += 2
+                continue
+
+        k += 1
+
+    return (out_left_real, out_left_imag, out_right_real, out_right_imag,
+            out_eig_real, out_eig_imag)
+
+
 def compute_hitting_times_from_eigenvectors(
     left_real: jnp.ndarray,
     left_imag: jnp.ndarray,
@@ -409,21 +498,37 @@ def compute_hitting_times_from_eigenvectors(
     right_imag: jnp.ndarray,
     eigenvalues_real: jnp.ndarray,
     eigenvalues_imag: jnp.ndarray,
+    enforce_conjugates: bool = True,
 ) -> jnp.ndarray:
     """
-    Compute 
+    Compute hitting times from eigenvector decomposition.
+
+    For learned eigenvectors, conjugate pairs may be imperfect, causing the
+    imaginary parts to not cancel properly. When enforce_conjugates=True,
+    consecutive eigenvector pairs that appear to be complex conjugates are
+    averaged to enforce exact conjugate structure before computing hitting times.
 
     Args:
-        right_real: Learned right eigenvector real parts [num_states, num_eigenvectors]
-        right_imag: Learned right eigenvector imaginary parts [num_states, num_eigenvectors]
-        left_real: Ground truth left eigenvector real parts [num_states, num_eigenvectors]
-        left_imag: Ground truth left eigenvector imaginary parts [num_states, num_eigenvectors]
-        eigenvalues_real: Real parts of eigenvalues corresponding to eigenvectors [num_eigenvectors]
-        eigenvalues_imag: Imaginary parts of eigenvalues corresponding to eigenvectors [num_eigenvectors]
+        left_real: Left eigenvector real parts [num_states, num_eigenvectors]
+        left_imag: Left eigenvector imaginary parts [num_states, num_eigenvectors]
+        right_real: Right eigenvector real parts [num_states, num_eigenvectors]
+        right_imag: Right eigenvector imaginary parts [num_states, num_eigenvectors]
+        eigenvalues_real: Real parts of eigenvalues [num_eigenvectors]
+        eigenvalues_imag: Imaginary parts of eigenvalues [num_eigenvectors]
+        enforce_conjugates: If True, enforce conjugate structure for consecutive
+            pairs before computing hitting times. This improves accuracy for
+            learned (imperfect) eigenvectors.
 
     Returns:
         Hitting times matrix of shape [num_states, num_states]
     """
+    if enforce_conjugates:
+        left_real, left_imag, right_real, right_imag, \
+            eigenvalues_real, eigenvalues_imag = enforce_conjugate_pairs(
+                left_real, left_imag, right_real, right_imag,
+                eigenvalues_real, eigenvalues_imag,
+            )
+
     left = left_real + 1j * left_imag
     right = right_real + 1j * right_imag
 
