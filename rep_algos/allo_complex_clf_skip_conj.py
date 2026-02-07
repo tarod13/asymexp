@@ -41,18 +41,13 @@ from src.utils.metrics import (
     compute_hitting_times_from_eigenvectors,
     normalize_eigenvectors_for_comparison,
 )
-from exp_complex_basis.eigenvector_visualization import (
-    visualize_multiple_eigenvectors,
-)
-
-from exp_complex_basis.hitting_time_visualization import (
-    visualize_source_vs_target_hitting_times,
-)
 from src.utils.plotting import (
     plot_learning_curves_one,
     plot_cosine_similarity_evolution,
     plot_eigenvector_comparison,
     plot_auxiliary_metrics,
+    visualize_multiple_eigenvectors,
+    visualize_source_vs_target_hitting_times,
 )
 
 

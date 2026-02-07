@@ -38,7 +38,7 @@ from src.envs.door_gridworld import (
     create_random_doors,
 )
 from src.data_collection import collect_transition_counts_and_episodes
-from exp_complex_basis.eigenvector_visualization import (
+from src.utils.plotting import (
     visualize_multiple_eigenvectors,
     visualize_eigenvector_on_grid,
 )
