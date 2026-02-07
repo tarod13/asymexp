@@ -41,18 +41,13 @@ from src.utils.metrics import (
     compute_hitting_times_from_eigenvectors,
     normalize_eigenvectors_for_comparison,
 )
-from exp_complex_basis.eigenvector_visualization import (
-    visualize_multiple_eigenvectors,
-)
-
-from exp_complex_basis.hitting_time_visualization import (
-    visualize_source_vs_target_hitting_times,
-)
 from src.utils.plotting import (
     plot_learning_curves_one,
     plot_cosine_similarity_evolution,
     plot_eigenvector_comparison,
     plot_auxiliary_metrics,
+    visualize_multiple_eigenvectors,
+    visualize_source_vs_target_hitting_times,
 )
 
 
@@ -917,6 +912,9 @@ def learn_eigenvectors(args):
                 right_imag=features_dict['right_imag'],
                 eigenvalues_real=encoder_state.params['lambda_real'],
                 eigenvalues_imag=encoder_state.params['lambda_imag'],
+                gamma=args.gamma,
+                delta=args.delta,
+                eigenvalue_type='kernel',
             )
             gt_hitting_times = compute_hitting_times_from_eigenvectors(
                 left_real=gt_left_real,
@@ -925,6 +923,9 @@ def learn_eigenvectors(args):
                 right_imag=gt_right_imag,
                 eigenvalues_real=gt_eigenvalues_real,
                 eigenvalues_imag=gt_eigenvalues_imag,
+                gamma=args.gamma,
+                delta=args.delta,
+                eigenvalue_type='laplacian',
             )
 
             # Store metrics
@@ -1147,6 +1148,9 @@ def learn_eigenvectors(args):
         right_imag=final_features_dict['right_imag'],
         eigenvalues_real=encoder_state.params['lambda_real'],
         eigenvalues_imag=encoder_state.params['lambda_imag'],
+        gamma=args.gamma,
+        delta=args.delta,
+        eigenvalue_type='kernel',
     )
 
     # Compute ground truth hitting times
@@ -1157,6 +1161,9 @@ def learn_eigenvectors(args):
         right_imag=gt_right_imag,
         eigenvalues_real=gt_eigenvalues_real,
         eigenvalues_imag=gt_eigenvalues_imag,
+        gamma=args.gamma,
+        delta=args.delta,
+        eigenvalue_type='laplacian',
     )
 
     # Select states to visualize (evenly spaced across state space)

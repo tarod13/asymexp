@@ -1,5 +1,8 @@
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import numpy as np
+import jax.numpy as jnp
+from typing import Dict, Optional, Tuple, List
 
 
 
@@ -380,3 +383,541 @@ def plot_auxiliary_metrics(metrics_history: list, save_path: str):
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"Auxiliary metrics plot saved to {save_path}")
+
+
+def visualize_eigenvector_on_grid(
+    eigenvector_idx: int,
+    eigenvector_values: jnp.ndarray,
+    canonical_states: jnp.ndarray,
+    grid_width: int,
+    grid_height: int,
+    portals: Optional[Dict[Tuple[int, int], int]] = None,
+    title: Optional[str] = None,
+    ax: Optional[plt.Axes] = None,
+    cmap: str = 'RdBu_r',
+    show_colorbar: bool = True,
+    wall_color: str = 'gray',
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+) -> plt.Axes:
+    """
+    Visualize a single eigenvector's values overlaid on the grid.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 8))
+
+    # Create grid for eigenvector values
+    eigenvector_grid = np.full((grid_height, grid_width), np.nan)
+
+    # Map canonical states to full grid positions
+    for canonical_idx, value in enumerate(eigenvector_values):
+        full_state_idx = canonical_states[canonical_idx]
+        y = int(full_state_idx) // grid_width
+        x = int(full_state_idx) % grid_width
+        eigenvector_grid[y, x] = value
+
+    # Plot eigenvector values with grid alignment
+    # Set up colormap to handle NaN values (walls) with the specified wall_color
+    import matplotlib.cm as cm
+
+    current_cmap = cm.get_cmap(cmap).copy()
+    current_cmap.set_bad(color=wall_color)
+
+    im = ax.imshow(
+        eigenvector_grid,
+        cmap=current_cmap,
+        origin='upper',
+        interpolation='nearest',
+        extent=[-0.5, grid_width - 0.5, grid_height - 0.5, -0.5],
+        vmin=vmin,
+        vmax=vmax
+    )
+
+    # Add colorbar
+    if show_colorbar:
+        plt.colorbar(im, ax=ax, label='Eigenvector Value', fraction=0.046, pad=0.04)
+
+    # Add grid lines
+    for i in range(grid_height + 1):
+        ax.axhline(i - 0.5, color='gray', linewidth=0.5, alpha=0.3)
+    for j in range(grid_width + 1):
+        ax.axvline(j - 0.5, color='gray', linewidth=0.5, alpha=0.3)
+
+    # Add portals/doors if provided
+    if portals is not None and len(portals) > 0:
+        # Door rectangle dimensions
+        rect_thickness = 0.15
+        rect_width = 0.7
+
+        for (source_idx, action), dest_idx in portals.items():
+            source_y = source_idx // grid_width
+            source_x = source_idx % grid_width
+            margin = 0.02
+
+            if action == 0:  # Up
+                rect_x, rect_y = source_x - rect_width / 2, source_y - 0.5 - rect_thickness / 2
+                rect_w, rect_h = rect_width, rect_thickness
+                triangle = mpatches.Polygon([
+                    (source_x, source_y - 0.5 - rect_thickness / 2 + margin),
+                    (source_x - (rect_thickness - 2 * margin) / 2, source_y - 0.5 + rect_thickness / 2 - margin),
+                    (source_x + (rect_thickness - 2 * margin) / 2, source_y - 0.5 + rect_thickness / 2 - margin)
+                ], facecolor='white', edgecolor='none', zorder=11)
+            elif action == 1:  # Right
+                rect_x, rect_y = source_x + 0.5 - rect_thickness / 2, source_y - rect_width / 2
+                rect_w, rect_h = rect_thickness, rect_width
+                triangle = mpatches.Polygon([
+                    (source_x + 0.5 + rect_thickness / 2 - margin, source_y),
+                    (source_x + 0.5 - rect_thickness / 2 + margin, source_y - (rect_thickness - 2 * margin) / 2),
+                    (source_x + 0.5 - rect_thickness / 2 + margin, source_y + (rect_thickness - 2 * margin) / 2)
+                ], facecolor='white', edgecolor='none', zorder=11)
+            elif action == 2:  # Down
+                rect_x, rect_y = source_x - rect_width / 2, source_y + 0.5 - rect_thickness / 2
+                rect_w, rect_h = rect_width, rect_thickness
+                triangle = mpatches.Polygon([
+                    (source_x, source_y + 0.5 + rect_thickness / 2 - margin),
+                    (source_x - (rect_thickness - 2 * margin) / 2, source_y + 0.5 - rect_thickness / 2 + margin),
+                    (source_x + (rect_thickness - 2 * margin) / 2, source_y + 0.5 - rect_thickness / 2 + margin)
+                ], facecolor='white', edgecolor='none', zorder=11)
+            else:  # Left
+                rect_x, rect_y = source_x - 0.5 - rect_thickness / 2, source_y - rect_width / 2
+                rect_w, rect_h = rect_thickness, rect_width
+                triangle = mpatches.Polygon([
+                    (source_x - 0.5 - rect_thickness / 2 + margin, source_y),
+                    (source_x - 0.5 + rect_thickness / 2 - margin, source_y - (rect_thickness - 2 * margin) / 2),
+                    (source_x - 0.5 + rect_thickness / 2 - margin, source_y + (rect_thickness - 2 * margin) / 2)
+                ], facecolor='white', edgecolor='none', zorder=11)
+
+            rect = mpatches.Rectangle((rect_x, rect_y), rect_w, rect_h, linewidth=0, edgecolor='none', facecolor='black', zorder=10)
+            ax.add_patch(rect)
+            ax.add_patch(triangle)
+
+    ax.set_xlim(-0.5, grid_width - 0.5)
+    ax.set_ylim(grid_height - 0.5, -0.5)
+    ax.set_aspect('equal')
+    if title is not None:
+        ax.set_title(title, fontsize=12)
+    ax.set_xticks(range(grid_width))
+    ax.set_yticks(range(grid_height))
+
+    return ax
+
+
+def visualize_multiple_eigenvectors(
+    eigenvector_indices: List[int],
+    eigendecomposition: Dict[str, jnp.ndarray],
+    canonical_states: jnp.ndarray,
+    grid_width: int,
+    grid_height: int,
+    portals: Optional[Dict[Tuple[int, int], int]] = None,
+    eigenvector_type: str = 'right',
+    component: str = 'real',
+    nrows: Optional[int] = None,
+    ncols: Optional[int] = None,
+    figsize: Optional[Tuple[int, int]] = None,
+    wall_color: str = 'gray',
+    save_path: Optional[str] = None,
+    shared_colorbar: bool = True
+) -> plt.Figure:
+    """
+    Visualize multiple eigenvectors side by side.
+
+    Args:
+        shared_colorbar: If True, use a single global color scale and one colorbar.
+                         If False, each plot is scaled independently.
+    """
+    num_eigenvectors = len(eigenvector_indices)
+
+    if ncols is None:
+        ncols = min(5, num_eigenvectors)
+    if nrows is None:
+        nrows = (num_eigenvectors + ncols - 1) // ncols
+
+    if figsize is None:
+        figsize = (ncols * 4, nrows * 4)
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+
+    if nrows == 1 and ncols == 1:
+        axes = np.array([[axes]])
+    elif nrows == 1:
+        axes = axes.reshape(1, -1)
+    elif ncols == 1:
+        axes = axes.reshape(-1, 1)
+
+    if eigenvector_type == 'right':
+        if component == 'real':
+            eigenvector_matrix = eigendecomposition['right_eigenvectors_real']
+        else:
+            eigenvector_matrix = eigendecomposition['right_eigenvectors_imag']
+    else:
+        if component == 'real':
+            eigenvector_matrix = eigendecomposition['left_eigenvectors_real']
+        else:
+            eigenvector_matrix = eigendecomposition['left_eigenvectors_imag']
+
+    vmin = None
+    vmax = None
+    if shared_colorbar:
+        all_values = np.concatenate([eigenvector_matrix[:, idx] for idx in eigenvector_indices])
+        vmin = np.min(all_values)
+        vmax = np.max(all_values)
+
+        # Handle case where all values are the same (e.g., all zeros for imaginary parts)
+        if vmin == vmax:
+            # Set a small symmetric range around the constant value
+            if abs(vmin) < 1e-10:
+                # If essentially zero, use symmetric range around zero
+                vmin = -0.1
+                vmax = 0.1
+            else:
+                # Otherwise, use ±10% of the value
+                delta = abs(vmin) * 0.1
+                vmin = vmin - delta
+                vmax = vmax + delta
+
+    for plot_idx, eigenvec_idx in enumerate(eigenvector_indices):
+        row = plot_idx // ncols
+        col = plot_idx % ncols
+        ax = axes[row, col]
+
+        eigenvector_values = eigenvector_matrix[:, eigenvec_idx]
+        eigenvalue = eigendecomposition['eigenvalues'][eigenvec_idx]
+
+        visualize_eigenvector_on_grid(
+            eigenvector_idx=eigenvec_idx,
+            eigenvector_values=np.array(eigenvector_values),
+            canonical_states=canonical_states,
+            grid_width=grid_width,
+            grid_height=grid_height,
+            portals=portals,
+            title=f'{eigenvector_type.capitalize()} Eigvec {eigenvec_idx} ({component})\nλ = {np.abs(eigenvalue):.3f}',
+            ax=ax,
+            cmap='RdBu_r',
+            show_colorbar=not shared_colorbar,
+            wall_color=wall_color,
+            vmin=vmin,
+            vmax=vmax
+        )
+
+    for plot_idx in range(num_eigenvectors, nrows * ncols):
+        row = plot_idx // ncols
+        col = plot_idx % ncols
+        axes[row, col].axis('off')
+
+    plt.tight_layout()
+
+    if shared_colorbar:
+        fig.subplots_adjust(right=0.9)
+        cax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+        sm = plt.cm.ScalarMappable(cmap='RdBu_r', norm=plt.Normalize(vmin=vmin, vmax=vmax))
+        sm.set_array([])
+        cbar = plt.colorbar(sm, cax=cax, orientation='vertical')
+        cbar.ax.tick_params(labelsize=10)
+        cbar.set_label('Eigenvector Value', fontsize=12)
+
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Saved multiple eigenvectors visualization to {save_path}")
+
+    return fig
+
+
+def visualize_hitting_time_on_grid(
+    hitting_time_values: jnp.ndarray,
+    center_state_idx: int,
+    canonical_states: jnp.ndarray,
+    grid_width: int,
+    grid_height: int,
+    mode: str = 'target',  # 'target' or 'source'
+    portals: Optional[Dict[Tuple[int, int], int]] = None,
+    title: Optional[str] = None,
+    ax: Optional[plt.Axes] = None,
+    cmap: str = 'viridis',
+    show_colorbar: bool = True,
+    wall_color: str = 'gray',
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    log_scale: bool = False,
+) -> plt.Axes:
+    """
+    Visualize hitting times overlaid on the grid.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 8))
+
+    # Ensure values are real (hitting times should be real after conjugate enforcement)
+    hitting_time_values = np.real(hitting_time_values)
+
+    # Transform values if log_scale is requested
+    if log_scale:
+        # Clip to 0 to prevent NaNs from small negative errors
+        safe_values = np.maximum(hitting_time_values, 0)
+        values_to_plot = np.log1p(safe_values)
+    else:
+        values_to_plot = hitting_time_values
+
+    # Create grid for hitting time values
+    ht_grid = np.full((grid_height, grid_width), np.nan)
+
+    # Map canonical states to full grid positions
+    for canonical_idx, value in enumerate(values_to_plot):
+        full_state_idx = canonical_states[canonical_idx]
+        y = int(full_state_idx) // grid_width
+        x = int(full_state_idx) % grid_width
+        ht_grid[y, x] = value
+
+    # Set up colormap
+    import matplotlib.cm as cm
+    current_cmap = cm.get_cmap(cmap).copy()
+    current_cmap.set_bad(color=wall_color)
+
+    im = ax.imshow(
+        ht_grid,
+        cmap=current_cmap,
+        origin='upper',
+        interpolation='nearest',
+        extent=[-0.5, grid_width - 0.5, grid_height - 0.5, -0.5],
+        vmin=vmin,
+        vmax=vmax
+    )
+
+    # Mark the center state
+    center_full_idx = canonical_states[center_state_idx]
+    c_y = int(center_full_idx) // grid_width
+    c_x = int(center_full_idx) % grid_width
+
+    if mode == 'target':
+        # Star for Target
+        ax.scatter(c_x, c_y, c='red', marker='*', s=250, edgecolors='white', linewidth=1.5, zorder=20, label='Target')
+    else:
+        # Circle for Source
+        ax.scatter(c_x, c_y, c='cyan', marker='o', s=150, edgecolors='black', linewidth=1.5, zorder=20, label='Source')
+
+    # Add colorbar
+    if show_colorbar:
+        label = 'Log(Steps+1)' if log_scale else 'Steps'
+        # Shrink colorbar to fit better next to subplot
+        plt.colorbar(im, ax=ax, label=label, fraction=0.046, pad=0.04)
+
+    # Add grid lines
+    for i in range(grid_height + 1):
+        ax.axhline(i - 0.5, color='gray', linewidth=0.5, alpha=0.3)
+    for j in range(grid_width + 1):
+        ax.axvline(j - 0.5, color='gray', linewidth=0.5, alpha=0.3)
+
+    # Add portals/doors if provided
+    if portals is not None and len(portals) > 0:
+        rect_thickness = 0.15
+        rect_width = 0.7
+
+        for (source_idx, action), dest_idx in portals.items():
+            source_y = source_idx // grid_width
+            source_x = source_idx % grid_width
+            margin = 0.02
+
+            # Action mapping: 0=up, 1=right, 2=down, 3=left
+            if action == 0:  # Up
+                rect_x, rect_y = source_x - rect_width/2, source_y - 0.5 - rect_thickness/2
+                rect_w, rect_h = rect_width, rect_thickness
+                triangle = mpatches.Polygon([
+                    (source_x, source_y - 0.5 - rect_thickness/2 + margin),
+                    (source_x - (rect_thickness-2*margin)/2, source_y - 0.5 + rect_thickness/2 - margin),
+                    (source_x + (rect_thickness-2*margin)/2, source_y - 0.5 + rect_thickness/2 - margin)
+                ], facecolor='white', edgecolor='none', zorder=11)
+            elif action == 1:  # Right
+                rect_x, rect_y = source_x + 0.5 - rect_thickness/2, source_y - rect_width/2
+                rect_w, rect_h = rect_thickness, rect_width
+                triangle = mpatches.Polygon([
+                    (source_x + 0.5 + rect_thickness/2 - margin, source_y),
+                    (source_x + 0.5 - rect_thickness/2 + margin, source_y - (rect_thickness-2*margin)/2),
+                    (source_x + 0.5 - rect_thickness/2 + margin, source_y + (rect_thickness-2*margin)/2)
+                ], facecolor='white', edgecolor='none', zorder=11)
+            elif action == 2:  # Down
+                rect_x, rect_y = source_x - rect_width/2, source_y + 0.5 - rect_thickness/2
+                rect_w, rect_h = rect_width, rect_thickness
+                triangle = mpatches.Polygon([
+                    (source_x, source_y + 0.5 + rect_thickness/2 - margin),
+                    (source_x - (rect_thickness-2*margin)/2, source_y + 0.5 - rect_thickness/2 + margin),
+                    (source_x + (rect_thickness-2*margin)/2, source_y + 0.5 - rect_thickness/2 + margin)
+                ], facecolor='white', edgecolor='none', zorder=11)
+            else:  # Left
+                rect_x, rect_y = source_x - 0.5 - rect_thickness/2, source_y - rect_width/2
+                rect_w, rect_h = rect_thickness, rect_width
+                triangle = mpatches.Polygon([
+                    (source_x - 0.5 - rect_thickness/2 + margin, source_y),
+                    (source_x - 0.5 + rect_thickness/2 - margin, source_y - (rect_thickness-2*margin)/2),
+                    (source_x - 0.5 + rect_thickness/2 - margin, source_y + (rect_thickness-2*margin)/2)
+                ], facecolor='white', edgecolor='none', zorder=11)
+
+            ax.add_patch(mpatches.Rectangle((rect_x, rect_y), rect_w, rect_h, linewidth=0, edgecolor='none', facecolor='black', zorder=10))
+            ax.add_patch(triangle)
+
+    ax.set_xlim(-0.5, grid_width - 0.5)
+    ax.set_ylim(grid_height - 0.5, -0.5)
+    ax.set_aspect('equal')
+
+    if title:
+        ax.set_title(title, fontsize=10)
+
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+    return ax
+
+
+def visualize_source_vs_target_hitting_times(
+    state_indices: List[int],
+    hitting_time_matrix: jnp.ndarray,
+    canonical_states: jnp.ndarray,
+    grid_width: int,
+    grid_height: int,
+    portals: Optional[Dict[Tuple[int, int], int]] = None,
+    ncols: int = 5,
+    figsize: Optional[Tuple[int, int]] = None,
+    wall_color: str = 'gray',
+    save_path: Optional[str] = None,
+    log_scale: bool = False,
+    shared_colorbar: bool = True,
+) -> plt.Figure:
+    """
+    Visualize hitting times for states acting as Targets (columns) vs Sources (rows).
+
+    Args:
+        state_indices: List of state indices to visualize
+        hitting_time_matrix: Matrix [num_states, num_states]
+        canonical_states: State mapping
+        grid_width: Grid width
+        grid_height: Grid height
+        portals: Portal/Door dict
+        ncols: Number of states per row
+        figsize: Figure size
+        wall_color: Color for walls
+        save_path: Path to save
+        log_scale: Whether to plot log(values + 1)
+        shared_colorbar: If True, all plots share the same color scale and one colorbar.
+                         If False, each plot is scaled independently with its own colorbar.
+
+    Returns:
+        Matplotlib figure
+    """
+    num_states = len(state_indices)
+
+    # Calculate grid dimensions
+    num_logical_rows = (num_states + ncols - 1) // ncols
+    nrows = num_logical_rows * 2
+
+    if figsize is None:
+        figsize = (ncols * 3, nrows * 3)
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+
+    # Reshape axes to be 2D array [nrows, ncols] even if single row/col
+    if nrows == 1 and ncols == 1:
+        axes = np.array([[axes]])
+    elif nrows == 1:
+        axes = axes.reshape(1, -1)
+    elif ncols == 1:
+        axes = axes.reshape(-1, 1)
+
+    # Compute global color scales if shared
+    # Ensure the matrix is real (conjugate enforcement should handle this,
+    # but take real part as a safety net for matplotlib compatibility)
+    safe_matrix = np.real(np.maximum(hitting_time_matrix, 0))
+
+    vmin = None
+    vmax = None
+
+    if shared_colorbar:
+        vmin = 0.0
+        if log_scale:
+            max_val = float(np.log1p(np.max(safe_matrix)))
+        else:
+            max_val = float(np.max(safe_matrix))
+
+        if np.isnan(max_val):
+            max_val = float(np.nanmax(np.log1p(safe_matrix) if log_scale else safe_matrix))
+        vmax = max_val
+
+    for idx, state_idx in enumerate(state_indices):
+        r_logical = idx // ncols
+        c = idx % ncols
+
+        # Row for Target View (Even rows: 0, 2, 4...)
+        ax_target = axes[r_logical * 2, c]
+
+        # Row for Source View (Odd rows: 1, 3, 5...)
+        ax_source = axes[r_logical * 2 + 1, c]
+
+        # 1. Target View: Column of H (Time TO state_idx)
+        times_to_state = hitting_time_matrix[:, state_idx]
+
+        visualize_hitting_time_on_grid(
+            hitting_time_values=times_to_state,
+            center_state_idx=state_idx,
+            canonical_states=canonical_states,
+            grid_width=grid_width,
+            grid_height=grid_height,
+            mode='target',
+            portals=portals,
+            title=f'State {state_idx}\n(Target View: Times TO here)',
+            ax=ax_target,
+            cmap='viridis',
+            show_colorbar=not shared_colorbar,
+            wall_color=wall_color,
+            vmin=vmin,
+            vmax=vmax,
+            log_scale=log_scale
+        )
+
+        # 2. Source View: Row of H (Time FROM state_idx)
+        times_from_state = hitting_time_matrix[state_idx, :]
+
+        visualize_hitting_time_on_grid(
+            hitting_time_values=times_from_state,
+            center_state_idx=state_idx,
+            canonical_states=canonical_states,
+            grid_width=grid_width,
+            grid_height=grid_height,
+            mode='source',
+            portals=portals,
+            title=f'State {state_idx}\n(Source View: Times FROM here)',
+            ax=ax_source,
+            cmap='viridis',
+            show_colorbar=not shared_colorbar,
+            wall_color=wall_color,
+            vmin=vmin,
+            vmax=vmax,
+            log_scale=log_scale
+        )
+
+    # Hide unused axes
+    for idx in range(num_states, num_logical_rows * ncols):
+        r_logical = idx // ncols
+        c = idx % ncols
+        axes[r_logical * 2, c].axis('off')
+        axes[r_logical * 2 + 1, c].axis('off')
+
+    plt.tight_layout()
+
+    # Add global colorbar if shared
+    if shared_colorbar:
+        # Adjust the right margin to create space for the colorbar
+        fig.subplots_adjust(right=0.9)
+
+        # Add a global colorbar on the right side
+        # Coordinates are [left, bottom, width, height] in figure relative coords
+        cax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+
+        sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
+        sm.set_array([])
+        cbar = plt.colorbar(sm, cax=cax, orientation='vertical')
+        cbar.ax.tick_params(labelsize=10)
+
+        cbar_label = 'Log(Expected Steps + 1)' if log_scale else 'Expected Steps'
+        cbar.set_label(cbar_label, fontsize=12)
+
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Saved source-vs-target hitting times visualization to {save_path}")
+
+    return fig

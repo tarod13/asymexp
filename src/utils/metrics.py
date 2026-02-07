@@ -402,6 +402,95 @@ def compute_complex_cosine_similarities_with_normalization(
     return result
 
 
+def enforce_conjugate_pairs(
+    left_real: jnp.ndarray,
+    left_imag: jnp.ndarray,
+    right_real: jnp.ndarray,
+    right_imag: jnp.ndarray,
+    eigenvalues_real: jnp.ndarray,
+    eigenvalues_imag: jnp.ndarray,
+    imag_threshold: float = 1e-6,
+    conjugate_tolerance: float = 0.5,
+):
+    """
+    Enforce conjugate structure for consecutive eigenvector pairs.
+
+    For learned eigenvectors, imperfections mean that pairs (k, k+1) that should
+    be complex conjugates don't perfectly satisfy v_{k+1} = conj(v_k). This
+    function detects such pairs and enforces exact conjugation by averaging:
+
+    For a detected conjugate pair at indices k, k+1:
+        - Real parts: (real_k + real_{k+1}) / 2  (should be identical)
+        - Imag parts: (imag_k - imag_{k+1}) / 2 for k, negated for k+1
+
+    Detection: consecutive eigenvalues with |imag| > imag_threshold and
+    imaginary parts that are approximately opposite (relative error < conjugate_tolerance).
+
+    Args:
+        left_real, left_imag: Left eigenvectors [num_states, num_eigenvectors]
+        right_real, right_imag: Right eigenvectors [num_states, num_eigenvectors]
+        eigenvalues_real, eigenvalues_imag: Eigenvalues [num_eigenvectors]
+        imag_threshold: Minimum |imag(eigenvalue)| to consider a pair complex
+        conjugate_tolerance: Maximum relative sum |imag_k + imag_{k+1}| / max(|imag_k|, |imag_{k+1}|)
+
+    Returns:
+        Tuple of (left_real, left_imag, right_real, right_imag,
+                  eigenvalues_real, eigenvalues_imag) with conjugate pairs enforced
+    """
+    n_eig = eigenvalues_real.shape[0]
+
+    out_left_real = jnp.array(left_real)
+    out_left_imag = jnp.array(left_imag)
+    out_right_real = jnp.array(right_real)
+    out_right_imag = jnp.array(right_imag)
+    out_eig_real = jnp.array(eigenvalues_real)
+    out_eig_imag = jnp.array(eigenvalues_imag)
+
+    k = 0
+    while k < n_eig - 1:
+        imag_k = float(eigenvalues_imag[k])
+        imag_k1 = float(eigenvalues_imag[k + 1])
+
+        max_abs_imag = max(abs(imag_k), abs(imag_k1))
+
+        # Both must have non-negligible imaginary parts
+        if max_abs_imag > imag_threshold:
+            # Check if imaginary parts are approximately opposite
+            sum_imag = abs(imag_k + imag_k1)
+            if sum_imag < conjugate_tolerance * max_abs_imag:
+                # Enforce conjugate structure for eigenvalues
+                avg_eig_real = (float(eigenvalues_real[k]) + float(eigenvalues_real[k + 1])) / 2.0
+                avg_eig_imag = (imag_k - imag_k1) / 2.0
+                out_eig_real = out_eig_real.at[k].set(avg_eig_real)
+                out_eig_real = out_eig_real.at[k + 1].set(avg_eig_real)
+                out_eig_imag = out_eig_imag.at[k].set(avg_eig_imag)
+                out_eig_imag = out_eig_imag.at[k + 1].set(-avg_eig_imag)
+
+                # Enforce conjugate structure for right eigenvectors
+                avg_right_real = (right_real[:, k] + right_real[:, k + 1]) / 2.0
+                avg_right_imag = (right_imag[:, k] - right_imag[:, k + 1]) / 2.0
+                out_right_real = out_right_real.at[:, k].set(avg_right_real)
+                out_right_real = out_right_real.at[:, k + 1].set(avg_right_real)
+                out_right_imag = out_right_imag.at[:, k].set(avg_right_imag)
+                out_right_imag = out_right_imag.at[:, k + 1].set(-avg_right_imag)
+
+                # Enforce conjugate structure for left eigenvectors
+                avg_left_real = (left_real[:, k] + left_real[:, k + 1]) / 2.0
+                avg_left_imag = (left_imag[:, k] - left_imag[:, k + 1]) / 2.0
+                out_left_real = out_left_real.at[:, k].set(avg_left_real)
+                out_left_real = out_left_real.at[:, k + 1].set(avg_left_real)
+                out_left_imag = out_left_imag.at[:, k].set(avg_left_imag)
+                out_left_imag = out_left_imag.at[:, k + 1].set(-avg_left_imag)
+
+                k += 2
+                continue
+
+        k += 1
+
+    return (out_left_real, out_left_imag, out_right_real, out_right_imag,
+            out_eig_real, out_eig_imag)
+
+
 def compute_hitting_times_from_eigenvectors(
     left_real: jnp.ndarray,
     left_imag: jnp.ndarray,
@@ -409,31 +498,96 @@ def compute_hitting_times_from_eigenvectors(
     right_imag: jnp.ndarray,
     eigenvalues_real: jnp.ndarray,
     eigenvalues_imag: jnp.ndarray,
+    gamma: float = None,
+    delta: float = 0.0,
+    eigenvalue_type: str = 'transition',
+    enforce_conjugates: bool = True,
 ) -> jnp.ndarray:
     """
-    Compute 
+    Compute hitting times from eigenvector decomposition.
+
+    The hitting time formula is:
+        h(i,j) = Σ_{k>=1} [1/(1-λ_P_k)] * (1/π_j) * ψ_jk * (φ_jk - φ_ik)
+
+    where λ_P are eigenvalues of the transition matrix P, ψ/φ are left/right
+    eigenvectors, and π is the stationary distribution (left eigenvector 0).
+
+    The eigenvalues may come from different matrices that share eigenvectors
+    with P. The eigenvalue_type parameter controls the conversion:
+
+    - 'transition': eigenvalues are already λ_P (no conversion needed)
+    - 'kernel': eigenvalues are from M = (1-γ)P·SR_γ. Conversion:
+        λ_P = λ_M / (1 - γ + γλ_M)
+    - 'laplacian': eigenvalues are from L = (1+δ)I - M. Conversion:
+        λ_P = (1 + δ - λ_L) / (1 + γδ - γλ_L)
+
+    The eigenvectors are shared between P, M, and L so no conversion is needed.
+
+    For learned eigenvectors, conjugate pairs may be imperfect. When
+    enforce_conjugates=True, consecutive pairs are averaged to enforce exact
+    conjugate structure before computing hitting times.
 
     Args:
-        right_real: Learned right eigenvector real parts [num_states, num_eigenvectors]
-        right_imag: Learned right eigenvector imaginary parts [num_states, num_eigenvectors]
-        left_real: Ground truth left eigenvector real parts [num_states, num_eigenvectors]
-        left_imag: Ground truth left eigenvector imaginary parts [num_states, num_eigenvectors]
-        eigenvalues_real: Real parts of eigenvalues corresponding to eigenvectors [num_eigenvectors]
-        eigenvalues_imag: Imaginary parts of eigenvalues corresponding to eigenvectors [num_eigenvectors]
+        left_real: Left eigenvector real parts [num_states, num_eigenvectors]
+        left_imag: Left eigenvector imaginary parts [num_states, num_eigenvectors]
+        right_real: Right eigenvector real parts [num_states, num_eigenvectors]
+        right_imag: Right eigenvector imaginary parts [num_states, num_eigenvectors]
+        eigenvalues_real: Real parts of eigenvalues [num_eigenvectors]
+        eigenvalues_imag: Imaginary parts of eigenvalues [num_eigenvectors]
+        gamma: Discount factor. Required when eigenvalue_type is 'kernel' or 'laplacian'.
+        delta: Eigenvalue shift parameter used in Laplacian construction (default 0.0).
+            Only used when eigenvalue_type is 'laplacian'.
+        eigenvalue_type: Source of the eigenvalues. One of:
+            'transition' - already transition matrix eigenvalues (default)
+            'kernel' - eigenvalues of M = (1-γ)P·SR_γ (learned eigenvalues)
+            'laplacian' - eigenvalues of L = (1+δ)I - M (ground truth eigenvalues)
+        enforce_conjugates: If True, enforce conjugate structure for consecutive
+            pairs before computing hitting times.
 
     Returns:
         Hitting times matrix of shape [num_states, num_states]
     """
+    if enforce_conjugates:
+        left_real, left_imag, right_real, right_imag, \
+            eigenvalues_real, eigenvalues_imag = enforce_conjugate_pairs(
+                left_real, left_imag, right_real, right_imag,
+                eigenvalues_real, eigenvalues_imag,
+            )
+
     left = left_real + 1j * left_imag
     right = right_real + 1j * right_imag
-
-    differences = right[:, jnp.newaxis, 1:] - right[jnp.newaxis, :, 1:]  # [num_states, num_states, num_eigenvectors]
-    weighted_left = left[:, 1:] / left[:, 0:1]  # [num_states, num_eigenvectors-1]
-    weighted_differences = weighted_left[:, jnp.newaxis, :] * differences  # [num_states, num_states, num_eigenvectors-1]
     eigenvalues = eigenvalues_real + 1j * eigenvalues_imag
-    eigenvector_weights = 1.0 / (1.0 - eigenvalues[1:]) # [num_eigenvectors-1]
-    hitting_times = jnp.einsum(
-        'ijk,k->ij', jnp.real(weighted_differences), eigenvector_weights,
-    )  # [num_states, num_states]
+
+    # Convert eigenvalues to transition matrix eigenvalues based on source type
+    if eigenvalue_type == 'kernel':
+        # Learned eigenvalues are from M = (1-γ)P·SR_γ
+        # λ_P = λ_M / (1 - γ + γλ_M)
+        eigenvalues = eigenvalues / (1.0 - gamma + gamma * eigenvalues)
+    elif eigenvalue_type == 'laplacian':
+        # Ground truth eigenvalues are from L = (1+δ)I - M
+        # λ_P = (1 + δ - λ_L) / (1 + γδ - γλ_L)
+        eigenvalues = (1.0 + delta - eigenvalues) / (1.0 + gamma * delta - gamma * eigenvalues)
+
+    # Stationary distribution from first left eigenvector
+    stationary = left[:, 0]
+
+    # Effective horizon weights: 1/(1-λ_P) for k >= 1
+    mode_weights = 1.0 / (1.0 - eigenvalues[1:])  # [num_eigenvectors-1]
+
+    # Pairwise differences of right eigenvectors: φ_jk - φ_ik
+    # pairwise_diff[j, i, k] = right[j, k] - right[i, k]
+    pairwise_diff = (
+        jnp.expand_dims(right[:, 1:], axis=1)
+        - jnp.expand_dims(right[:, 1:], axis=0)
+    )  # [num_states, num_states, num_eigenvectors-1]
+
+    # h(i,j) = Σ_k mode_weights[k] * (1/π_j) * ψ_jk * (φ_jk - φ_ik)
+    hitting_times = jnp.real(jnp.einsum(
+        'k,j,jk,jik->ij',
+        mode_weights,
+        1.0 / stationary,
+        left[:, 1:],
+        pairwise_diff,
+    ))  # [num_states, num_states]
 
     return hitting_times
