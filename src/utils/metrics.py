@@ -537,8 +537,8 @@ def compute_hitting_times_from_eigenvectors(
     weighted_differences = weighted_left[:, jnp.newaxis, :] * differences  # [num_states, num_states, num_eigenvectors-1]
     eigenvalues = eigenvalues_real + 1j * eigenvalues_imag
     eigenvector_weights = 1.0 / (1.0 - eigenvalues[1:]) # [num_eigenvectors-1]
-    hitting_times = jnp.einsum(
-        'ijk,k->ij', jnp.real(weighted_differences), eigenvector_weights,
-    )  # [num_states, num_states]
+    hitting_times = jnp.real(jnp.einsum(
+        'ijk,k->ij', weighted_differences, eigenvector_weights,
+    ))  # [num_states, num_states]
 
     return hitting_times
