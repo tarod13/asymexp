@@ -4,9 +4,9 @@ from dataclasses import dataclass
 @dataclass
 class Args:
     # Environment
-    env_type: str = "room4"  # 'room4', 'maze', 'spiral', 'obstacles', 'empty', or 'file'
+    env_type: str = "file"  # 'room4', 'maze', 'spiral', 'obstacles', 'empty', or 'file'
     env_file: str | None = None  # Path to environment text file (if env_type='file')
-    env_file_name: str | None = None  # Name of environment file in src/envs/txt/ (e.g., 'GridRoom-4')
+    env_file_name: str | None = "GridRoom-4-Doors"  # Name of environment file in src/envs/txt/ (e.g., 'GridRoom-4')
     max_episode_length: int = 1000
 
     # Data collection
@@ -19,20 +19,22 @@ class Args:
     door_seed: int = 42  # Seed for door placement
 
     # Model
-    num_eigenvector_pairs: int = 4  # Number of complex eigenvector pairs to learn
+    num_eigenvector_pairs: int = 10  # Number of complex eigenvector pairs to learn
     hidden_dim: int = 256
     num_hidden_layers: int = 3
 
     # Training
-    learning_rate: float = 3e-4
+    learning_rate: float = 1e-5
     batch_size: int = 256
-    num_gradient_steps: int = 20000
-    gamma: float = 0.2  # Discount factor for successor representation
+    num_gradient_steps: int = 100000
+    gamma: float = 0.95  # Discount factor for successor representation
     delta: float = 0.1  # Eigenvalue shift parameter: L = (1+δ)I - M (improves numerical stability)
     lambda_x: float = 10.0  # Exponential decay parameter for CLF
     lambda_xy: float = 10.0  # Exponential decay parameter for CLF for xy phase
     chirality_factor: float = 0.1  # Weight for chirality term
-    ema_learning_rate: float = 0.01  # EMA update rate for eigenvalue estimates
+    ema_learning_rate: float = 0.0001  # EMA update rate for eigenvalue estimates
+    dual_learning_rate: float = 3e-4  # Learning rate for dual variables (duals_learner)
+    barrier: float = 1.0  # Barrier strength for dual norm constraints (duals_learner)
 
     # Episodic replay buffer
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
