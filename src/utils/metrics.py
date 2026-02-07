@@ -500,6 +500,7 @@ def compute_hitting_times_from_eigenvectors(
     eigenvalues_imag: jnp.ndarray,
     gamma: float = None,
     delta: float = 0.0,
+    eigenvalue_type: str = 'transition',
     enforce_conjugates: bool = True,
 ) -> jnp.ndarray:
     """
@@ -511,10 +512,16 @@ def compute_hitting_times_from_eigenvectors(
     where λ_P are eigenvalues of the transition matrix P, ψ/φ are left/right
     eigenvectors, and π is the stationary distribution (left eigenvector 0).
 
-    When eigenvalues come from the Laplacian L = (1+δ)I - (1-γ)P·SR_γ (i.e.
-    gamma is provided), they are converted to transition matrix eigenvalues:
+    The eigenvalues may come from different matrices that share eigenvectors
+    with P. The eigenvalue_type parameter controls the conversion:
+
+    - 'transition': eigenvalues are already λ_P (no conversion needed)
+    - 'kernel': eigenvalues are from M = (1-γ)P·SR_γ. Conversion:
+        λ_P = λ_M / (1 - γ + γλ_M)
+    - 'laplacian': eigenvalues are from L = (1+δ)I - M. Conversion:
         λ_P = (1 + δ - λ_L) / (1 + γδ - γλ_L)
-    The eigenvectors are shared between P and L so no conversion is needed.
+
+    The eigenvectors are shared between P, M, and L so no conversion is needed.
 
     For learned eigenvectors, conjugate pairs may be imperfect. When
     enforce_conjugates=True, consecutive pairs are averaged to enforce exact
@@ -527,10 +534,13 @@ def compute_hitting_times_from_eigenvectors(
         right_imag: Right eigenvector imaginary parts [num_states, num_eigenvectors]
         eigenvalues_real: Real parts of eigenvalues [num_eigenvectors]
         eigenvalues_imag: Imaginary parts of eigenvalues [num_eigenvectors]
-        gamma: Discount factor. If provided, eigenvalues are treated as Laplacian
-            eigenvalues and converted to transition matrix eigenvalues.
-            If None, eigenvalues are assumed to already be transition matrix eigenvalues.
+        gamma: Discount factor. Required when eigenvalue_type is 'kernel' or 'laplacian'.
         delta: Eigenvalue shift parameter used in Laplacian construction (default 0.0).
+            Only used when eigenvalue_type is 'laplacian'.
+        eigenvalue_type: Source of the eigenvalues. One of:
+            'transition' - already transition matrix eigenvalues (default)
+            'kernel' - eigenvalues of M = (1-γ)P·SR_γ (learned eigenvalues)
+            'laplacian' - eigenvalues of L = (1+δ)I - M (ground truth eigenvalues)
         enforce_conjugates: If True, enforce conjugate structure for consecutive
             pairs before computing hitting times.
 
@@ -548,8 +558,13 @@ def compute_hitting_times_from_eigenvectors(
     right = right_real + 1j * right_imag
     eigenvalues = eigenvalues_real + 1j * eigenvalues_imag
 
-    # Convert Laplacian eigenvalues to transition matrix eigenvalues if needed
-    if gamma is not None:
+    # Convert eigenvalues to transition matrix eigenvalues based on source type
+    if eigenvalue_type == 'kernel':
+        # Learned eigenvalues are from M = (1-γ)P·SR_γ
+        # λ_P = λ_M / (1 - γ + γλ_M)
+        eigenvalues = eigenvalues / (1.0 - gamma + gamma * eigenvalues)
+    elif eigenvalue_type == 'laplacian':
+        # Ground truth eigenvalues are from L = (1+δ)I - M
         # λ_P = (1 + δ - λ_L) / (1 + γδ - γλ_L)
         eigenvalues = (1.0 + delta - eigenvalues) / (1.0 + gamma * delta - gamma * eigenvalues)
 

@@ -914,6 +914,7 @@ def learn_eigenvectors(args):
                 eigenvalues_imag=encoder_state.params['lambda_imag'],
                 gamma=args.gamma,
                 delta=args.delta,
+                eigenvalue_type='kernel',
             )
             gt_hitting_times = compute_hitting_times_from_eigenvectors(
                 left_real=gt_left_real,
@@ -924,6 +925,7 @@ def learn_eigenvectors(args):
                 eigenvalues_imag=gt_eigenvalues_imag,
                 gamma=args.gamma,
                 delta=args.delta,
+                eigenvalue_type='laplacian',
             )
 
             # Store metrics
@@ -1148,6 +1150,7 @@ def learn_eigenvectors(args):
         eigenvalues_imag=encoder_state.params['lambda_imag'],
         gamma=args.gamma,
         delta=args.delta,
+        eigenvalue_type='kernel',
     )
 
     # Compute ground truth hitting times
@@ -1160,6 +1163,7 @@ def learn_eigenvectors(args):
         eigenvalues_imag=gt_eigenvalues_imag,
         gamma=args.gamma,
         delta=args.delta,
+        eigenvalue_type='laplacian',
     )
 
     # Select states to visualize (evenly spaced across state space)
