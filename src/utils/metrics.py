@@ -498,15 +498,27 @@ def compute_hitting_times_from_eigenvectors(
     right_imag: jnp.ndarray,
     eigenvalues_real: jnp.ndarray,
     eigenvalues_imag: jnp.ndarray,
+    gamma: float = None,
+    delta: float = 0.0,
     enforce_conjugates: bool = True,
 ) -> jnp.ndarray:
     """
     Compute hitting times from eigenvector decomposition.
 
-    For learned eigenvectors, conjugate pairs may be imperfect, causing the
-    imaginary parts to not cancel properly. When enforce_conjugates=True,
-    consecutive eigenvector pairs that appear to be complex conjugates are
-    averaged to enforce exact conjugate structure before computing hitting times.
+    The hitting time formula is:
+        h(i,j) = Σ_{k>=1} [1/(1-λ_P_k)] * (1/π_j) * ψ_jk * (φ_jk - φ_ik)
+
+    where λ_P are eigenvalues of the transition matrix P, ψ/φ are left/right
+    eigenvectors, and π is the stationary distribution (left eigenvector 0).
+
+    When eigenvalues come from the Laplacian L = (1+δ)I - (1-γ)P·SR_γ (i.e.
+    gamma is provided), they are converted to transition matrix eigenvalues:
+        λ_P = (1 + δ - λ_L) / (1 + γδ - γλ_L)
+    The eigenvectors are shared between P and L so no conversion is needed.
+
+    For learned eigenvectors, conjugate pairs may be imperfect. When
+    enforce_conjugates=True, consecutive pairs are averaged to enforce exact
+    conjugate structure before computing hitting times.
 
     Args:
         left_real: Left eigenvector real parts [num_states, num_eigenvectors]
@@ -515,9 +527,12 @@ def compute_hitting_times_from_eigenvectors(
         right_imag: Right eigenvector imaginary parts [num_states, num_eigenvectors]
         eigenvalues_real: Real parts of eigenvalues [num_eigenvectors]
         eigenvalues_imag: Imaginary parts of eigenvalues [num_eigenvectors]
+        gamma: Discount factor. If provided, eigenvalues are treated as Laplacian
+            eigenvalues and converted to transition matrix eigenvalues.
+            If None, eigenvalues are assumed to already be transition matrix eigenvalues.
+        delta: Eigenvalue shift parameter used in Laplacian construction (default 0.0).
         enforce_conjugates: If True, enforce conjugate structure for consecutive
-            pairs before computing hitting times. This improves accuracy for
-            learned (imperfect) eigenvectors.
+            pairs before computing hitting times.
 
     Returns:
         Hitting times matrix of shape [num_states, num_states]
@@ -531,14 +546,33 @@ def compute_hitting_times_from_eigenvectors(
 
     left = left_real + 1j * left_imag
     right = right_real + 1j * right_imag
-
-    differences = right[:, jnp.newaxis, 1:] - right[jnp.newaxis, :, 1:]  # [num_states, num_states, num_eigenvectors]
-    weighted_left = left[:, 1:] / left[:, 0:1]  # [num_states, num_eigenvectors-1]
-    weighted_differences = weighted_left[:, jnp.newaxis, :] * differences  # [num_states, num_states, num_eigenvectors-1]
     eigenvalues = eigenvalues_real + 1j * eigenvalues_imag
-    eigenvector_weights = 1.0 / (1.0 - eigenvalues[1:]) # [num_eigenvectors-1]
+
+    # Convert Laplacian eigenvalues to transition matrix eigenvalues if needed
+    if gamma is not None:
+        # λ_P = (1 + δ - λ_L) / (1 + γδ - γλ_L)
+        eigenvalues = (1.0 + delta - eigenvalues) / (1.0 + gamma * delta - gamma * eigenvalues)
+
+    # Stationary distribution from first left eigenvector
+    stationary = left[:, 0]
+
+    # Effective horizon weights: 1/(1-λ_P) for k >= 1
+    mode_weights = 1.0 / (1.0 - eigenvalues[1:])  # [num_eigenvectors-1]
+
+    # Pairwise differences of right eigenvectors: φ_jk - φ_ik
+    # pairwise_diff[j, i, k] = right[j, k] - right[i, k]
+    pairwise_diff = (
+        jnp.expand_dims(right[:, 1:], axis=1)
+        - jnp.expand_dims(right[:, 1:], axis=0)
+    )  # [num_states, num_states, num_eigenvectors-1]
+
+    # h(i,j) = Σ_k mode_weights[k] * (1/π_j) * ψ_jk * (φ_jk - φ_ik)
     hitting_times = jnp.real(jnp.einsum(
-        'ijk,k->ij', weighted_differences, eigenvector_weights,
+        'k,j,jk,jik->ij',
+        mode_weights,
+        1.0 / stationary,
+        left[:, 1:],
+        pairwise_diff,
     ))  # [num_states, num_states]
 
     return hitting_times
