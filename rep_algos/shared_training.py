@@ -269,6 +269,8 @@ def learn_eigenvectors(args, learner_module):
         num_eigenvector_pairs=args.num_eigenvector_pairs,
         hidden_dim=args.hidden_dim,
         num_hidden_layers=args.num_hidden_layers,
+        use_residual=args.use_residual,
+        use_layernorm=args.use_layernorm,
     )
 
     # Create optimizer - check if learner provides custom optimizer creation

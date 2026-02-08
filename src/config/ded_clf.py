@@ -22,6 +22,8 @@ class Args:
     num_eigenvector_pairs: int = 10  # Number of complex eigenvector pairs to learn
     hidden_dim: int = 256
     num_hidden_layers: int = 3
+    use_residual: bool = True  # Whether to use residual connections in the network
+    use_layernorm: bool = True  # Whether to use LayerNorm in the network
 
     # Training
     learning_rate: float = 1e-5
