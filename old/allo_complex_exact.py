@@ -45,10 +45,10 @@ from src.envs.door_gridworld import (
     create_random_doors,
 )
 from src.data_collection import collect_transition_counts_and_episodes
-from exp_complex_basis.eigenvector_visualization import (
+from src.utils.plotting import (
     visualize_multiple_eigenvectors,
 )
-from exp_complex_basis.eigendecomposition import compute_eigendecomposition
+from src.utils.laplacian import compute_eigendecomposition
 
 
 def get_transition_matrix(

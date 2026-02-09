@@ -17,40 +17,21 @@ import argparse
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple
 import sys
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 
-# Add parent directory to path for imports
-sys.path.append(str(Path(__file__).parent.parent))
+# Add project root to path for imports
+sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from exp_complex_basis.eigendecomposition import (
-    compute_eigendecomposition_batched,
-)
-from exp_complex_basis.hitting_times import compute_hitting_times_batched
-from exp_complex_basis.eigenvector_visualization import (
+from src.utils.laplacian import compute_eigendecomposition_batched
+from src.utils.metrics import compute_hitting_times_batched
+from src.utils.plotting import (
     create_eigenvector_visualization_report,
-)
-from exp_complex_basis.hitting_time_visualization import (
     create_hitting_time_visualization_report,
 )
-from exp_irreversible_doors.door_environment import (
-    generate_batched_door_environments,
-)
+from src.utils.envs import get_canonical_free_states
 from src.envs.env import create_environment_from_text
-
-
-def get_canonical_free_states(base_env):
-    """Get the canonical set of free (non-obstacle) states from the base environment."""
-    width = base_env.width
-    height = base_env.height
-    all_states = set(range(width * height))
-    obstacle_states = set()
-    if base_env.has_obstacles:
-        for obs in base_env.obstacles:
-            obs_x, obs_y = int(obs[0]), int(obs[1])
-            if 0 <= obs_x < width and 0 <= obs_y < height:
-                state_idx = obs_y * width + obs_x
-                obstacle_states.add(state_idx)
-    free_states = sorted(list(all_states - obstacle_states))
-    return jnp.array(free_states, dtype=jnp.int32)
+from src.data_collection import generate_batched_door_environments
 
 
 def visualize_doors_on_grid(
@@ -62,12 +43,8 @@ def visualize_doors_on_grid(
     output_path: str
 ):
     """Create a simple visualization showing door locations."""
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
-
     fig, ax = plt.subplots(figsize=(10, 10))
 
-    # Draw obstacles/walls
     for obs_x, obs_y in obstacles:
         rect = mpatches.Rectangle(
             (obs_x - 0.5, obs_y - 0.5), 1, 1,
@@ -75,13 +52,11 @@ def visualize_doors_on_grid(
         )
         ax.add_patch(rect)
 
-    # Draw grid
     for i in range(grid_height + 1):
         ax.axhline(i - 0.5, color='black', linewidth=1)
     for j in range(grid_width + 1):
         ax.axvline(j - 0.5, color='black', linewidth=1)
 
-    # Action mapping: 0=up, 1=right, 2=down, 3=left
     rect_thickness = 0.15
     rect_width = 0.7
     margin = 0.02
@@ -144,7 +119,7 @@ def run_door_analysis(
     batched_transition_counts: jnp.ndarray,
     metadata: Dict,
     k: int = 20,
-    output_dir: str = "exp_irreversible_doors/results",
+    output_dir: str = "experiments/02/results",
     save_results: bool = True,
     num_eigenvectors_to_visualize: int = 6,
     num_targets_to_visualize: int = 6,
@@ -193,7 +168,7 @@ def run_door_analysis(
     # Compile results
     first_env_eigendecomp = {key: value[0] for key, value in batched_eigendecomp.items()}
     first_env_hitting_times = batched_hitting_times[0]
-    
+
     results = {
         "batched_eigendecomposition": batched_eigendecomp,
         "batched_hitting_times": batched_hitting_times,
@@ -250,10 +225,8 @@ def run_door_analysis(
     # [5/5] Visualize hitting times (Asymmetry)
     print("\n[5/5] Visualizing hitting times (Asymmetry analysis)...")
     if save_results:
-        # If ncols is not specified, default to num_targets (single row of states, double row of plots)
-        # or limit to a reasonable number to avoid super wide plots
         ht_ncols = ncols if ncols is not None else min(5, num_targets_to_visualize)
-        
+
         create_hitting_time_visualization_report(
             hitting_time_matrix=first_env_hitting_times,
             canonical_states=canonical_states,
@@ -283,14 +256,14 @@ def main():
     parser.add_argument("--num-rollouts", type=int, default=100, help="Number of rollouts per environment")
     parser.add_argument("--num-steps", type=int, default=100, help="Number of steps per rollout")
     parser.add_argument("--k", type=int, default=20, help="Number of eigenvectors to compute")
-    parser.add_argument("--output-dir", type=str, default="exp_irreversible_doors/results", help="Output directory")
+    parser.add_argument("--output-dir", type=str, default="experiments/02/results", help="Output directory")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--nrows", type=int, default=None, help="Rows for eigenvector grid")
     parser.add_argument("--ncols", type=int, default=None, help="Columns for eigenvector grid")
     parser.add_argument("--wall-color", type=str, default="gray", help="Color for walls")
     parser.add_argument("--num-eigenvectors", type=int, default=6, help="Eigenvectors to visualize")
-    parser.add_argument("--num-targets", type=int, default=6, help="Number of target states to visualize for hitting times")
-    parser.add_argument("--log-scale", action="store_true", help="Use logarithmic scale (log(x+1)) for hitting time plots")
+    parser.add_argument("--num-targets", type=int, default=6, help="Number of target states for hitting times")
+    parser.add_argument("--log-scale", action="store_true", help="Use logarithmic scale for hitting times")
 
     args = parser.parse_args()
 

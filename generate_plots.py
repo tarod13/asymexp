@@ -31,7 +31,7 @@ import matplotlib.pyplot as plt
 sys.path.append(str(Path(__file__).parent))
 
 from exp_alcl.allo import plot_learning_curves, plot_dual_variable_evolution, plot_cosine_similarity_evolution, plot_sampling_distribution
-from exp_complex_basis.eigenvector_visualization import (
+from src.utils.plotting import (
     visualize_multiple_eigenvectors,
     visualize_eigenvector_on_grid,
 )
