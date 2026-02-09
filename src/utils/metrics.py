@@ -1,5 +1,6 @@
-from typing import Dict
+from typing import Dict, Tuple
 import numpy as np
+import jax
 import jax.numpy as jnp
 
 def compute_complex_cosine_similarities_with_conjugate_skipping(
@@ -591,3 +592,73 @@ def compute_hitting_times_from_eigenvectors(
     ))  # [num_states, num_states]
 
     return hitting_times
+
+
+def compute_hitting_times(
+    eigendecomposition: Dict[str, jnp.ndarray],
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Compute hitting times from a complex eigendecomposition dict.
+
+    Uses the fundamental matrix Z formula with the eigendecomposition of the
+    transition matrix. The eigendecomposition dict should contain 'left_eigenvectors',
+    'right_eigenvectors', and 'eigenvalues' (all complex-valued).
+
+    Args:
+        eigendecomposition: Dict with keys 'left_eigenvectors', 'right_eigenvectors',
+            'eigenvalues', each complex-valued. Shapes: eigenvectors are
+            [num_states, k], eigenvalues are [k].
+
+    Returns:
+        hitting_times: Real-valued matrix of shape [num_states, num_states]
+        hitting_times_imaginary_error: Scalar measuring the imaginary residual
+    """
+    left_eigenvectors = eigendecomposition["left_eigenvectors"]
+    right_eigenvectors = eigendecomposition["right_eigenvectors"]
+    eigenvalues = eigendecomposition["eigenvalues"]
+
+    # The stationary distribution is given by the first left eigenvector
+    stationary_distribution = jnp.real(left_eigenvectors[:, 0] / jnp.sum(left_eigenvectors[:, 0]))
+
+    # Effective horizons for each mode, from the fundamental matrix Z
+    mode_effective_horizons = 1 / (1 - eigenvalues[1:])
+
+    pairwise_differences = (
+        jnp.expand_dims(right_eigenvectors[:, 1:], axis=1)
+        - jnp.expand_dims(right_eigenvectors[:, 1:], axis=0)
+    )  # Shape [num_states, num_states, num_eigenvectors-1]
+
+    hitting_times = jnp.einsum(
+        'k,j,jk,jik->ij',
+        mode_effective_horizons,
+        1 / stationary_distribution,
+        left_eigenvectors[:, 1:],
+        pairwise_differences,
+    )  # Shape [num_states, num_states]
+
+    hitting_times_imaginary_error = (jnp.imag(hitting_times)**2).sum() / (hitting_times.shape[0]**2)
+    hitting_times = jnp.real(hitting_times)
+
+    return hitting_times, hitting_times_imaginary_error
+
+
+def compute_hitting_times_batched(
+    batched_eigendecomposition: Dict[str, jnp.ndarray],
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Compute hitting times for a batch of eigendecompositions.
+
+    Args:
+        batched_eigendecomposition: Dict with keys 'left_eigenvectors',
+            'right_eigenvectors', 'eigenvalues', each of shape
+            [batch_size, ...] corresponding to multiple environments.
+
+    Returns:
+        hitting_times: Shape [batch_size, num_states, num_states]
+        hitting_times_imaginary_error: Shape [batch_size]
+    """
+    hitting_times, hitting_times_imaginary_error = jax.vmap(
+        compute_hitting_times
+    )(batched_eigendecomposition)
+
+    return hitting_times, hitting_times_imaginary_error

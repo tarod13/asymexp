@@ -26,16 +26,13 @@ def compute_pairwise_distances(vectors: jnp.ndarray, metric: str = "euclidean") 
         Distance matrix of shape [num_states, num_states]
     """
     if metric == "euclidean":
-        # Efficient computation: ||a - b||^2 = ||a||^2 + ||b||^2 - 2 * a^T b
         norms_sq = jnp.sum(vectors ** 2, axis=1, keepdims=True)
         dot_product = jnp.dot(vectors, vectors.T)
         distances_sq = norms_sq + norms_sq.T - 2 * dot_product
-        distances = jnp.sqrt(jnp.maximum(distances_sq, 0))  # Handle numerical errors
+        distances = jnp.sqrt(jnp.maximum(distances_sq, 0))
     elif metric == "manhattan":
-        # L1 distance
         distances = jnp.sum(jnp.abs(vectors[:, None, :] - vectors[None, :, :]), axis=2)
     elif metric == "cosine":
-        # Cosine distance = 1 - cosine_similarity
         norms = jnp.linalg.norm(vectors, axis=1, keepdims=True)
         normalized = vectors / jnp.maximum(norms, 1e-10)
         similarities = jnp.dot(normalized, normalized.T)
@@ -72,20 +69,14 @@ def compute_eigenspace_distances(
     eigenvectors_real = eigendecomposition["eigenvectors_real"]
     eigenvectors_imag = eigendecomposition["eigenvectors_imag"]
 
-    # Limit to top k eigenvectors if specified
     if k is not None:
         eigenvectors_real = eigenvectors_real[:, :k]
         eigenvectors_imag = eigenvectors_imag[:, :k]
 
-    # Compute distances for real components
     distances_real = compute_pairwise_distances(eigenvectors_real, metric=metric)
-
-    # Compute distances for imaginary components
     distances_imag = compute_pairwise_distances(eigenvectors_imag, metric=metric)
 
-    # Compute combined distances
     if use_real and use_imag:
-        # Concatenate real and imaginary parts
         combined_vectors = jnp.concatenate([eigenvectors_real, eigenvectors_imag], axis=1)
     elif use_real:
         combined_vectors = eigenvectors_real
@@ -107,25 +98,12 @@ def compute_grid_euclidean_distances(
     states: jnp.ndarray,
     grid_width: int
 ) -> jnp.ndarray:
-    """
-    Compute Euclidean distances between grid states.
-
-    Args:
-        states: Array of state indices (flattened grid positions)
-        grid_width: Width of the grid
-
-    Returns:
-        Distance matrix of shape [num_states, num_states]
-    """
-    # Convert flat indices to (x, y) coordinates
+    """Compute Euclidean distances between grid states."""
     y_coords = states // grid_width
     x_coords = states % grid_width
-
-    # Compute pairwise Euclidean distances
     dx = x_coords[:, None] - x_coords[None, :]
     dy = y_coords[:, None] - y_coords[None, :]
     distances = jnp.sqrt(dx ** 2 + dy ** 2)
-
     return distances
 
 
@@ -133,25 +111,12 @@ def compute_grid_manhattan_distances(
     states: jnp.ndarray,
     grid_width: int
 ) -> jnp.ndarray:
-    """
-    Compute Manhattan (L1) distances between grid states.
-
-    Args:
-        states: Array of state indices (flattened grid positions)
-        grid_width: Width of the grid
-
-    Returns:
-        Distance matrix of shape [num_states, num_states]
-    """
-    # Convert flat indices to (x, y) coordinates
+    """Compute Manhattan (L1) distances between grid states."""
     y_coords = states // grid_width
     x_coords = states % grid_width
-
-    # Compute pairwise Manhattan distances
     dx = jnp.abs(x_coords[:, None] - x_coords[None, :])
     dy = jnp.abs(y_coords[:, None] - y_coords[None, :])
     distances = dx + dy
-
     return distances
 
 
@@ -159,31 +124,16 @@ def compute_shortest_path_distances(
     transition_matrix: jnp.ndarray,
     max_iterations: int = 1000
 ) -> jnp.ndarray:
-    """
-    Compute shortest path distances using Floyd-Warshall algorithm.
-
-    Args:
-        transition_matrix: Shape [num_states, num_states], adjacency matrix
-        max_iterations: Maximum number of iterations (for JAX compatibility)
-
-    Returns:
-        Distance matrix where entry [i,j] is shortest path from i to j
-    """
+    """Compute shortest path distances using Floyd-Warshall algorithm."""
     num_states = transition_matrix.shape[0]
-
-    # Initialize distance matrix
-    # Set distance to 1 where there's a transition, infinity otherwise
     distances = jnp.where(
         transition_matrix > 0,
         jnp.ones_like(transition_matrix),
         jnp.full_like(transition_matrix, jnp.inf)
     )
-    # Distance from state to itself is 0
     distances = distances.at[jnp.arange(num_states), jnp.arange(num_states)].set(0)
 
-    # Floyd-Warshall algorithm
     for k in range(num_states):
-        # For each intermediate node k, check if path through k is shorter
         distances = jnp.minimum(
             distances,
             distances[:, k:k+1] + distances[k:k+1, :]
@@ -198,21 +148,7 @@ def compute_environment_distances(
     transition_matrix: Optional[jnp.ndarray] = None,
     include_shortest_path: bool = False
 ) -> Dict[str, jnp.ndarray]:
-    """
-    Compute various environment-based distances between states.
-
-    Args:
-        states: Array of state indices
-        grid_width: Width of the grid
-        transition_matrix: Optional transition matrix for shortest path computation
-        include_shortest_path: Whether to compute shortest path distances (can be slow)
-
-    Returns:
-        Dictionary containing:
-            - euclidean: Euclidean distances in grid space
-            - manhattan: Manhattan distances in grid space
-            - shortest_path: Shortest path distances (if include_shortest_path=True)
-    """
+    """Compute various environment-based distances between states."""
     distances = {
         "euclidean": compute_grid_euclidean_distances(states, grid_width),
         "manhattan": compute_grid_manhattan_distances(states, grid_width),
@@ -229,27 +165,8 @@ def compare_distances(
     environment_distances: jnp.ndarray,
     exclude_diagonal: bool = True
 ) -> Dict[str, float]:
-    """
-    Compare eigenspace distances with environment distances.
-
-    Computes correlation and other metrics to understand the relationship
-    between distances in eigenspace and actual environment.
-
-    Args:
-        eigenspace_distances: Shape [num_states, num_states]
-        environment_distances: Shape [num_states, num_states]
-        exclude_diagonal: Whether to exclude diagonal (self-distances) from analysis
-
-    Returns:
-        Dictionary with comparison metrics:
-            - correlation: Pearson correlation coefficient
-            - spearman_correlation: Spearman rank correlation
-            - mean_squared_error: MSE between distances
-            - mean_absolute_error: MAE between distances
-    """
-    # Flatten distance matrices
+    """Compare eigenspace distances with environment distances."""
     if exclude_diagonal:
-        # Get upper triangle (excluding diagonal)
         num_states = eigenspace_distances.shape[0]
         mask = jnp.triu(jnp.ones((num_states, num_states), dtype=bool), k=1)
         eigen_flat = eigenspace_distances[mask]
@@ -258,24 +175,17 @@ def compare_distances(
         eigen_flat = eigenspace_distances.flatten()
         env_flat = environment_distances.flatten()
 
-    # Remove any infinite values (from shortest path)
     finite_mask = jnp.isfinite(eigen_flat) & jnp.isfinite(env_flat)
     eigen_flat = eigen_flat[finite_mask]
     env_flat = env_flat[finite_mask]
 
-    # Pearson correlation
     correlation = jnp.corrcoef(eigen_flat, env_flat)[0, 1]
 
-    # Spearman correlation (rank-based)
-    # For JAX, we'll compute it using sorted ranks
     eigen_ranks = jnp.argsort(jnp.argsort(eigen_flat))
     env_ranks = jnp.argsort(jnp.argsort(env_flat))
     spearman = jnp.corrcoef(eigen_ranks.astype(float), env_ranks.astype(float))[0, 1]
 
-    # Mean squared error
     mse = jnp.mean((eigen_flat - env_flat) ** 2)
-
-    # Mean absolute error
     mae = jnp.mean(jnp.abs(eigen_flat - env_flat))
 
     return {
@@ -295,24 +205,10 @@ def analyze_distance_relationships(
     k_values: Optional[List[int]] = None,
     eigenspace_metric: str = "euclidean"
 ) -> Dict[str, any]:
-    """
-    Comprehensive analysis of relationships between eigenspace and environment distances.
-
-    Args:
-        eigendecomposition: Output from compute_eigendecomposition
-        states: Array of state indices
-        grid_width: Width of the grid
-        transition_matrix: Optional for shortest path distances
-        k_values: List of k values (number of eigenvectors) to analyze
-        eigenspace_metric: Distance metric for eigenspace
-
-    Returns:
-        Comprehensive analysis results
-    """
+    """Comprehensive analysis of relationships between eigenspace and environment distances."""
     if k_values is None:
-        k_values = [5, 10, 20, None]  # None means use all
+        k_values = [5, 10, 20, None]
 
-    # Compute environment distances
     env_distances = compute_environment_distances(
         states,
         grid_width,
@@ -325,7 +221,6 @@ def analyze_distance_relationships(
         "eigenspace_comparisons": {}
     }
 
-    # Analyze for different numbers of eigenvectors
     for k in k_values:
         k_label = f"k={k}" if k is not None else "k=all"
 
@@ -337,7 +232,6 @@ def analyze_distance_relationships(
             k=k
         )
 
-        # Compare with each environment distance type
         comparisons = {}
         for env_type, env_dist in env_distances.items():
             comparisons[env_type] = {
@@ -362,45 +256,24 @@ def analyze_distance_relationships_batched(
     k_values: Optional[List[int]] = None,
     eigenspace_metric: str = "euclidean"
 ) -> Dict[str, any]:
-    """
-    Analyze distance relationships for multiple environments in parallel.
-
-    Args:
-        batched_eigendecomposition: Batched eigendecomposition results
-            - eigenvalues: [num_envs, k]
-            - eigenvectors_real: [num_envs, num_states, k]
-            - etc.
-        states: Array of state indices (same for all environments)
-        grid_width: Width of the grid
-        batched_transition_matrices: Optional [num_envs, num_states, num_states]
-        k_values: List of k values to analyze
-        eigenspace_metric: Distance metric
-
-    Returns:
-        Dictionary with per-environment and aggregated results
-    """
+    """Analyze distance relationships for multiple environments in parallel."""
     num_envs = batched_eigendecomposition["eigenvalues"].shape[0]
 
-    # Compute environment distances (same for all envs)
     env_distances = compute_environment_distances(
         states,
         grid_width,
-        transition_matrix=None,  # Don't compute shortest path in batch
+        transition_matrix=None,
         include_shortest_path=False
     )
 
-    # Process each environment
     per_env_results = []
     for env_idx in range(num_envs):
-        # Extract single environment eigendecomposition
         single_eigendecomp = {
             key: value[env_idx] for key, value in batched_eigendecomposition.items()
         }
 
-        # Get transition matrix for this env if available
         trans_mat = batched_transition_matrices[env_idx] if batched_transition_matrices is not None else None
 
-        # Analyze this environment
         result = analyze_distance_relationships(
             eigendecomposition=single_eigendecomp,
             states=states,
@@ -411,7 +284,6 @@ def analyze_distance_relationships_batched(
         )
         per_env_results.append(result)
 
-    # Aggregate results across environments
     aggregated_results = aggregate_multi_environment_results(per_env_results, k_values)
 
     return {
@@ -426,16 +298,7 @@ def aggregate_multi_environment_results(
     per_env_results: List[Dict],
     k_values: Optional[List[int]] = None
 ) -> Dict[str, any]:
-    """
-    Aggregate analysis results across multiple environments.
-
-    Args:
-        per_env_results: List of analysis results, one per environment
-        k_values: List of k values that were analyzed
-
-    Returns:
-        Dictionary with aggregated statistics (mean, std, min, max)
-    """
+    """Aggregate analysis results across multiple environments."""
     if k_values is None:
         k_values = [5, 10, 20, None]
 
@@ -446,7 +309,6 @@ def aggregate_multi_environment_results(
         k_label = f"k={k}" if k is not None else "k=all"
         aggregated[k_label] = {}
 
-        # Extract comparison metrics for this k across all environments
         for env_result in per_env_results:
             comparisons = env_result["eigenspace_comparisons"][k_label]["comparisons"]
 
@@ -465,42 +327,33 @@ def aggregate_multi_environment_results(
                     aggregated[k_label][env_type][component]["mse"].append(metrics["mean_squared_error"])
                     aggregated[k_label][env_type][component]["mae"].append(metrics["mean_absolute_error"])
 
-        # Compute statistics
         for env_type in aggregated[k_label].keys():
             for component in ["real", "imag", "combined"]:
                 corrs = np.array(aggregated[k_label][env_type][component]["correlations"])
                 spear = np.array(aggregated[k_label][env_type][component]["spearman"])
-                mse = np.array(aggregated[k_label][env_type][component]["mse"])
-                mae = np.array(aggregated[k_label][env_type][component]["mae"])
+                mse_arr = np.array(aggregated[k_label][env_type][component]["mse"])
+                mae_arr = np.array(aggregated[k_label][env_type][component]["mae"])
 
                 aggregated[k_label][env_type][component] = {
                     "correlation": {
-                        "mean": float(np.mean(corrs)),
-                        "std": float(np.std(corrs)),
-                        "min": float(np.min(corrs)),
-                        "max": float(np.max(corrs)),
+                        "mean": float(np.mean(corrs)), "std": float(np.std(corrs)),
+                        "min": float(np.min(corrs)), "max": float(np.max(corrs)),
                         "median": float(np.median(corrs)),
                     },
                     "spearman_correlation": {
-                        "mean": float(np.mean(spear)),
-                        "std": float(np.std(spear)),
-                        "min": float(np.min(spear)),
-                        "max": float(np.max(spear)),
+                        "mean": float(np.mean(spear)), "std": float(np.std(spear)),
+                        "min": float(np.min(spear)), "max": float(np.max(spear)),
                         "median": float(np.median(spear)),
                     },
                     "mean_squared_error": {
-                        "mean": float(np.mean(mse)),
-                        "std": float(np.std(mse)),
-                        "min": float(np.min(mse)),
-                        "max": float(np.max(mse)),
-                        "median": float(np.median(mse)),
+                        "mean": float(np.mean(mse_arr)), "std": float(np.std(mse_arr)),
+                        "min": float(np.min(mse_arr)), "max": float(np.max(mse_arr)),
+                        "median": float(np.median(mse_arr)),
                     },
                     "mean_absolute_error": {
-                        "mean": float(np.mean(mae)),
-                        "std": float(np.std(mae)),
-                        "min": float(np.min(mae)),
-                        "max": float(np.max(mae)),
-                        "median": float(np.median(mae)),
+                        "mean": float(np.mean(mae_arr)), "std": float(np.std(mae_arr)),
+                        "min": float(np.min(mae_arr)), "max": float(np.max(mae_arr)),
+                        "median": float(np.median(mae_arr)),
                     },
                 }
 

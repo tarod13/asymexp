@@ -27,7 +27,7 @@ from exp_alcl.allo_complex import (
     create_gridworld_env,
     collect_data_and_compute_eigenvectors,
 )
-from exp_complex_basis.eigendecomposition import compute_eigendecomposition
+from src.utils.laplacian import compute_eigendecomposition
 
 
 @dataclass

@@ -41,7 +41,7 @@ from exp_alcl.allo_complex import (
     normalize_eigenvectors_for_comparison
 )
 from exp_alcl.allo_complex_clf import plot_eigenvector_comparison
-from exp_complex_basis.eigenvector_visualization import (
+from src.utils.plotting import (
     visualize_multiple_eigenvectors,
     visualize_eigenvector_on_grid,
 )

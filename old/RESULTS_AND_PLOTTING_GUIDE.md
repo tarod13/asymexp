@@ -95,7 +95,7 @@ Set `--plot_during_training=True` to generate plots during training.
    - `plots/final_comparison.png` - Side-by-side GT vs learned
 
 **Visualization details:**
-- Uses `visualize_multiple_eigenvectors()` from `exp_complex_basis.eigenvector_visualization`
+- Uses `visualize_multiple_eigenvectors()` from `src.utils.plotting`
 - Displays both real and imaginary components
 - For complex eigenvectors, can show:
   - `eigenvector_type='right'` or `'left'`
@@ -137,7 +137,7 @@ Here's a simple example to plot the learned eigenvectors:
 ```python
 import numpy as np
 import matplotlib.pyplot as plt
-from exp_complex_basis.eigenvector_visualization import visualize_multiple_eigenvectors
+from src.utils.plotting import visualize_multiple_eigenvectors
 
 # Load learned eigenvectors
 results_dir = "./results/room4/room4__allo_complex__0__42__1735502400"
