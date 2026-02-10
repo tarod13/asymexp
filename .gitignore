@@ -215,3 +215,4 @@ exp_irreversible_doors/results/
 old/**/results/*
 results/*
 sampling_test_results/
+logs/*
