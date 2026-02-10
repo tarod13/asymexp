@@ -18,6 +18,7 @@ The script generates:
 - Cosine similarity evolution (left and right separately)
 - Sampling distribution visualization
 - Final comparison plots
+- Hitting time visualizations (source vs target)
 """
 
 import sys
@@ -32,18 +33,20 @@ import matplotlib.pyplot as plt
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent))
 
-from exp_alcl.allo_complex import (
-    plot_learning_curves,
-    plot_dual_variable_evolution,
-    plot_cosine_similarity_evolution,
-    plot_sampling_distribution,
-    plot_all_duals_evolution,
-    normalize_eigenvectors_for_comparison
-)
-from exp_alcl.allo_complex_clf import plot_eigenvector_comparison
 from src.utils.plotting import (
     visualize_multiple_eigenvectors,
     visualize_eigenvector_on_grid,
+    plot_complex_learning_curves,
+    plot_complex_dual_variable_evolution,
+    plot_complex_cosine_similarity_evolution,
+    plot_complex_all_duals_evolution,
+    plot_sampling_distribution,
+    plot_eigenvector_comparison,
+    visualize_source_vs_target_hitting_times,
+)
+from src.utils.metrics import (
+    normalize_eigenvectors_for_comparison,
+    compute_hitting_times_from_eigenvectors,
 )
 
 
@@ -139,7 +142,6 @@ def load_data(results_dir):
         elif sampling_probs is not None:
             # Compute on-the-fly if sampling distribution is available
             print("Computing normalized eigenvectors on-the-fly...")
-            import jax.numpy as jnp
             final_learned_normalized = normalize_eigenvectors_for_comparison(
                 left_real=jnp.array(final_learned['left_real']),
                 left_imag=jnp.array(final_learned['left_imag']),
@@ -176,7 +178,6 @@ def load_data(results_dir):
             }
         elif sampling_probs is not None:
             # Compute on-the-fly if sampling distribution is available
-            import jax.numpy as jnp
             latest_learned_normalized = normalize_eigenvectors_for_comparison(
                 left_real=jnp.array(latest_learned['left_real']),
                 left_imag=jnp.array(latest_learned['left_imag']),
@@ -299,72 +300,41 @@ def plot_ground_truth(data, plots_dir):
     plt.close()
 
 
-def plot_latest_learned(data, plots_dir):
-    """Generate comparison plots (GT | Raw | Normalized) for the latest checkpoint."""
-    if data['latest_learned'] is None:
-        print("Skipping latest learned eigenvectors plot (data not available)")
+def plot_learned_comparison(data, plots_dir, stage='final'):
+    """Generate comparison plots (GT | Raw | Normalized) for learned eigenvectors.
+
+    Args:
+        data: Loaded data dictionary.
+        stage: 'final' or 'latest'.
+    """
+    learned = data[f'{stage}_learned']
+    learned_norm = data[f'{stage}_learned_normalized']
+
+    if learned is None:
+        print(f"Skipping {stage} learned eigenvectors plot (data not available)")
         return
 
-    if data['latest_learned_normalized'] is None:
-        print("Skipping latest learned comparison (normalized data not available)")
+    if learned_norm is None:
+        print(f"Skipping {stage} learned comparison (normalized data not available)")
         return
 
-    print("Plotting latest learned eigenvector comparison (GT | Raw | Normalized)...")
+    print(f"Plotting {stage} learned eigenvector comparison (GT | Raw | Normalized)...")
 
     viz_meta = data['viz_metadata']
-    latest = data['latest_learned']
-    latest_norm = data['latest_learned_normalized']
 
     plot_eigenvector_comparison(
-        learned_left_real=latest['left_real'],
-        learned_left_imag=latest['left_imag'],
-        learned_right_real=latest['right_real'],
-        learned_right_imag=latest['right_imag'],
+        learned_left_real=learned['left_real'],
+        learned_left_imag=learned['left_imag'],
+        learned_right_real=learned['right_real'],
+        learned_right_imag=learned['right_imag'],
         gt_left_real=data['gt_left_real'],
         gt_left_imag=data['gt_left_imag'],
         gt_right_real=data['gt_right_real'],
         gt_right_imag=data['gt_right_imag'],
-        normalized_left_real=latest_norm['left_real'],
-        normalized_left_imag=latest_norm['left_imag'],
-        normalized_right_real=latest_norm['right_real'],
-        normalized_right_imag=latest_norm['right_imag'],
-        canonical_states=viz_meta['canonical_states'],
-        grid_width=viz_meta['grid_width'],
-        grid_height=viz_meta['grid_height'],
-        save_dir=str(plots_dir),
-        door_markers=viz_meta['door_markers'] if viz_meta.get('door_markers') else None,
-    )
-
-
-def plot_final_learned(data, plots_dir):
-    """Generate comparison plots (GT | Raw | Normalized) for final learned eigenvectors."""
-    if data['final_learned'] is None:
-        print("Skipping final learned eigenvectors plot (data not available)")
-        return
-
-    if data['final_learned_normalized'] is None:
-        print("Skipping final learned comparison (normalized data not available)")
-        return
-
-    print("Plotting final learned eigenvector comparison (GT | Raw | Normalized)...")
-
-    viz_meta = data['viz_metadata']
-    final = data['final_learned']
-    final_norm = data['final_learned_normalized']
-
-    plot_eigenvector_comparison(
-        learned_left_real=final['left_real'],
-        learned_left_imag=final['left_imag'],
-        learned_right_real=final['right_real'],
-        learned_right_imag=final['right_imag'],
-        gt_left_real=data['gt_left_real'],
-        gt_left_imag=data['gt_left_imag'],
-        gt_right_real=data['gt_right_real'],
-        gt_right_imag=data['gt_right_imag'],
-        normalized_left_real=final_norm['left_real'],
-        normalized_left_imag=final_norm['left_imag'],
-        normalized_right_real=final_norm['right_real'],
-        normalized_right_imag=final_norm['right_imag'],
+        normalized_left_real=learned_norm['left_real'],
+        normalized_left_imag=learned_norm['left_imag'],
+        normalized_right_real=learned_norm['right_real'],
+        normalized_right_imag=learned_norm['right_imag'],
         canonical_states=viz_meta['canonical_states'],
         grid_width=viz_meta['grid_width'],
         grid_height=viz_meta['grid_height'],
@@ -381,7 +351,7 @@ def plot_learning_metrics(data, plots_dir):
         return
 
     print("Plotting learning curves...")
-    plot_learning_curves(
+    plot_complex_learning_curves(
         data['metrics_history'],
         str(plots_dir / "learning_curves.png")
     )
@@ -389,7 +359,7 @@ def plot_learning_metrics(data, plots_dir):
     print("Plotting dual variable evolution...")
     # Use 'gamma' if 'geometric_gamma' is not present (for newer runs)
     gamma = data['viz_metadata'].get('gamma', data['viz_metadata'].get('geometric_gamma', 0.99))
-    plot_dual_variable_evolution(
+    plot_complex_dual_variable_evolution(
         data['metrics_history'],
         data['gt_eigenvalues'],  # Use full complex eigenvalues
         gamma,
@@ -398,14 +368,14 @@ def plot_learning_metrics(data, plots_dir):
     )
 
     print("Plotting cosine similarity evolution...")
-    plot_cosine_similarity_evolution(
+    plot_complex_cosine_similarity_evolution(
         data['metrics_history'],
         str(plots_dir / "cosine_similarity_evolution.png"),
         num_eigenvectors=data['viz_metadata']['num_eigenvectors']
     )
 
     print("Plotting all duals evolution...")
-    plot_all_duals_evolution(
+    plot_complex_all_duals_evolution(
         data['metrics_history'],
         str(plots_dir / "all_duals_evolution.png"),
         num_eigenvectors=min(6, data['viz_metadata']['num_eigenvectors'])
@@ -432,6 +402,88 @@ def plot_sampling_dist(data, plots_dir):
     )
 
 
+def plot_hitting_times(data, plots_dir, num_targets=6):
+    """Generate hitting time visualizations, matching the training code exactly."""
+    viz_meta = data['viz_metadata']
+    gamma = viz_meta.get('gamma', viz_meta.get('geometric_gamma', 0.99))
+    delta = viz_meta.get('delta', 0.0)
+    num_states = data['gt_right_real'].shape[0]
+
+    # Compute ground truth hitting times (same as shared_training.py)
+    gt_hitting_times = compute_hitting_times_from_eigenvectors(
+        left_real=jnp.array(data['gt_left_real']),
+        left_imag=jnp.array(data['gt_left_imag']),
+        right_real=jnp.array(data['gt_right_real']),
+        right_imag=jnp.array(data['gt_right_imag']),
+        eigenvalues_real=jnp.array(data['gt_eigenvalues_real']),
+        eigenvalues_imag=jnp.array(data['gt_eigenvalues_imag']),
+        gamma=gamma,
+        delta=delta,
+        eigenvalue_type='laplacian',
+    )
+
+    num_states_to_viz = min(num_targets, num_states)
+    viz_state_indices = np.linspace(0, num_states - 1, num_states_to_viz, dtype=int).tolist()
+
+    # Visualize ground truth hitting times
+    print("Plotting ground truth hitting times...")
+    visualize_source_vs_target_hitting_times(
+        state_indices=viz_state_indices,
+        hitting_time_matrix=np.array(gt_hitting_times),
+        canonical_states=np.array(viz_meta['canonical_states']),
+        grid_width=viz_meta['grid_width'],
+        grid_height=viz_meta['grid_height'],
+        portals=viz_meta['door_markers'] if viz_meta.get('door_markers') else None,
+        ncols=min(6, num_states_to_viz),
+        save_path=str(plots_dir / "hitting_times_ground_truth.png"),
+        log_scale=True,
+        shared_colorbar=True,
+    )
+    plt.close()
+
+    # Compute and visualize learned hitting times if available
+    learned = data['final_learned'] or data['latest_learned']
+    if learned is not None:
+        # Load learned eigenvalues
+        results_dir = data['results_dir']
+        lambda_real_file = results_dir / "final_lambda_real.npy"
+        lambda_imag_file = results_dir / "final_lambda_imag.npy"
+        if not lambda_real_file.exists():
+            lambda_real_file = results_dir / "latest_lambda_real.npy"
+            lambda_imag_file = results_dir / "latest_lambda_imag.npy"
+
+        if lambda_real_file.exists() and lambda_imag_file.exists():
+            lambda_real = np.load(lambda_real_file)
+            lambda_imag = np.load(lambda_imag_file)
+
+            learned_hitting_times = compute_hitting_times_from_eigenvectors(
+                left_real=jnp.array(learned['left_real']),
+                left_imag=jnp.array(learned['left_imag']),
+                right_real=jnp.array(learned['right_real']),
+                right_imag=jnp.array(learned['right_imag']),
+                eigenvalues_real=jnp.array(lambda_real),
+                eigenvalues_imag=jnp.array(lambda_imag),
+                gamma=gamma,
+                delta=delta,
+                eigenvalue_type='kernel',
+            )
+
+            print("Plotting learned hitting times...")
+            visualize_source_vs_target_hitting_times(
+                state_indices=viz_state_indices,
+                hitting_time_matrix=np.array(learned_hitting_times),
+                canonical_states=np.array(viz_meta['canonical_states']),
+                grid_width=viz_meta['grid_width'],
+                grid_height=viz_meta['grid_height'],
+                portals=viz_meta['door_markers'] if viz_meta.get('door_markers') else None,
+                ncols=min(6, num_states_to_viz),
+                save_path=str(plots_dir / "hitting_times_learned.png"),
+                log_scale=True,
+                shared_colorbar=True,
+            )
+            plt.close()
+        else:
+            print("Skipping learned hitting times (learned eigenvalues not found)")
 
 
 def main():
@@ -475,7 +527,17 @@ def main():
         action='store_true',
         help='Skip plotting sampling distribution'
     )
-
+    parser.add_argument(
+        '--skip-hitting-times',
+        action='store_true',
+        help='Skip plotting hitting time visualizations'
+    )
+    parser.add_argument(
+        '--num-targets',
+        type=int,
+        default=6,
+        help='Number of target states for hitting time visualization (default: 6)'
+    )
     args = parser.parse_args()
 
     results_dir = Path(args.results_dir)
@@ -502,10 +564,10 @@ def main():
     # Note: "latest" and "final" are identical after training completes
     # Only plot "latest" if explicitly requested (useful during training)
     if not args.skip_learned and args.include_latest:
-        plot_latest_learned(data, plots_dir)
+        plot_learned_comparison(data, plots_dir, stage='latest')
 
     if not args.skip_final:
-        plot_final_learned(data, plots_dir)
+        plot_learned_comparison(data, plots_dir, stage='final')
 
     if not args.skip_metrics:
         plot_learning_metrics(data, plots_dir)
@@ -513,7 +575,11 @@ def main():
     if not args.skip_sampling_dist:
         plot_sampling_dist(data, plots_dir)
 
-    print(f"\n✓ All plots saved to {plots_dir}")
+    if not args.skip_hitting_times:
+        plot_hitting_times(data, plots_dir,
+                          num_targets=args.num_targets)
+
+    print(f"\nAll plots saved to {plots_dir}")
     return 0
 
 
