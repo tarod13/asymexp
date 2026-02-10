@@ -395,17 +395,29 @@ def create_update_function(encoder, args):
         (total_loss, aux), grads = jax.value_and_grad(
             encoder_loss, has_aux=True)(encoder_state.params)
 
-        # Get grad norm (all parameters)
-        grads_flat, _ = jax.tree_util.tree_flatten(grads)
-        grads_vector = jnp.concatenate([jnp.ravel(g) for g in grads_flat])
-        grad_norm = jnp.linalg.norm(grads_vector)
-        aux['grad_norm'] = grad_norm
+        # Compute separate gradient norms for encoder and EMA parameters
+        encoder_grads_flat, _ = jax.tree_util.tree_flatten(grads['encoder'])
+        encoder_grads_vector = jnp.concatenate([jnp.ravel(g) for g in encoder_grads_flat])
+        encoder_grad_norm = jnp.linalg.norm(encoder_grads_vector)
 
-        # Clip gradients (all parameters together)
+        ema_grads = [grads['lambda_real'], grads['lambda_imag']]
+        ema_grads_flat = [jnp.ravel(g) for g in ema_grads]
+        ema_grads_vector = jnp.concatenate(ema_grads_flat)
+        ema_grad_norm = jnp.linalg.norm(ema_grads_vector)
+
+        aux['grad_norm'] = encoder_grad_norm
+        aux['ema_grad_norm'] = ema_grad_norm
+
+        # Clip gradients independently
         max_norm = 1.0
-        grads = jax.tree_util.tree_map(
-            lambda g: g * (max_norm / jnp.maximum(grad_norm, max_norm)), grads
-        )
+        encoder_clip_factor = max_norm / jnp.maximum(encoder_grad_norm, max_norm)
+        ema_clip_factor = max_norm / jnp.maximum(ema_grad_norm, max_norm)
+
+        grads = {
+            'encoder': jax.tree_util.tree_map(lambda g: g * encoder_clip_factor, grads['encoder']),
+            'lambda_real': grads['lambda_real'] * ema_clip_factor,
+            'lambda_imag': grads['lambda_imag'] * ema_clip_factor,
+        }
 
         # Apply optimizer updates
         updates, new_opt_state = encoder_state.tx.update(
