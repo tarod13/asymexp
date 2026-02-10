@@ -36,20 +36,10 @@ def init_params(encoder_initial_params, args):
     Returns:
         Dictionary containing initial parameters
     """
-    k = args.num_eigenvector_pairs
     return {
         'encoder': encoder_initial_params,
-        
-        # EMA estimates for eigenvalues
-        'lambda_real': jnp.ones((k,)),
-        'lambda_imag': jnp.zeros((k,)),
-        
-        # EMA estimators for constraint targets
-        'norm_x_ema': jnp.zeros((k,)),
-        'norm_y_ema': jnp.zeros((k,)),
-        'phase_xy_ema': jnp.zeros((k,)),
-        'corr_xy_real_ema': jnp.zeros((k, k)),
-        'corr_xy_imag_ema': jnp.zeros((k, k)),
+        'lambda_real': jnp.ones((args.num_eigenvector_pairs,)),
+        'lambda_imag': jnp.zeros((args.num_eigenvector_pairs,)),
     }
 
 
@@ -64,21 +54,11 @@ def get_optimizer_masks(args):
         'encoder': True,
         'lambda_real': False,
         'lambda_imag': False,
-        'norm_x_ema': False,
-        'norm_y_ema': False,
-        'phase_xy_ema': False,
-        'corr_xy_real_ema': False,
-        'corr_xy_imag_ema': False,
     }
     other_mask = {
         'encoder': False,
         'lambda_real': True,
         'lambda_imag': True,
-        'norm_x_ema': True,
-        'norm_y_ema': True,
-        'phase_xy_ema': True,
-        'corr_xy_real_ema': True,
-        'corr_xy_imag_ema': True,
     }
     return encoder_mask, other_mask
 
@@ -119,118 +99,76 @@ def create_update_function(encoder, args):
             return jnp.einsum('ij,ik->jk', weighted_a, b) / a.shape[0]
 
         def encoder_loss(params):
-            # ----------------------------------------------------------------
-            # 1. Forward Pass & Feature Extraction
-            # ----------------------------------------------------------------
+            # Compute representations for complex eigenvectors
             encoder_params = params['encoder']
             features_1 = encoder.apply(encoder_params, state_coords_batch)[0]
             features_2 = encoder.apply(encoder_params, state_coords_batch_2)[0]
             next_features = encoder.apply(encoder_params, next_state_coords_batch)[0]
             next_features_2 = encoder.apply(encoder_params, next_state_coords_batch_2)[0]
 
-            # Extract right/left eigenvectors (Batch 1)
-            x_r, x_i = features_1['right_real'], features_1['right_imag']
-            y_r, y_i = features_1['left_real'], features_1['left_imag']
+            # Extract right eigenvectors (real and imaginary parts)
+            x_r = features_1['right_real']  # Right eigenvectors, real part
+            x_i = features_1['right_imag']  # Right eigenvectors, imaginary part
+            y_r = features_1['left_real']
+            y_i = features_1['left_imag']
 
-            # Extract right/left eigenvectors (Batch 2)
-            x2_r, x2_i = features_2['right_real'], features_2['right_imag']
-            y2_r, y2_i = features_2['left_real'], features_2['left_imag']
+            x2_r = features_2['right_real']  # Right eigenvectors, real part
+            x2_i = features_2['right_imag']  # Right eigenvectors, imaginary part
+            y2_r = features_2['left_real']
+            y2_i = features_2['left_imag']
 
-            # Extract next step vectors (Batch 1)
-            next_x_r, next_x_i = next_features['right_real'], next_features['right_imag']
-            next_y_r, next_y_i = next_features['left_real'], next_features['left_imag']
+            next_x_r = next_features['right_real']
+            next_x_i = next_features['right_imag']
+            next_y_r = next_features['left_real']
+            next_y_i = next_features['left_imag']
 
-            # Extract next step vectors (Batch 2)
-            next_x2_r, next_x2_i = next_features_2['right_real'], next_features_2['right_imag']
-            next_y2_r, next_y2_i = next_features_2['left_real'], next_features_2['left_imag']
+            next_x2_r = next_features_2['right_real']
+            next_x2_i = next_features_2['right_imag']
+            next_y2_r = next_features_2['left_real']
+            next_y2_i = next_features_2['left_imag']
 
-            # ----------------------------------------------------------------
-            # 2. Extract EMA Parameters
-            # ----------------------------------------------------------------
-            ema_lambda_r = params['lambda_real'].reshape(1, -1)
-            ema_lambda_i = params['lambda_imag'].reshape(1, -1)
-            
-            ema_norm_x = params['norm_x_ema'].reshape(1, -1)  # (Shape: (1,k))
-            ema_norm_y = params['norm_y_ema'].reshape(1, -1)
-            ema_phase_xy = params['phase_xy_ema'].reshape(1, -1)
-            ema_corr_xy_real = params['corr_xy_real_ema']
-            ema_corr_xy_imag = params['corr_xy_imag_ema']
-
-            # ----------------------------------------------------------------
-            # 3. Update Lambda (Eigenvalue) Estimators
-            # ----------------------------------------------------------------
-            
-            # Compute unnormalized Rayleigh quotients for x and y (Shape: (1,k))
+            # Compute current unnormalized eigenvalue estimates (Shape: (1,k))
             lambda_x_r = ip(x_r, next_x_r) + ip(x_i, next_x_i)
             lambda_x_i = ip(x_r, next_x_i) - ip(x_i, next_x_r)
             lambda_y_r = ip(y_r, next_y_r) + ip(y_i, next_y_i)
             lambda_y_i = ip(y_r, next_y_i) - ip(y_i, next_y_r)
 
-            # Compute new lambda estimates by averaging x and y contributions
+            # EMA loss for eigenvalues
+            ema_lambda_r = params['lambda_real'].reshape(1, -1)  # (Shape: (1,k))
+            ema_lambda_i = params['lambda_imag'].reshape(1, -1)
             new_lambda_real = 0.5 * (lambda_x_r + lambda_y_r)
             new_lambda_imag = 0.5 * (lambda_x_i - lambda_y_i)
-            
-            # EMA loss for eigenvalues
             lambda_loss_real = ((sg(new_lambda_real) - ema_lambda_r) ** 2).sum()
             lambda_loss_imag = ((sg(new_lambda_imag) - ema_lambda_i) ** 2).sum()
             lambda_loss = lambda_loss_real + lambda_loss_imag
 
-            # ----------------------------------------------------------------
-            # 4. Compute Constraints & Update EMA Estimators
-            # ----------------------------------------------------------------
-            # Norms
-            norm_x_sq = ip(x_r, x_r) + ip(x_i, x_i)
-            norm_x2_sq = ip(x2_r, x2_r) + ip(x2_i, x2_i)
-            norm_y_sq = ip(y_r, y_r) + ip(y_i, y_i)
-            norm_y2_sq = ip(y2_r, y2_r) + ip(y2_i, y2_i)
-            next_norm_y_sq = ip(next_y_r, next_y_r) + ip(next_y_i, next_y_i)
-            next_norm_y2_sq = ip(next_y2_r, next_y2_r) + ip(next_y2_i, next_y2_i)
-            
-            # EMA Loss for Norms (Target: Average of Batch 1 and 2 to reduce variance)
-            loss_norm_x_ema = ((sg(0.5 * (norm_x_sq + norm_x2_sq)) - ema_norm_x) ** 2).sum()
-            loss_norm_y_ema = ((sg(0.5 * (norm_y_sq + norm_y2_sq)) - ema_norm_y) ** 2).sum()
+            # Compute squared norms (Shape: (1,k))
+            norm_x_r_sq = ip(x_r, x_r)
+            norm_x_i_sq = ip(x_i, x_i)
+            norm_x_sq = norm_x_r_sq + norm_x_i_sq
 
-            # Phase
-            phase_xy = ip(y_r, x_i) - ip(y_i, x_r)
-            phase_xy2 = ip(y2_r, x2_i) - ip(y2_i, x2_r)
-            
-            # EMA Loss for Phase
-            loss_phase_xy_ema = ((sg(0.5 * (phase_xy + phase_xy2)) - ema_phase_xy) ** 2).sum()
+            norm_x2_r_sq = ip(x2_r, x2_r)
+            norm_x2_i_sq = ip(x2_i, x2_i)
+            norm_x2_sq = norm_x2_r_sq + norm_x2_i_sq
 
-            # Correlations (Crossed terms)
-            # Batch 1
-            cross_xryr = multi_ip(x_r, y_r)
-            cross_xiyi = multi_ip(x_i, y_i)
-            cross_xryi = multi_ip(x_r, y_i)
-            cross_xiryr = multi_ip(x_i, y_r)
-            
-            corr_xy_real = cross_xryr + cross_xiyi
-            corr_xy_imag = -cross_xryi + cross_xiryr
+            norm_y_r_sq = ip(y_r, y_r)
+            norm_y_i_sq = ip(y_i, y_i)
+            norm_y_sq = norm_y_r_sq + norm_y_i_sq
 
-            # Batch 2
-            cross_xryr2 = multi_ip(x2_r, y2_r)
-            cross_xiyi2 = multi_ip(x2_i, y2_i)
-            cross_xryi2 = multi_ip(x2_r, y2_i)
-            cross_xiryr2 = multi_ip(x2_i, y2_r)
+            norm_y2_r_sq = ip(y2_r, y2_r)
+            norm_y2_i_sq = ip(y2_i, y2_i)
+            norm_y2_sq = norm_y2_r_sq + norm_y2_i_sq
 
-            corr_xy2_real = cross_xryr2 + cross_xiyi2
-            corr_xy2_imag = -cross_xryi2 + cross_xiryr2
-            
-            # EMA Loss for Correlations
-            loss_corr_xy_real = ((sg(0.5 * (corr_xy_real + corr_xy2_real)) - ema_corr_xy_real) ** 2).sum()
-            loss_corr_xy_imag = ((sg(0.5 * (corr_xy_imag + corr_xy2_imag)) - ema_corr_xy_imag) ** 2).sum()
+            next_norm_y_r_sq = ip(next_y_r, next_y_r)
+            next_norm_y_i_sq = ip(next_y_i, next_y_i)
+            next_norm_y_sq = next_norm_y_r_sq + next_norm_y_i_sq
 
-            # Collect all estimator losses
-            constraint_estimator_loss = (
-                loss_norm_x_ema + loss_norm_y_ema + 
-                loss_phase_xy_ema + 
-                loss_corr_xy_real + loss_corr_xy_imag
-            )
+            next_norm_y2_r_sq = ip(next_y2_r, next_y2_r)
+            next_norm_y2_i_sq = ip(next_y2_i, next_y2_i)
+            next_norm_y2_sq = next_norm_y2_r_sq + next_norm_y2_i_sq
 
-             # ----------------------------------------------------------------
-            # 5. Graph Loss (Dynamics)
-            # ----------------------------------------------------------------
-            f_x_real = - next_x_r + ema_lambda_r * x_r - ema_lambda_i * x_i
+            # Compute graph losses (Shape: (1,k))
+            f_x_real = - next_x_r + ema_lambda_r * x_r - ema_lambda_i * x_i  # (Shape: (n,k))
             f_x_imag = - next_x_i + ema_lambda_i * x_r + ema_lambda_r * x_i
 
             f_y_0_real = - y_r
@@ -238,31 +176,34 @@ def create_update_function(encoder, args):
             f_y_residual_real = ema_lambda_r * y_r + ema_lambda_i * y_i
             f_y_residual_imag = -ema_lambda_i * y_r + ema_lambda_r * y_i
 
-            graph_loss_x_real = ip(x_r, sg(f_x_real))
+            graph_loss_x_real = ip(x_r, sg(f_x_real))  # (Shape: (1,k))
             graph_loss_x_imag = ip(x_i, sg(f_x_imag))
             graph_loss_x = graph_loss_x_real + graph_loss_x_imag
 
-            graph_loss_y_real = ip(next_y_r, sg(f_y_0_real)) + ip(y_r, sg(f_y_residual_real))
-            graph_loss_y_imag = ip(next_y_i, sg(f_y_0_imag)) + ip(y_i, sg(f_y_residual_imag))
+            graph_loss_y_real = (
+                ip(next_y_r, sg(f_y_0_real))
+                + ip(y_r, sg(f_y_residual_real))
+            )
+            graph_loss_y_imag = (
+                ip(next_y_i, sg(f_y_0_imag))
+                + ip(y_i, sg(f_y_residual_imag))
+            )
             graph_loss_y = graph_loss_y_real + graph_loss_y_imag
+            graph_loss = (graph_loss_x + graph_loss_y).sum()  # Sum over all eigenvectors (Shape: ())
 
-            graph_loss = (graph_loss_x + graph_loss_y).sum()
-
-            # Chirality Loss
-            x_i_normalized = x_i / jnp.sqrt(norm_x_sq + 1e-6)
+            # Compute chirality loss (Shape: ())
+            x_i_normalized = x_i / jnp.sqrt(norm_x_sq)
             chirality_x = ip(sg(x_i_normalized**2), x_i_normalized)
             chirality_loss = ((chirality_x)**2).sum()
 
-            # ----------------------------------------------------------------
-            # 6. Lyapunov Functions & Gradients
-            # ----------------------------------------------------------------
-
+            # Compute Lyapunov functions and their gradients
             # 1. For x norm: <x_k,x_k> should be 1
-            coef_x_norm = ema_norm_x - 1
-            V_x_norm = coef_x_norm ** 2 / 2
+            norm_x_error = norm_x_sq - 1  # (Shape: (1,k))
+            norm_x2_error = norm_x2_sq - 1
+            V_x_norm = norm_x_error ** 2 / 2
 
-            nabla_x_r_V_x_norm = 2 * coef_x_norm * x_r  # (Shape: (n,k)) Use EMA for unbiased gradient estimate
-            nabla_x_i_V_x_norm = 2 * coef_x_norm * x_i
+            nabla_x_r_V_x_norm = 2 * norm_x2_error * x_r  # (Shape: (n,k)) Use different batch for unbiased gradient estimate
+            nabla_x_i_V_x_norm = 2 * norm_x2_error * x_i
             nabla_y_r_V_x_norm = jnp.zeros_like(y_r)
             nabla_y_i_V_x_norm = jnp.zeros_like(y_i)
 
@@ -270,35 +211,65 @@ def create_update_function(encoder, args):
             next_nabla_y_i_V_x_norm = jnp.zeros_like(next_y_i)
 
             # 2. For y norm: <y_k,y_k> should be 1
-            coef_y_norm = ema_norm_y - 1  # (Shape: (1,k))
-            V_y_norm = coef_y_norm ** 2 / 2
+            norm_y_error = norm_y_sq - 1  # (Shape: (1,k))
+            norm_y2_error = norm_y2_sq - 1
+            V_y_norm = norm_y_error ** 2 / 2
 
             nabla_x_r_V_y_norm = jnp.zeros_like(x_r)  # (Shape: (n,k))
             nabla_x_i_V_y_norm = jnp.zeros_like(x_i)
-            nabla_y_r_V_y_norm = 2 * coef_y_norm * y_r  # Use EMA for unbiased gradient estimate
-            nabla_y_i_V_y_norm = 2 * coef_y_norm * y_i
+            nabla_y_r_V_y_norm = 2 * norm_y2_error * y_r  # Use different batch for unbiased gradient estimate
+            nabla_y_i_V_y_norm = 2 * norm_y2_error * y_i
 
-            next_nabla_y_r_V_y_norm = 2 * coef_y_norm * next_y_r  # (Shape: (n,k))
-            next_nabla_y_i_V_y_norm = 2 * coef_y_norm * next_y_i
+            next_norm_y_error = next_norm_y_sq - 1  # (Shape: (1,k))
+            next_norm_y2_error = next_norm_y2_sq - 1
+
+            next_nabla_y_r_V_y_norm = 2 * next_norm_y2_error * next_y_r  # (Shape: (n,k))
+            next_nabla_y_i_V_y_norm = 2 * next_norm_y2_error * next_y_i
 
             # 3. For xy phase: <y_k,x_k> should be real
-            coef_xy_phase = ema_phase_xy  # (Shape: (1,k))
-            V_xy_phase = coef_xy_phase ** 2 / 2
+            phase_xy = ip(y_r, x_i) - ip(y_i, x_r)  # (Shape: (1,k))
+            phase_xy2 = ip(y2_r, x2_i) - ip(y2_i, x2_r)
+            V_xy_phase = phase_xy ** 2 / 2
 
-            nabla_x_r_V_xy_phase = - coef_xy_phase * y_i  # (Shape: (n,k)) Use EMA for unbiased gradient estimate
-            nabla_x_i_V_xy_phase = coef_xy_phase * y_r
-            nabla_y_r_V_xy_phase = coef_xy_phase * x_i
-            nabla_y_i_V_xy_phase = - coef_xy_phase * x_r
+            nabla_x_r_V_xy_phase = - phase_xy2 * y_i  # (Shape: (n,k)) Use different batch for unbiased gradient estimate
+            nabla_x_i_V_xy_phase = phase_xy2 * y_r
+            nabla_y_r_V_xy_phase = phase_xy2 * x_i
+            nabla_y_i_V_xy_phase = - phase_xy2 * x_r
 
-            next_nabla_y_r_V_xy_phase = coef_xy_phase * next_x_i  # (Shape: (n,k))
-            next_nabla_y_i_V_xy_phase = - coef_xy_phase * next_x_r
+            next_phase_xy = ip(next_y_r, next_x_i) - ip(next_y_i, next_x_r)  # (Shape: (1,k))
+            next_phase_xy2 = ip(next_y2_r, next_x2_i) - ip(next_y2_i, next_x2_r)
+
+            next_nabla_y_r_V_xy_phase = next_phase_xy2 * next_x_i  # (Shape: (n,k))
+            next_nabla_y_i_V_xy_phase = - next_phase_xy2 * next_x_r
 
             # 4. For crossed terms: <y_j,x_k> should be 0 for j!=k
-            corr_xy_real_lower = jnp.tril(ema_corr_xy_real, k=-1)
-            corr_xy_imag_lower = jnp.tril(ema_corr_xy_imag, k=-1)
+            cross_xryr = multi_ip(x_r, y_r)
+            cross_xiyi = multi_ip(x_i, y_i)
+            cross_xryi = multi_ip(x_r, y_i)
+            cross_xiryr = multi_ip(x_i, y_r)
 
-            corr_yx_real_lower = jnp.tril(ema_corr_xy_real.T, k=-1)
-            corr_yx_imag_lower = jnp.tril(ema_corr_xy_imag.T, k=-1)
+            corr_xy_real = cross_xryr + cross_xiyi  # (Shape: (k,k)) (First index: x, second index: y)
+            corr_xy_imag = -cross_xryi + cross_xiryr
+
+            corr_xy_real_lower = jnp.tril(corr_xy_real, k=-1)
+            corr_xy_imag_lower = jnp.tril(corr_xy_imag, k=-1)
+
+            corr_yx_real_lower = jnp.tril(corr_xy_real.T, k=-1)
+            corr_yx_imag_lower = jnp.tril(corr_xy_imag.T, k=-1)
+
+            cross_xryr2 = multi_ip(x2_r, y2_r)
+            cross_xiyi2 = multi_ip(x2_i, y2_i)
+            cross_xryi2 = multi_ip(x2_r, y2_i)
+            cross_xiryr2 = multi_ip(x2_i, y2_r)
+
+            cross_xy2_real = cross_xryr2 + cross_xiyi2
+            cross_xy2_imag = -cross_xryi2 + cross_xiryr2
+
+            corr_xy2_real_lower = jnp.tril(cross_xy2_real, k=-1)
+            corr_xy2_imag_lower = jnp.tril(cross_xy2_imag, k=-1)
+
+            corr_yx2_real_lower = jnp.tril(cross_xy2_real.T, k=-1)
+            corr_yx2_imag_lower = jnp.tril(cross_xy2_imag.T, k=-1)
 
             V_xy_corr_real = jnp.sum(corr_xy_real_lower ** 2, -1).reshape(1, -1) / 2  # (Shape: (1,k))
             V_xy_corr_imag = jnp.sum(corr_xy_imag_lower ** 2, -1).reshape(1, -1) / 2
@@ -306,22 +277,34 @@ def create_update_function(encoder, args):
             V_yx_corr_imag = jnp.sum(corr_yx_imag_lower ** 2, -1).reshape(1, -1) / 2
             V_xy_corr = V_xy_corr_real + V_xy_corr_imag + V_yx_corr_real + V_yx_corr_imag
 
-            nabla_x_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_xy_real_lower, y_r)  # (Shape: (n,k)) Use different batch for unbiased gradient estimate
-            nabla_x_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_xy_real_lower, y_i)
+            nabla_x_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_xy2_real_lower, y_r)  # (Shape: (n,k)) Use different batch for unbiased gradient estimate
+            nabla_x_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_xy2_real_lower, y_i)
 
-            nabla_x_r_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', corr_xy_imag_lower, y_i)
-            nabla_x_i_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', corr_xy_imag_lower, y_r)
+            nabla_x_r_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', corr_xy2_imag_lower, y_i)
+            nabla_x_i_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', corr_xy2_imag_lower, y_r)
 
-            nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_yx_real_lower, x_r)
-            nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_yx_real_lower, x_i)
+            nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_yx2_real_lower, x_r)
+            nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_yx2_real_lower, x_i)
 
-            nabla_y_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', corr_yx_imag_lower, x_i)
-            nabla_y_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', corr_yx_imag_lower, x_r)
+            nabla_y_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', corr_yx2_imag_lower, x_i)
+            nabla_y_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', corr_yx2_imag_lower, x_r)
 
-            next_nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_yx_real_lower, next_x_r)  # (Shape: (n,k)) Use different batch for unbiased gradient estimate
-            next_nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_yx_real_lower, next_x_i)
-            next_nabla_y_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', corr_yx_imag_lower, next_x_i)
-            next_nabla_y_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', corr_yx_imag_lower, next_x_r)
+            next_corr_xy_real = multi_ip(next_x_r, next_y_r) + multi_ip(next_x_i, next_y_i)  # (Shape: (k,k))
+            next_corr_xy_imag = -multi_ip(next_x_r, next_y_i) + multi_ip(next_x_i, next_y_r)
+
+            next_corr_yx_real = jnp.tril(next_corr_xy_real.T, k=-1)
+            next_corr_yx_imag = jnp.tril(next_corr_xy_imag.T, k=-1)
+
+            next_corr_xy2_real = multi_ip(next_x2_r, next_y2_r) + multi_ip(next_x2_i, next_y2_i)
+            next_corr_xy2_imag = -multi_ip(next_x2_r, next_y2_i) + multi_ip(next_x2_i, next_y2_r)
+
+            next_corr_yx2_real = jnp.tril(next_corr_xy2_real.T, k=-1)
+            next_corr_yx2_imag = jnp.tril(next_corr_xy2_imag.T, k=-1)
+
+            next_nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', next_corr_yx2_real, next_x_r)  # (Shape: (n,k)) Use different batch for unbiased gradient estimate
+            next_nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', next_corr_yx2_real, next_x_i)
+            next_nabla_y_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', next_corr_yx2_imag, next_x_i)
+            next_nabla_y_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', next_corr_yx2_imag, next_x_r)
 
             # 5. Global
             V = V_x_norm + V_y_norm + V_xy_phase + V_xy_corr  # (Shape: (1,k))
@@ -378,13 +361,7 @@ def create_update_function(encoder, args):
             clf_loss = clf_loss_x_r + clf_loss_x_i + clf_loss_y_r + clf_loss_y_i
 
             # Total loss
-            total_loss = (
-                graph_loss 
-                + clf_loss 
-                + args.chirality_factor * chirality_loss 
-                + lambda_loss 
-                + constraint_estimator_loss
-            )
+            total_loss = graph_loss + clf_loss + args.chirality_factor * chirality_loss + lambda_loss
 
             # Auxiliary metrics (average over eigenvector pairs for logging)
             aux = {
@@ -435,11 +412,6 @@ def create_update_function(encoder, args):
             'encoder': jax.tree_util.tree_map(lambda g: g * encoder_clip_factor, grads['encoder']),
             'lambda_real': jnp.clip(grads['lambda_real'], -1.0, 1.0),
             'lambda_imag': jnp.clip(grads['lambda_imag'], -1.0, 1.0),
-            'norm_x_ema': jnp.clip(grads['norm_x_ema'], -1.0, 1.0),
-            'norm_y_ema': jnp.clip(grads['norm_y_ema'], -1.0, 1.0),
-            'phase_xy_ema': jnp.clip(grads['phase_xy_ema'], -1.0, 1.0),
-            'corr_xy_real_ema': jnp.clip(grads['corr_xy_real_ema'], -1.0, 1.0),
-            'corr_xy_imag_ema': jnp.clip(grads['corr_xy_imag_ema'], -1.0, 1.0),
         }
 
         # Apply optimizer updates
