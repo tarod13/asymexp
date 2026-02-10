@@ -332,17 +332,77 @@ def learn_eigenvectors(args, learner_module):
 
     encoder.apply = jax.jit(encoder.apply)
 
-    # Compute importance sampling ratio with clipping for stability
-    is_ratio = 1 / (sampling_probs[:, None].clip(min=1e-8) * len(sampling_probs))  # Shape: (num_states, 1)
+    # Configure sampling strategy
+    if args.use_rejection_sampling:
+        # Compute rejection sampling probabilities to flatten state distribution
+        # Accept probability: p_accept[i] = min_prob / sampling_probs[i]
+        # This makes rare states (small sampling_probs) always accepted (p ≈ 1)
+        # and common states rejected more often (p < 1)
+        min_sampling_prob = float(sampling_probs.min())
+        rejection_accept_probs = min_sampling_prob / np.array(sampling_probs)  # Shape: (num_states,)
 
-    # Normalize to mean 1 to preserve expected gradients, then clip to reduce variance
-    # This prevents rare states (IS ratio >> 1) from dominating the loss
-    is_ratio_normalized = is_ratio / is_ratio.mean()
-    is_ratio = is_ratio_normalized.clip(min=args.is_ratio_min, max=args.is_ratio_max)
+        print(f"\nRejection Sampling Configuration:")
+        print(f"  Original sampling prob range: [{sampling_probs.min():.6f}, {sampling_probs.max():.6f}]")
+        print(f"  Acceptance prob range: [{rejection_accept_probs.min():.3f}, {rejection_accept_probs.max():.3f}]")
+        print(f"  Expected rejection rate: {100 * (1 - rejection_accept_probs.mean()):.1f}%")
+        print(f"  Oversample factor: {args.rejection_oversample_factor}x")
 
-    print(f"IS ratio stats (before clip) - min: {is_ratio_normalized.min():.3f}, max: {is_ratio_normalized.max():.3f}")
-    print(f"IS ratio stats (after clip) - min: {is_ratio.min():.3f}, max: {is_ratio.max():.3f}, "
-          f"mean: {is_ratio.mean():.3f}, std: {is_ratio.std():.3f}")
+        # After rejection sampling, all states have equal weight (no IS correction needed)
+        # Shape: (num_states, 1) - all ones since we're sampling uniformly after rejection
+        is_ratio = jnp.ones((len(sampling_probs), 1))
+
+        def sample_batch_with_rejection(batch_size, discount):
+            """Sample a batch using rejection sampling to flatten the state distribution."""
+            accepted_samples = []
+
+            # Keep sampling until we have enough accepted samples
+            while len(accepted_samples) < batch_size:
+                # Sample from replay buffer (empirical distribution)
+                candidate_batch = replay_buffer.sample(
+                    batch_size * args.rejection_oversample_factor,
+                    discount=discount
+                )
+                candidate_obs = np.array(candidate_batch.obs).flatten()
+
+                # Apply rejection sampling: accept with probability p_accept[state]
+                accept_probs = rejection_accept_probs[candidate_obs]
+                random_uniform = np.random.rand(len(candidate_obs))
+                accept_mask = random_uniform < accept_probs
+
+                # Collect accepted samples
+                if np.any(accept_mask):
+                    accepted_indices = np.where(accept_mask)[0]
+                    for idx in accepted_indices:
+                        if len(accepted_samples) < batch_size:
+                            accepted_samples.append({
+                                'obs': candidate_batch.obs[idx],
+                                'next_obs': candidate_batch.next_obs[idx],
+                                'time_offset': candidate_batch.time_offset[idx],
+                            })
+
+            # Convert to batch format (take exactly batch_size samples)
+            from collections import namedtuple
+            Batch = namedtuple('Batch', ['obs', 'next_obs', 'time_offset'])
+            return Batch(
+                obs=np.array([s['obs'] for s in accepted_samples[:batch_size]]),
+                next_obs=np.array([s['next_obs'] for s in accepted_samples[:batch_size]]),
+                time_offset=np.array([s['time_offset'] for s in accepted_samples[:batch_size]]),
+            )
+
+        # Use rejection sampling
+        sample_batch = sample_batch_with_rejection
+
+    else:
+        # Use standard importance sampling with IS ratio correction
+        print(f"\nUsing Importance Sampling (no rejection)")
+        print(f"  Sampling prob range: [{sampling_probs.min():.6f}, {sampling_probs.max():.6f}]")
+
+        # Compute IS ratio
+        is_ratio = 1 / (sampling_probs[:, None].clip(min=1e-8) * len(sampling_probs))
+        print(f"  IS ratio range (unnormalized): [{is_ratio.min():.3f}, {is_ratio.max():.3f}]")
+
+        # Use standard replay buffer sampling
+        sample_batch = lambda batch_size, discount: replay_buffer.sample(batch_size, discount)
 
     # Get the update function from learner module
     update_encoder = learner_module.create_update_function(encoder, args)
@@ -521,10 +581,10 @@ def learn_eigenvectors(args, learner_module):
     for gradient_step in tqdm(range(start_step, args.num_gradient_steps)):
         step_start = time.time()
 
-        # Sample batches from episodic replay buffer using truncated geometric distribution
+        # Sample batches (using configured sampling strategy)
         sample_start = time.time()
-        batch1 = replay_buffer.sample(args.batch_size, discount=args.gamma)
-        batch2 = replay_buffer.sample(args.batch_size, discount=args.gamma)
+        batch1 = sample_batch(args.batch_size, discount=args.gamma)
+        batch2 = sample_batch(args.batch_size, discount=args.gamma)
 
         # Extract state indices (canonical state indices)
         state_indices = jnp.array(batch1.obs)
