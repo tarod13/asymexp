@@ -495,6 +495,7 @@ def learn_eigenvectors(args, learner_module):
             warmup_coords,
             warmup_next_coords,
             warmup_coords,  # Use same batch for second set
+            warmup_next_coords,
             warmup_state_weighting,
         )
 
@@ -518,11 +519,13 @@ def learn_eigenvectors(args, learner_module):
         state_indices = jnp.array(batch1.obs)
         next_state_indices = jnp.array(batch1.next_obs)
         state_indices_2 = jnp.array(batch2.obs)
+        next_state_indices_2 = jnp.array(batch2.next_obs)
 
         # Get coordinates
         coords_batch = state_coords[state_indices]
         next_coords_batch = state_coords[next_state_indices]
         coords_batch_2 = state_coords[state_indices_2]
+        next_coords_batch_2 = state_coords[next_state_indices_2]
         sample_time = time.time() - sample_start
         state_weighting = is_ratio[state_indices]
 
@@ -533,6 +536,7 @@ def learn_eigenvectors(args, learner_module):
             coords_batch,
             next_coords_batch,
             coords_batch_2,
+            next_coords_batch_2,
             state_weighting,
         )
         # Block until GPU computation completes for accurate timing

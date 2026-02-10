@@ -85,6 +85,7 @@ def create_update_function(encoder, args):
         state_coords_batch: jnp.ndarray,
         next_state_coords_batch: jnp.ndarray,
         state_coords_batch_2: jnp.ndarray,
+        next_state_coords_batch_2: jnp.ndarray,
         state_weighting: jnp.ndarray,
     ):
         def ip(a, b):
@@ -103,6 +104,7 @@ def create_update_function(encoder, args):
             features_1 = encoder.apply(encoder_params, state_coords_batch)[0]
             features_2 = encoder.apply(encoder_params, state_coords_batch_2)[0]
             next_features = encoder.apply(encoder_params, next_state_coords_batch)[0]
+            next_features_2 = encoder.apply(encoder_params, next_state_coords_batch_2)[0]
 
             # Extract right eigenvectors (real and imaginary parts)
             x_r = features_1['right_real']  # Right eigenvectors, real part
@@ -110,10 +112,20 @@ def create_update_function(encoder, args):
             y_r = features_1['left_real']
             y_i = features_1['left_imag']
 
+            x2_r = features_2['right_real']  # Right eigenvectors, real part
+            x2_i = features_2['right_imag']  # Right eigenvectors, imaginary part
+            y2_r = features_2['left_real']
+            y2_i = features_2['left_imag']
+
             next_x_r = next_features['right_real']
             next_x_i = next_features['right_imag']
             next_y_r = next_features['left_real']
             next_y_i = next_features['left_imag']
+
+            next_x2_r = next_features_2['right_real']
+            next_x2_i = next_features_2['right_imag']
+            next_y2_r = next_features_2['left_real']
+            next_y2_i = next_features_2['left_imag']
 
             # Compute current unnormalized eigenvalue estimates (Shape: (1,k))
             lambda_x_r = ip(x_r, next_x_r) + ip(x_i, next_x_i)
@@ -135,13 +147,25 @@ def create_update_function(encoder, args):
             norm_x_i_sq = ip(x_i, x_i)
             norm_x_sq = norm_x_r_sq + norm_x_i_sq
 
+            norm_x2_r_sq = ip(x2_r, x2_r)
+            norm_x2_i_sq = ip(x2_i, x2_i)
+            norm_x2_sq = norm_x2_r_sq + norm_x2_i_sq
+
             norm_y_r_sq = ip(y_r, y_r)
             norm_y_i_sq = ip(y_i, y_i)
             norm_y_sq = norm_y_r_sq + norm_y_i_sq
 
+            norm_y2_r_sq = ip(y2_r, y2_r)
+            norm_y2_i_sq = ip(y2_i, y2_i)
+            norm_y2_sq = norm_y2_r_sq + norm_y2_i_sq
+
             next_norm_y_r_sq = ip(next_y_r, next_y_r)
             next_norm_y_i_sq = ip(next_y_i, next_y_i)
             next_norm_y_sq = next_norm_y_r_sq + next_norm_y_i_sq
+
+            next_norm_y2_r_sq = ip(next_y2_r, next_y2_r)
+            next_norm_y2_i_sq = ip(next_y2_i, next_y2_i)
+            next_norm_y2_sq = next_norm_y2_r_sq + next_norm_y2_i_sq
 
             # Compute graph losses (Shape: (1,k))
             f_x_real = - next_x_r + ema_lambda_r * x_r - ema_lambda_i * x_i  # (Shape: (n,k))
@@ -175,10 +199,11 @@ def create_update_function(encoder, args):
             # Compute Lyapunov functions and their gradients
             # 1. For x norm: <x_k,x_k> should be 1
             norm_x_error = norm_x_sq - 1  # (Shape: (1,k))
+            norm_x2_error = norm_x2_sq - 1
             V_x_norm = norm_x_error ** 2 / 2
 
-            nabla_x_r_V_x_norm = 2 * norm_x_error * x_r  # (Shape: (n,k))
-            nabla_x_i_V_x_norm = 2 * norm_x_error * x_i
+            nabla_x_r_V_x_norm = 2 * norm_x2_error * x_r  # (Shape: (n,k)) Use different batch for unbiased gradient estimate
+            nabla_x_i_V_x_norm = 2 * norm_x2_error * x_i
             nabla_y_r_V_x_norm = jnp.zeros_like(y_r)
             nabla_y_i_V_x_norm = jnp.zeros_like(y_i)
 
@@ -187,31 +212,35 @@ def create_update_function(encoder, args):
 
             # 2. For y norm: <y_k,y_k> should be 1
             norm_y_error = norm_y_sq - 1  # (Shape: (1,k))
+            norm_y2_error = norm_y2_sq - 1
             V_y_norm = norm_y_error ** 2 / 2
 
             nabla_x_r_V_y_norm = jnp.zeros_like(x_r)  # (Shape: (n,k))
             nabla_x_i_V_y_norm = jnp.zeros_like(x_i)
-            nabla_y_r_V_y_norm = 2 * norm_y_error * y_r
-            nabla_y_i_V_y_norm = 2 * norm_y_error * y_i
+            nabla_y_r_V_y_norm = 2 * norm_y2_error * y_r  # Use different batch for unbiased gradient estimate
+            nabla_y_i_V_y_norm = 2 * norm_y2_error * y_i
 
             next_norm_y_error = next_norm_y_sq - 1  # (Shape: (1,k))
+            next_norm_y2_error = next_norm_y2_sq - 1
 
-            next_nabla_y_r_V_y_norm = 2 * next_norm_y_error * next_y_r  # (Shape: (n,k))
-            next_nabla_y_i_V_y_norm = 2 * next_norm_y_error * next_y_i
+            next_nabla_y_r_V_y_norm = 2 * next_norm_y2_error * next_y_r  # (Shape: (n,k))
+            next_nabla_y_i_V_y_norm = 2 * next_norm_y2_error * next_y_i
 
             # 3. For xy phase: <y_k,x_k> should be real
             phase_xy = ip(y_r, x_i) - ip(y_i, x_r)  # (Shape: (1,k))
+            phase_xy2 = ip(y2_r, x2_i) - ip(y2_i, x2_r)
             V_xy_phase = phase_xy ** 2 / 2
 
-            nabla_x_r_V_xy_phase = - phase_xy * y_i  # (Shape: (n,k))
-            nabla_x_i_V_xy_phase = phase_xy * y_r
-            nabla_y_r_V_xy_phase = phase_xy * x_i
-            nabla_y_i_V_xy_phase = - phase_xy * x_r
+            nabla_x_r_V_xy_phase = - phase_xy2 * y_i  # (Shape: (n,k)) Use different batch for unbiased gradient estimate
+            nabla_x_i_V_xy_phase = phase_xy2 * y_r
+            nabla_y_r_V_xy_phase = phase_xy2 * x_i
+            nabla_y_i_V_xy_phase = - phase_xy2 * x_r
 
             next_phase_xy = ip(next_y_r, next_x_i) - ip(next_y_i, next_x_r)  # (Shape: (1,k))
+            next_phase_xy2 = ip(next_y2_r, next_x2_i) - ip(next_y2_i, next_x2_r)
 
-            next_nabla_y_r_V_xy_phase = next_phase_xy * next_x_i  # (Shape: (n,k))
-            next_nabla_y_i_V_xy_phase = - next_phase_xy * next_x_r
+            next_nabla_y_r_V_xy_phase = next_phase_xy2 * next_x_i  # (Shape: (n,k))
+            next_nabla_y_i_V_xy_phase = - next_phase_xy2 * next_x_r
 
             # 4. For crossed terms: <y_j,x_k> should be 0 for j!=k
             cross_xryr = multi_ip(x_r, y_r)
@@ -228,23 +257,37 @@ def create_update_function(encoder, args):
             corr_yx_real_lower = jnp.tril(corr_xy_real.T, k=-1)
             corr_yx_imag_lower = jnp.tril(corr_xy_imag.T, k=-1)
 
+            cross_xryr2 = multi_ip(x2_r, y2_r)
+            cross_xiyi2 = multi_ip(x2_i, y2_i)
+            cross_xryi2 = multi_ip(x2_r, y2_i)
+            cross_xiryr2 = multi_ip(x2_i, y2_r)
+
+            cross_xy2_real = cross_xryr2 + cross_xiyi2
+            cross_xy2_imag = -cross_xryi2 + cross_xiryr2
+
+            corr_xy2_real_lower = jnp.tril(cross_xy2_real, k=-1)
+            corr_xy2_imag_lower = jnp.tril(cross_xy2_imag, k=-1)
+
+            corr_yx2_real_lower = jnp.tril(cross_xy2_real.T, k=-1)
+            corr_yx2_imag_lower = jnp.tril(cross_xy2_imag.T, k=-1)
+
             V_xy_corr_real = jnp.sum(corr_xy_real_lower ** 2, -1).reshape(1, -1) / 2  # (Shape: (1,k))
             V_xy_corr_imag = jnp.sum(corr_xy_imag_lower ** 2, -1).reshape(1, -1) / 2
             V_yx_corr_real = jnp.sum(corr_yx_real_lower ** 2, -1).reshape(1, -1) / 2
             V_yx_corr_imag = jnp.sum(corr_yx_imag_lower ** 2, -1).reshape(1, -1) / 2
             V_xy_corr = V_xy_corr_real + V_xy_corr_imag + V_yx_corr_real + V_yx_corr_imag
 
-            nabla_x_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_xy_real_lower, y_r)  # (Shape: (n,k))
-            nabla_x_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_xy_real_lower, y_i)
+            nabla_x_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_xy2_real_lower, y_r)  # (Shape: (n,k)) Use different batch for unbiased gradient estimate
+            nabla_x_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_xy2_real_lower, y_i)
 
-            nabla_x_r_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', corr_xy_imag_lower, y_i)
-            nabla_x_i_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', corr_xy_imag_lower, y_r)
+            nabla_x_r_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', corr_xy2_imag_lower, y_i)
+            nabla_x_i_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', corr_xy2_imag_lower, y_r)
 
-            nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_yx_real_lower, x_r)
-            nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_yx_real_lower, x_i)
+            nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_yx2_real_lower, x_r)
+            nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', corr_yx2_real_lower, x_i)
 
-            nabla_y_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', corr_yx_imag_lower, x_i)
-            nabla_y_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', corr_yx_imag_lower, x_r)
+            nabla_y_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', corr_yx2_imag_lower, x_i)
+            nabla_y_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', corr_yx2_imag_lower, x_r)
 
             next_corr_xy_real = multi_ip(next_x_r, next_y_r) + multi_ip(next_x_i, next_y_i)  # (Shape: (k,k))
             next_corr_xy_imag = -multi_ip(next_x_r, next_y_i) + multi_ip(next_x_i, next_y_r)
@@ -252,10 +295,16 @@ def create_update_function(encoder, args):
             next_corr_yx_real = jnp.tril(next_corr_xy_real.T, k=-1)
             next_corr_yx_imag = jnp.tril(next_corr_xy_imag.T, k=-1)
 
-            next_nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', next_corr_yx_real, next_x_r)  # (Shape: (n,k))
-            next_nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', next_corr_yx_real, next_x_i)
-            next_nabla_y_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', next_corr_yx_imag, next_x_i)
-            next_nabla_y_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', next_corr_yx_imag, next_x_r)
+            next_corr_xy2_real = multi_ip(next_x2_r, next_y2_r) + multi_ip(next_x2_i, next_y2_i)
+            next_corr_xy2_imag = -multi_ip(next_x2_r, next_y2_i) + multi_ip(next_x2_i, next_y2_r)
+
+            next_corr_yx2_real = jnp.tril(next_corr_xy2_real.T, k=-1)
+            next_corr_yx2_imag = jnp.tril(next_corr_xy2_imag.T, k=-1)
+
+            next_nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', next_corr_yx2_real, next_x_r)  # (Shape: (n,k)) Use different batch for unbiased gradient estimate
+            next_nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', next_corr_yx2_real, next_x_i)
+            next_nabla_y_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', next_corr_yx2_imag, next_x_i)
+            next_nabla_y_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', next_corr_yx2_imag, next_x_r)
 
             # 5. Global
             V = V_x_norm + V_y_norm + V_xy_phase + V_xy_corr  # (Shape: (1,k))
