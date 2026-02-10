@@ -42,7 +42,7 @@ from src.utils.plotting import (
     plot_complex_all_duals_evolution,
     plot_sampling_distribution,
     plot_eigenvector_comparison,
-    visualize_source_vs_target_hitting_times,
+    create_hitting_time_visualization_report,
 )
 from src.utils.metrics import (
     normalize_eigenvectors_for_comparison,
@@ -421,42 +421,16 @@ def plot_hitting_times(data, plots_dir, num_targets=6, log_scale=False):
     hitting_times = np.array(hitting_times)
     print(f"  Max imaginary error: {imaginary_error:.6e}")
 
-    num_states = hitting_times.shape[0]
-    target_indices = np.linspace(0, num_states - 1, num_targets, dtype=int).tolist()
-
-    print(f"Plotting hitting times for {num_targets} target states...")
-    visualize_source_vs_target_hitting_times(
-        state_indices=target_indices,
+    create_hitting_time_visualization_report(
         hitting_time_matrix=hitting_times,
         canonical_states=viz_meta['canonical_states'],
         grid_width=viz_meta['grid_width'],
         grid_height=viz_meta['grid_height'],
         portals=viz_meta['door_markers'] if viz_meta.get('door_markers') else None,
-        ncols=min(5, num_targets),
-        wall_color='gray',
-        save_path=str(plots_dir / "hitting_times.png"),
+        output_dir=str(plots_dir),
+        num_targets=num_targets,
         log_scale=log_scale,
-        shared_colorbar=True,
     )
-    plt.close()
-
-    if not log_scale:
-        # Also generate log-scale version
-        print("Plotting hitting times (log scale)...")
-        visualize_source_vs_target_hitting_times(
-            state_indices=target_indices,
-            hitting_time_matrix=hitting_times,
-            canonical_states=viz_meta['canonical_states'],
-            grid_width=viz_meta['grid_width'],
-            grid_height=viz_meta['grid_height'],
-            portals=viz_meta['door_markers'] if viz_meta.get('door_markers') else None,
-            ncols=min(5, num_targets),
-            wall_color='gray',
-            save_path=str(plots_dir / "hitting_times_log.png"),
-            log_scale=True,
-            shared_colorbar=True,
-        )
-        plt.close()
 
 
 def main():
