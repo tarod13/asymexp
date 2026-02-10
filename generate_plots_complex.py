@@ -42,11 +42,11 @@ from src.utils.plotting import (
     plot_complex_all_duals_evolution,
     plot_sampling_distribution,
     plot_eigenvector_comparison,
-    create_hitting_time_visualization_report,
+    visualize_source_vs_target_hitting_times,
 )
 from src.utils.metrics import (
     normalize_eigenvectors_for_comparison,
-    compute_hitting_times,
+    compute_hitting_times_from_eigenvectors,
 )
 
 
@@ -402,35 +402,88 @@ def plot_sampling_dist(data, plots_dir):
     )
 
 
-def plot_hitting_times(data, plots_dir, num_targets=6, log_scale=False):
-    """Generate hitting time visualizations from ground truth eigendecomposition."""
+def plot_hitting_times(data, plots_dir, num_targets=6):
+    """Generate hitting time visualizations, matching the training code exactly."""
     viz_meta = data['viz_metadata']
+    gamma = viz_meta.get('gamma', viz_meta.get('geometric_gamma', 0.99))
+    delta = viz_meta.get('delta', 0.0)
+    num_states = data['gt_right_real'].shape[0]
 
-    eigendecomp = {
-        'eigenvalues': data['gt_eigenvalues'],
-        'eigenvalues_real': data['gt_eigenvalues_real'],
-        'eigenvalues_imag': data['gt_eigenvalues_imag'],
-        'right_eigenvectors_real': data['gt_right_real'],
-        'right_eigenvectors_imag': data['gt_right_imag'],
-        'left_eigenvectors_real': data['gt_left_real'],
-        'left_eigenvectors_imag': data['gt_left_imag'],
-    }
+    # Compute ground truth hitting times (same as shared_training.py)
+    gt_hitting_times = compute_hitting_times_from_eigenvectors(
+        left_real=jnp.array(data['gt_left_real']),
+        left_imag=jnp.array(data['gt_left_imag']),
+        right_real=jnp.array(data['gt_right_real']),
+        right_imag=jnp.array(data['gt_right_imag']),
+        eigenvalues_real=jnp.array(data['gt_eigenvalues_real']),
+        eigenvalues_imag=jnp.array(data['gt_eigenvalues_imag']),
+        gamma=gamma,
+        delta=delta,
+        eigenvalue_type='laplacian',
+    )
 
-    print("Computing hitting times from eigendecomposition...")
-    hitting_times, imaginary_error = compute_hitting_times(eigendecomp)
-    hitting_times = np.array(hitting_times)
-    print(f"  Max imaginary error: {imaginary_error:.6e}")
+    num_states_to_viz = min(num_targets, num_states)
+    viz_state_indices = np.linspace(0, num_states - 1, num_states_to_viz, dtype=int).tolist()
 
-    create_hitting_time_visualization_report(
-        hitting_time_matrix=hitting_times,
-        canonical_states=viz_meta['canonical_states'],
+    # Visualize ground truth hitting times
+    print("Plotting ground truth hitting times...")
+    visualize_source_vs_target_hitting_times(
+        state_indices=viz_state_indices,
+        hitting_time_matrix=np.array(gt_hitting_times),
+        canonical_states=np.array(viz_meta['canonical_states']),
         grid_width=viz_meta['grid_width'],
         grid_height=viz_meta['grid_height'],
         portals=viz_meta['door_markers'] if viz_meta.get('door_markers') else None,
-        output_dir=str(plots_dir),
-        num_targets=num_targets,
-        log_scale=log_scale,
+        ncols=min(6, num_states_to_viz),
+        save_path=str(plots_dir / "hitting_times_ground_truth.png"),
+        log_scale=True,
+        shared_colorbar=True,
     )
+    plt.close()
+
+    # Compute and visualize learned hitting times if available
+    learned = data['final_learned'] or data['latest_learned']
+    if learned is not None:
+        # Load learned eigenvalues
+        results_dir = data['results_dir']
+        lambda_real_file = results_dir / "final_lambda_real.npy"
+        lambda_imag_file = results_dir / "final_lambda_imag.npy"
+        if not lambda_real_file.exists():
+            lambda_real_file = results_dir / "latest_lambda_real.npy"
+            lambda_imag_file = results_dir / "latest_lambda_imag.npy"
+
+        if lambda_real_file.exists() and lambda_imag_file.exists():
+            lambda_real = np.load(lambda_real_file)
+            lambda_imag = np.load(lambda_imag_file)
+
+            learned_hitting_times = compute_hitting_times_from_eigenvectors(
+                left_real=jnp.array(learned['left_real']),
+                left_imag=jnp.array(learned['left_imag']),
+                right_real=jnp.array(learned['right_real']),
+                right_imag=jnp.array(learned['right_imag']),
+                eigenvalues_real=jnp.array(lambda_real),
+                eigenvalues_imag=jnp.array(lambda_imag),
+                gamma=gamma,
+                delta=delta,
+                eigenvalue_type='kernel',
+            )
+
+            print("Plotting learned hitting times...")
+            visualize_source_vs_target_hitting_times(
+                state_indices=viz_state_indices,
+                hitting_time_matrix=np.array(learned_hitting_times),
+                canonical_states=np.array(viz_meta['canonical_states']),
+                grid_width=viz_meta['grid_width'],
+                grid_height=viz_meta['grid_height'],
+                portals=viz_meta['door_markers'] if viz_meta.get('door_markers') else None,
+                ncols=min(6, num_states_to_viz),
+                save_path=str(plots_dir / "hitting_times_learned.png"),
+                log_scale=True,
+                shared_colorbar=True,
+            )
+            plt.close()
+        else:
+            print("Skipping learned hitting times (learned eigenvalues not found)")
 
 
 def main():
@@ -485,12 +538,6 @@ def main():
         default=6,
         help='Number of target states for hitting time visualization (default: 6)'
     )
-    parser.add_argument(
-        '--log-scale',
-        action='store_true',
-        help='Use log scale for hitting time plots'
-    )
-
     args = parser.parse_args()
 
     results_dir = Path(args.results_dir)
@@ -530,8 +577,7 @@ def main():
 
     if not args.skip_hitting_times:
         plot_hitting_times(data, plots_dir,
-                          num_targets=args.num_targets,
-                          log_scale=args.log_scale)
+                          num_targets=args.num_targets)
 
     print(f"\nAll plots saved to {plots_dir}")
     return 0
