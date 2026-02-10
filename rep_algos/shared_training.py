@@ -331,7 +331,18 @@ def learn_eigenvectors(args, learner_module):
         )
 
     encoder.apply = jax.jit(encoder.apply)
+
+    # Compute importance sampling ratio with clipping for stability
     is_ratio = 1 / (sampling_probs[:, None].clip(min=1e-8) * len(sampling_probs))  # Shape: (num_states, 1)
+
+    # Normalize to mean 1 to preserve expected gradients, then clip to reduce variance
+    # This prevents rare states (IS ratio >> 1) from dominating the loss
+    is_ratio_normalized = is_ratio / is_ratio.mean()
+    is_ratio = is_ratio_normalized.clip(min=args.is_ratio_min, max=args.is_ratio_max)
+
+    print(f"IS ratio stats (before clip) - min: {is_ratio_normalized.min():.3f}, max: {is_ratio_normalized.max():.3f}")
+    print(f"IS ratio stats (after clip) - min: {is_ratio.min():.3f}, max: {is_ratio.max():.3f}, "
+          f"mean: {is_ratio.mean():.3f}, std: {is_ratio.std():.3f}")
 
     # Get the update function from learner module
     update_encoder = learner_module.create_update_function(encoder, args)

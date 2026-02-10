@@ -38,6 +38,10 @@ class Args:
     dual_learning_rate: float = 3e-4  # Learning rate for dual variables (duals_learner)
     barrier: float = 1.0  # Barrier strength for dual norm constraints (duals_learner)
 
+    # Importance sampling
+    is_ratio_max: float = 10.0  # Maximum IS ratio (clip rare states to prevent gradient explosion)
+    is_ratio_min: float = 0.1  # Minimum IS ratio (clip common states for symmetric correction)
+
     # Episodic replay buffer
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
     
