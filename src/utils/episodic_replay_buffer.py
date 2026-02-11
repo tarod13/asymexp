@@ -16,6 +16,7 @@ class EpisodeBatch(Generic[T]):
     """A container for batchable replayed episodes"""
     obs: T
     next_obs: T
+    time_offset: T = None
 
     def __post_init__(self) -> None:
         # some security to be removed later
@@ -32,6 +33,7 @@ class LocalizedEpisodeBatch(Generic[T]):
     next_location: T
     grid_location: T
     next_grid_location: T
+    time_offset: T = None
 
     def __post_init__(self) -> None:
         # some security to be removed later
@@ -374,7 +376,7 @@ class EpisodicReplayBuffer:
         # Transform the samples
         obs = self._transform_observations(obs, env_info)
         next_obs = self._transform_observations(next_obs, env_info)
-            
+
         _have_location = 'loc' in self._episodes
         _have_grid_location = 'grid_loc' in self._episodes
         _have_action = 'action' in self._episodes
@@ -389,12 +391,13 @@ class EpisodicReplayBuffer:
                 grid_location = None
                 next_grid_location = None
             return LocalizedEpisodeBatch(
-                obs=obs, next_obs=next_obs, action=action, 
+                obs=obs, next_obs=next_obs, action=action,
                 location=location, next_location=next_location,
-                grid_location=grid_location, next_grid_location=next_grid_location
+                grid_location=grid_location, next_grid_location=next_grid_location,
+                time_offset=transition_durations
             )
 
-        return EpisodeBatch(obs=obs, next_obs=next_obs)
+        return EpisodeBatch(obs=obs, next_obs=next_obs, time_offset=transition_durations)
     
     def get_component(self, component_name):
         if component_name == 'next_obs':
