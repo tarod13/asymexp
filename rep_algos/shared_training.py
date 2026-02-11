@@ -377,16 +377,14 @@ def learn_eigenvectors(args, learner_module):
                             accepted_samples.append({
                                 'obs': candidate_batch.obs[idx],
                                 'next_obs': candidate_batch.next_obs[idx],
-                                'time_offset': candidate_batch.time_offset[idx],
                             })
 
             # Convert to batch format (take exactly batch_size samples)
             from collections import namedtuple
-            Batch = namedtuple('Batch', ['obs', 'next_obs', 'time_offset'])
+            Batch = namedtuple('Batch', ['obs', 'next_obs'])
             return Batch(
                 obs=np.array([s['obs'] for s in accepted_samples[:batch_size]]),
                 next_obs=np.array([s['next_obs'] for s in accepted_samples[:batch_size]]),
-                time_offset=np.array([s['time_offset'] for s in accepted_samples[:batch_size]]),
             )
 
         # Use rejection sampling

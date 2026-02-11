@@ -16,7 +16,6 @@ class EpisodeBatch(Generic[T]):
     """A container for batchable replayed episodes"""
     obs: T
     next_obs: T
-    time_offset: T = None
 
     def __post_init__(self) -> None:
         # some security to be removed later
@@ -33,7 +32,6 @@ class LocalizedEpisodeBatch(Generic[T]):
     next_location: T
     grid_location: T
     next_grid_location: T
-    time_offset: T = None
 
     def __post_init__(self) -> None:
         # some security to be removed later
@@ -393,11 +391,10 @@ class EpisodicReplayBuffer:
             return LocalizedEpisodeBatch(
                 obs=obs, next_obs=next_obs, action=action,
                 location=location, next_location=next_location,
-                grid_location=grid_location, next_grid_location=next_grid_location,
-                time_offset=transition_durations
+                grid_location=grid_location, next_grid_location=next_grid_location
             )
 
-        return EpisodeBatch(obs=obs, next_obs=next_obs, time_offset=transition_durations)
+        return EpisodeBatch(obs=obs, next_obs=next_obs)
     
     def get_component(self, component_name):
         if component_name == 'next_obs':
