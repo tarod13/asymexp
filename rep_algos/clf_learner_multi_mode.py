@@ -504,34 +504,47 @@ def create_update_function(encoder, args):
         (total_loss, aux), grads = jax.value_and_grad(
             encoder_loss, has_aux=True)(encoder_state.params)
 
-        # Compute encoder gradient norm for clipping
-        encoder_grads_flat, _ = jax.tree_util.tree_flatten(grads['encoder'])
-        encoder_grads_vector = jnp.concatenate([jnp.ravel(g) for g in encoder_grads_flat])
-        encoder_grad_norm = jnp.linalg.norm(encoder_grads_vector)
-        aux['grad_norm'] = encoder_grad_norm
-
-        # Clip encoder gradients (norm-based)
+        # Gradient clipping
         max_norm = 1.0
-        encoder_clip_factor = max_norm / jnp.maximum(encoder_grad_norm, max_norm)
 
-        # Clip gradients
-        clipped_grads = {
-            'encoder': jax.tree_util.tree_map(lambda g: g * encoder_clip_factor, grads['encoder']),
-            'lambda_real': jnp.clip(grads['lambda_real'], -1.0, 1.0),
-            'lambda_imag': jnp.clip(grads['lambda_imag'], -1.0, 1.0),
-        }
+        if args.use_global_grad_clip:
+            # Global gradient clipping (original behavior)
+            # Clip all parameters (encoder + lambda + EMA) together using global norm
+            grads_flat, grads_tree = jax.tree_util.tree_flatten(grads)
+            grads_vector = jnp.concatenate([jnp.ravel(g) for g in grads_flat])
+            grad_norm = jnp.linalg.norm(grads_vector)
+            aux['grad_norm'] = grad_norm
 
-        # Add EMA gradient clipping only for EMA mode
-        if args.constraint_mode == "ema":
-            clipped_grads.update({
-                'norm_x_ema': jnp.clip(grads['norm_x_ema'], -1.0, 1.0),
-                'norm_y_ema': jnp.clip(grads['norm_y_ema'], -1.0, 1.0),
-                'phase_xy_ema': jnp.clip(grads['phase_xy_ema'], -1.0, 1.0),
-                'corr_xy_real_ema': jnp.clip(grads['corr_xy_real_ema'], -1.0, 1.0),
-                'corr_xy_imag_ema': jnp.clip(grads['corr_xy_imag_ema'], -1.0, 1.0),
-            })
+            clip_factor = max_norm / jnp.maximum(grad_norm, max_norm)
+            grads = jax.tree_util.tree_map(lambda g: g * clip_factor, grads)
 
-        grads = clipped_grads
+        else:
+            # Separate gradient clipping (new behavior)
+            # Clip encoder gradients by norm, other parameters element-wise
+            encoder_grads_flat, _ = jax.tree_util.tree_flatten(grads['encoder'])
+            encoder_grads_vector = jnp.concatenate([jnp.ravel(g) for g in encoder_grads_flat])
+            encoder_grad_norm = jnp.linalg.norm(encoder_grads_vector)
+            aux['grad_norm'] = encoder_grad_norm
+
+            encoder_clip_factor = max_norm / jnp.maximum(encoder_grad_norm, max_norm)
+
+            clipped_grads = {
+                'encoder': jax.tree_util.tree_map(lambda g: g * encoder_clip_factor, grads['encoder']),
+                'lambda_real': jnp.clip(grads['lambda_real'], -1.0, 1.0),
+                'lambda_imag': jnp.clip(grads['lambda_imag'], -1.0, 1.0),
+            }
+
+            # Add EMA gradient clipping only for EMA mode
+            if args.constraint_mode == "ema":
+                clipped_grads.update({
+                    'norm_x_ema': jnp.clip(grads['norm_x_ema'], -1.0, 1.0),
+                    'norm_y_ema': jnp.clip(grads['norm_y_ema'], -1.0, 1.0),
+                    'phase_xy_ema': jnp.clip(grads['phase_xy_ema'], -1.0, 1.0),
+                    'corr_xy_real_ema': jnp.clip(grads['corr_xy_real_ema'], -1.0, 1.0),
+                    'corr_xy_imag_ema': jnp.clip(grads['corr_xy_imag_ema'], -1.0, 1.0),
+                })
+
+            grads = clipped_grads
 
         # Apply optimizer updates
         updates, new_opt_state = encoder_state.tx.update(
