@@ -42,6 +42,13 @@ class Args:
     use_rejection_sampling: bool = True  # Use rejection sampling to flatten state distribution (eliminates need for IS correction)
     rejection_oversample_factor: int = 3  # How many extra samples to draw per rejection round
 
+    # Constraint error approximation method
+    constraint_mode: str = "ema"  # Options: "ema", "two_batch", "single_batch", "same_episodes"
+    # - "ema": EMA approximation (current approach)
+    # - "two_batch": Unbiased with two independent batches
+    # - "single_batch": Biased with single batch (reuse batch1 for constraints)
+    # - "same_episodes": Intermediate bias - two batches from same episodes
+
     # Episodic replay buffer
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
     
