@@ -281,12 +281,12 @@ def create_update_function(encoder, args):
             if args.constraint_mode == "ema":
                 coef_x_norm = params['norm_x_ema'].reshape(1, -1) - 1  # EMA-based
                 V_x_norm = coef_x_norm ** 2 / 2
-            else:
-                V_x_norm = norm_x_error ** 2 / 2
-                if args.constraint_mode == "single_batch":
-                    coef_x_norm = norm_x_error  # Batch1 error
-                else:  # two_batch, same_episodes
-                    coef_x_norm = norm_x2_error  # Batch2 error
+            elif args.constraint_mode == "single_batch":
+                coef_x_norm = norm_x_error  # Batch1 error
+                V_x_norm = coef_x_norm ** 2 / 2
+            else:  # two_batch, same_episodes
+                coef_x_norm = norm_x2_error  # Batch2 error
+                V_x_norm = coef_x_norm ** 2 / 2
 
             nabla_x_r_V_x_norm = 2 * coef_x_norm * x_r
             nabla_x_i_V_x_norm = 2 * coef_x_norm * x_i
@@ -305,12 +305,12 @@ def create_update_function(encoder, args):
             if args.constraint_mode == "ema":
                 coef_y_norm = params['norm_y_ema'].reshape(1, -1) - 1  # EMA-based
                 V_y_norm = coef_y_norm ** 2 / 2
-            else:
-                V_y_norm = norm_y_error ** 2 / 2
-                if args.constraint_mode == "single_batch":
-                    coef_y_norm = norm_y_error  # Batch1 error
-                else:  # two_batch, same_episodes
-                    coef_y_norm = norm_y2_error  # Batch2 error
+            elif args.constraint_mode == "single_batch":
+                coef_y_norm = norm_y_error  # Batch1 error
+                V_y_norm = coef_y_norm ** 2 / 2
+            else:  # two_batch, same_episodes
+                coef_y_norm = norm_y2_error  # Batch2 error
+                V_y_norm = coef_y_norm ** 2 / 2
 
             nabla_x_r_V_y_norm = jnp.zeros_like(x_r)
             nabla_x_i_V_y_norm = jnp.zeros_like(x_i)
@@ -328,12 +328,12 @@ def create_update_function(encoder, args):
             if args.constraint_mode == "ema":
                 coef_xy_phase = params['phase_xy_ema'].reshape(1, -1)  # EMA-based
                 V_xy_phase = coef_xy_phase ** 2 / 2
-            else:
-                V_xy_phase = phase_xy ** 2 / 2
-                if args.constraint_mode == "single_batch":
-                    coef_xy_phase = phase_xy  # Batch1 error
-                else:  # two_batch, same_episodes
-                    coef_xy_phase = phase_xy2  # Batch2 error
+            elif args.constraint_mode == "single_batch":
+                coef_xy_phase = phase_xy  # Batch1 error
+                V_xy_phase = coef_xy_phase ** 2 / 2
+            else:  # two_batch, same_episodes
+                coef_xy_phase = phase_xy2  # Batch2 error
+                V_xy_phase = coef_xy_phase ** 2 / 2
 
             nabla_x_r_V_xy_phase = - coef_xy_phase * y_i
             nabla_x_i_V_xy_phase = coef_xy_phase * y_r
