@@ -351,6 +351,9 @@ def learn_eigenvectors(args, learner_module):
         # Shape: (num_states, 1) - all ones since we're sampling uniformly after rejection
         is_ratio = jnp.ones((len(sampling_probs), 1))
 
+        # Evaluation distribution for metrics (uniform after rejection sampling)
+        eval_distribution = jnp.ones(len(sampling_probs)) / len(sampling_probs)
+
         def sample_batch_with_rejection(batch_size, discount):
             """Sample a batch using rejection sampling to flatten the state distribution."""
             accepted_samples = []
@@ -398,6 +401,9 @@ def learn_eigenvectors(args, learner_module):
         # Compute IS ratio
         is_ratio = 1 / (sampling_probs[:, None].clip(min=1e-8) * len(sampling_probs))
         print(f"  IS ratio range (unnormalized): [{is_ratio.min():.3f}, {is_ratio.max():.3f}]")
+
+        # Evaluation distribution for metrics (sampling_probs * is_ratio = uniform)
+        eval_distribution = sampling_probs * is_ratio.squeeze(-1)
 
         # Use standard replay buffer sampling
         sample_batch = lambda batch_size, discount: replay_buffer.sample(batch_size, discount)
@@ -657,7 +663,7 @@ def learn_eigenvectors(args, learner_module):
                 gt_right_imag=gt_right_imag,
                 gt_eigenvalues_real=gt_eigenvalues_real,
                 gt_eigenvalues_imag=gt_eigenvalues_imag,
-                sampling_probs=sampling_probs * is_ratio.squeeze(-1),
+                sampling_probs=eval_distribution,
                 skip_conjugates=skip_conjugates,
             )
 
