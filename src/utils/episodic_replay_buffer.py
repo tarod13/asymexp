@@ -283,13 +283,52 @@ class EpisodicReplayBuffer:
                 }
                 self.add_episode(episode_dict)
 
-    def sample(self, batch_size, discount, env_info={}):   # TODO: Consider if necessary.
-        # Sample episodes
-        episode_idx = np.random.randint(len(self), size=batch_size)
+    def sample(self, batch_size, discount, env_info={}, transitions_per_episode=1, use_same_episodes=False):
+        """
+        Sample transitions from the replay buffer.
+
+        Args:
+            batch_size: Total number of transitions to sample
+            discount: Discount factor for transition duration sampling
+            env_info: Environment information for observation transformation
+            transitions_per_episode: Number of transitions to sample per episode (1 or 2)
+            use_same_episodes: If True with transitions_per_episode=2, sample from same episodes
+
+        Returns:
+            Batch of transitions
+        """
+        if transitions_per_episode == 2 and use_same_episodes:
+            # Sample batch_size/2 episodes, 2 transitions each (must be even batch size)
+            assert batch_size % 2 == 0, "batch_size must be even when sampling 2 transitions per episode"
+            num_episodes = batch_size // 2
+            episode_idx = np.random.randint(len(self), size=num_episodes)
+            # Repeat each episode index twice to get 2 transitions per episode
+            episode_idx = np.repeat(episode_idx, 2)
+        else:
+            # Standard: sample batch_size episodes, 1 transition each
+            episode_idx = np.random.randint(len(self), size=batch_size)
 
         # Sample transitions
         transition_ranges = self._get_episode_lengths(episode_idx)
-        obs_idx = uniform_sampling(transition_ranges - 1)   # -1 to sample future observations. This assumes length of episode is at least 2.
+
+        if transitions_per_episode == 2 and use_same_episodes:
+            # Sample 2 DIFFERENT transitions from each episode
+            obs_idx = np.zeros(batch_size, dtype=np.int32)
+            for i in range(0, batch_size, 2):
+                # Both transitions from same episode
+                max_idx = transition_ranges[i] - 2  # -2 to ensure room for 2 transitions
+                if max_idx >= 1:
+                    # Sample 2 different indices without replacement
+                    sampled = np.random.choice(max_idx + 1, size=2, replace=False)
+                    obs_idx[i] = sampled[0]
+                    obs_idx[i+1] = sampled[1]
+                else:
+                    # Episode too short, sample same index twice (fallback)
+                    idx = np.random.randint(0, max(1, transition_ranges[i] - 1))
+                    obs_idx[i] = idx
+                    obs_idx[i+1] = idx
+        else:
+            obs_idx = uniform_sampling(transition_ranges - 1)   # -1 to sample future observations
 
         # Calculate remaining trajectory length using pre-computed terminal indices (VECTORIZED)
         if 'terminal_indices' in self._episodes:

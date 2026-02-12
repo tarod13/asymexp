@@ -363,7 +363,9 @@ def learn_eigenvectors(args, learner_module):
                 # Sample from replay buffer (empirical distribution)
                 candidate_batch = replay_buffer.sample(
                     batch_size * args.rejection_oversample_factor,
-                    discount=discount
+                    discount=discount,
+                    transitions_per_episode=args.transitions_per_episode,
+                    use_same_episodes=args.use_same_episodes
                 )
                 candidate_obs = np.array(candidate_batch.obs).flatten()
 
@@ -406,7 +408,11 @@ def learn_eigenvectors(args, learner_module):
         eval_distribution = sampling_probs * is_ratio.squeeze(-1)
 
         # Use standard replay buffer sampling
-        sample_batch = lambda batch_size, discount: replay_buffer.sample(batch_size, discount)
+        sample_batch = lambda batch_size, discount: replay_buffer.sample(
+            batch_size, discount,
+            transitions_per_episode=args.transitions_per_episode,
+            use_same_episodes=args.use_same_episodes
+        )
 
     # Get the update function from learner module
     update_encoder = learner_module.create_update_function(encoder, args)
