@@ -44,14 +44,10 @@ class Args:
 
     # Constraint error approximation method
     constraint_mode: str = "ema"  # Options: "ema", "two_batch", "single_batch", "same_episodes"
-    # - "ema": EMA approximation (current approach)
-    # - "two_batch": Unbiased with two independent batches
-    # - "single_batch": Biased with single batch (reuse batch1 for constraints)
-    # - "same_episodes": Intermediate bias - two batches from same episodes
-
-    # Replay buffer sampling control
-    transitions_per_episode: int = 1  # Number of transitions to sample per episode (1 or 2)
-    use_same_episodes: bool = False  # When True, batch1 and batch2 come from same episodes
+    # - "ema": EMA approximation (standard sampling)
+    # - "two_batch": Unbiased with two independent batches (standard sampling)
+    # - "single_batch": Biased with single batch (standard sampling)
+    # - "same_episodes": Intermediate bias - two batches from same episodes (special sampling)
 
     # Episodic replay buffer
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)

@@ -354,6 +354,14 @@ def learn_eigenvectors(args, learner_module):
         # Evaluation distribution for metrics (uniform after rejection sampling)
         eval_distribution = jnp.ones(len(sampling_probs)) / len(sampling_probs)
 
+        # Determine sampling behavior from constraint_mode
+        if args.constraint_mode == "same_episodes":
+            transitions_per_episode = 2
+            use_same_episodes = True
+        else:
+            transitions_per_episode = 1
+            use_same_episodes = False
+
         def sample_batch_with_rejection(batch_size, discount):
             """Sample a batch using rejection sampling to flatten the state distribution."""
             accepted_samples = []
@@ -364,8 +372,8 @@ def learn_eigenvectors(args, learner_module):
                 candidate_batch = replay_buffer.sample(
                     batch_size * args.rejection_oversample_factor,
                     discount=discount,
-                    transitions_per_episode=args.transitions_per_episode,
-                    use_same_episodes=args.use_same_episodes
+                    transitions_per_episode=transitions_per_episode,
+                    use_same_episodes=use_same_episodes
                 )
                 candidate_obs = np.array(candidate_batch.obs).flatten()
 
@@ -407,11 +415,19 @@ def learn_eigenvectors(args, learner_module):
         # Evaluation distribution for metrics (sampling_probs * is_ratio = uniform)
         eval_distribution = sampling_probs * is_ratio.squeeze(-1)
 
+        # Determine sampling behavior from constraint_mode
+        if args.constraint_mode == "same_episodes":
+            transitions_per_episode = 2
+            use_same_episodes = True
+        else:
+            transitions_per_episode = 1
+            use_same_episodes = False
+
         # Use standard replay buffer sampling
         sample_batch = lambda batch_size, discount: replay_buffer.sample(
             batch_size, discount,
-            transitions_per_episode=args.transitions_per_episode,
-            use_same_episodes=args.use_same_episodes
+            transitions_per_episode=transitions_per_episode,
+            use_same_episodes=use_same_episodes
         )
 
     # Get the update function from learner module
