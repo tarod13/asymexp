@@ -590,6 +590,29 @@ def learn_eigenvectors(args, learner_module):
         state_indices_2 = jnp.array(batch2.obs)
         next_state_indices_2 = jnp.array(batch2.next_obs)
 
+        # Compute batch diversity metrics
+        all_batch_states = np.concatenate([
+            np.array(state_indices),
+            np.array(next_state_indices),
+            np.array(state_indices_2),
+            np.array(next_state_indices_2)
+        ])
+        unique_states = len(np.unique(all_batch_states))
+        total_states = len(sampling_probs)
+        coverage = unique_states / total_states
+
+        # Compute entropy of batch state distribution
+        state_counts = np.bincount(all_batch_states, minlength=total_states)
+        state_freqs = state_counts / state_counts.sum()
+        # Only compute entropy for states that appear (avoid log(0))
+        state_freqs_nonzero = state_freqs[state_freqs > 0]
+        batch_entropy = -np.sum(state_freqs_nonzero * np.log(state_freqs_nonzero))
+        max_entropy = np.log(total_states)  # Uniform distribution entropy
+        normalized_entropy = batch_entropy / max_entropy
+
+        # Most common state frequency
+        max_state_freq = state_freqs.max()
+
         # Get coordinates
         coords_batch = state_coords[state_indices]
         next_coords_batch = state_coords[next_state_indices]
@@ -677,6 +700,12 @@ def learn_eigenvectors(args, learner_module):
             for k, v in cosine_sims.items():
                 metrics_dict[k] = v
 
+            # Add batch diversity metrics
+            metrics_dict['batch_unique_states'] = unique_states
+            metrics_dict['batch_coverage'] = coverage
+            metrics_dict['batch_entropy_normalized'] = normalized_entropy
+            metrics_dict['batch_max_state_freq'] = max_state_freq
+
             metrics_history.append(metrics_dict)
 
             if gradient_step % (args.log_freq * 10) == 0:
@@ -689,6 +718,8 @@ def learn_eigenvectors(args, learner_module):
                         f"graph_loss={graph_loss:.4f}, clf_loss={clf_loss:.4f}, "
                         f"chirality_loss={chirality_loss:.4f}, "
                       f"left_sim={left_sim:.4f}, right_sim={right_sim:.4f}")
+                print(f"  Batch diversity: unique={unique_states}/{total_states} ({coverage*100:.1f}%), "
+                      f"entropy={normalized_entropy:.3f}, max_freq={max_state_freq:.4f}")
         log_time = time.time() - log_start
 
         # Collect timing samples (last 1000 steps for statistics)
