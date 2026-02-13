@@ -199,15 +199,9 @@ def create_update_function(encoder, args):
                 loss_norm_x_ema = 0.0
                 loss_norm_y_ema = 0.0
 
-            # Phase - Use next_x for non-EMA modes (y^T L x approximation)
-            if args.constraint_mode == "ema":
-                # EMA mode: use current states for EMA updates
-                phase_xy = ip(y_r, x_i) - ip(y_i, x_r)
-                phase_xy2 = ip(y2_r, x2_i) - ip(y2_i, x2_r)
-            else:
-                # Non-EMA modes: use next_x (Laplacian approximation)
-                phase_xy = ip(y_r, next_x_i) - ip(y_i, next_x_r)
-                phase_xy2 = ip(y2_r, next_x2_i) - ip(y2_i, next_x2_r)
+            # Phase
+            phase_xy = ip(y_r, x_i) - ip(y_i, x_r)
+            phase_xy2 = ip(y2_r, x2_i) - ip(y2_i, x2_r)
 
             # EMA Loss for Phase (only for EMA mode)
             if args.constraint_mode == "ema":
@@ -215,45 +209,24 @@ def create_update_function(encoder, args):
             else:
                 loss_phase_xy_ema = 0.0
 
-            # Correlations (Crossed terms) - Use next_x for non-EMA modes
-            if args.constraint_mode == "ema":
-                # EMA mode: use current states for EMA updates
-                # Batch 1
-                cross_xryr = multi_ip(x_r, y_r)
-                cross_xiyi = multi_ip(x_i, y_i)
-                cross_xryi = multi_ip(x_r, y_i)
-                cross_xiryr = multi_ip(x_i, y_r)
+            # Correlations (Crossed terms)
+            # Batch 1
+            cross_xryr = multi_ip(x_r, y_r)
+            cross_xiyi = multi_ip(x_i, y_i)
+            cross_xryi = multi_ip(x_r, y_i)
+            cross_xiryr = multi_ip(x_i, y_r)
+            
+            corr_xy_real = cross_xryr + cross_xiyi
+            corr_xy_imag = -cross_xryi + cross_xiryr
 
-                corr_xy_real = cross_xryr + cross_xiyi
-                corr_xy_imag = -cross_xryi + cross_xiryr
+            # Batch 2
+            cross_xryr2 = multi_ip(x2_r, y2_r)
+            cross_xiyi2 = multi_ip(x2_i, y2_i)
+            cross_xryi2 = multi_ip(x2_r, y2_i)
+            cross_xiryr2 = multi_ip(x2_i, y2_r)
 
-                # Batch 2
-                cross_xryr2 = multi_ip(x2_r, y2_r)
-                cross_xiyi2 = multi_ip(x2_i, y2_i)
-                cross_xryi2 = multi_ip(x2_r, y2_i)
-                cross_xiryr2 = multi_ip(x2_i, y2_r)
-
-                corr_xy2_real = cross_xryr2 + cross_xiyi2
-                corr_xy2_imag = -cross_xryi2 + cross_xiryr2
-            else:
-                # Non-EMA modes: use next_x (Laplacian approximation)
-                # Batch 1
-                cross_xryr = multi_ip(next_x_r, y_r)
-                cross_xiyi = multi_ip(next_x_i, y_i)
-                cross_xryi = multi_ip(next_x_r, y_i)
-                cross_xiryr = multi_ip(next_x_i, y_r)
-
-                corr_xy_real = cross_xryr + cross_xiyi
-                corr_xy_imag = -cross_xryi + cross_xiryr
-
-                # Batch 2
-                cross_xryr2 = multi_ip(next_x2_r, y2_r)
-                cross_xiyi2 = multi_ip(next_x2_i, y2_i)
-                cross_xryi2 = multi_ip(next_x2_r, y2_i)
-                cross_xiryr2 = multi_ip(next_x2_i, y2_r)
-
-                corr_xy2_real = cross_xryr2 + cross_xiyi2
-                corr_xy2_imag = -cross_xryi2 + cross_xiryr2
+            corr_xy2_real = cross_xryr2 + cross_xiyi2
+            corr_xy2_imag = -cross_xryi2 + cross_xiryr2
 
             # EMA Loss for Correlations (only for EMA mode)
             if args.constraint_mode == "ema":
@@ -347,92 +320,73 @@ def create_update_function(encoder, args):
             next_nabla_y_i_V_y_norm = 2 * coef_y_norm * next_y_i
 
             # 3. For xy phase: <y_k,x_k> should be real
-            # For non-EMA modes, phase already computed above with next_x
-            # For EMA mode, recompute with current states for coefficient purposes
+            phase_xy = ip(y_r, x_i) - ip(y_i, x_r)  # (Shape: (1,k))
+            phase_xy2 = ip(y2_r, x2_i) - ip(y2_i, x2_r)
+            next_phase_xy = ip(next_y_r, next_x_i) - ip(next_y_i, next_x_r)
+            next_phase_xy2 = ip(next_y2_r, next_x2_i) - ip(next_y2_i, next_x2_r)
+
             if args.constraint_mode == "ema":
                 coef_xy_phase = params['phase_xy_ema'].reshape(1, -1)  # EMA-based
                 V_xy_phase = coef_xy_phase ** 2 / 2
-                # For gradients, use current states in EMA mode
-                nabla_x_r_V_xy_phase = - coef_xy_phase * y_i
-                nabla_x_i_V_xy_phase = coef_xy_phase * y_r
-                nabla_y_r_V_xy_phase = coef_xy_phase * x_i
-                nabla_y_i_V_xy_phase = - coef_xy_phase * x_r
-                next_nabla_y_r_V_xy_phase = coef_xy_phase * next_x_i
-                next_nabla_y_i_V_xy_phase = - coef_xy_phase * next_x_r
             elif args.constraint_mode == "single_batch":
-                # phase_xy already computed with next_x above
-                coef_xy_phase = phase_xy  # Batch1 error (using next_x)
+                coef_xy_phase = phase_xy  # Batch1 error
                 V_xy_phase = coef_xy_phase ** 2 / 2
-                # Gradients use next_x (Laplacian approximation)
-                nabla_x_r_V_xy_phase = jnp.zeros_like(x_r)  # No gradient w.r.t. current x
-                nabla_x_i_V_xy_phase = jnp.zeros_like(x_i)
-                nabla_y_r_V_xy_phase = coef_xy_phase * next_x_i
-                nabla_y_i_V_xy_phase = - coef_xy_phase * next_x_r
-                next_nabla_y_r_V_xy_phase = coef_xy_phase * next_x_i
-                next_nabla_y_i_V_xy_phase = - coef_xy_phase * next_x_r
             else:  # two_batch, same_episodes
-                # phase_xy2 already computed with next_x2 above
-                coef_xy_phase = phase_xy2  # Batch2 error (using next_x2)
+                coef_xy_phase = phase_xy2  # Batch2 error
                 V_xy_phase = coef_xy_phase ** 2 / 2
-                # Gradients use next_x (Laplacian approximation)
-                nabla_x_r_V_xy_phase = jnp.zeros_like(x_r)  # No gradient w.r.t. current x
-                nabla_x_i_V_xy_phase = jnp.zeros_like(x_i)
-                nabla_y_r_V_xy_phase = coef_xy_phase * next_x_i
-                nabla_y_i_V_xy_phase = - coef_xy_phase * next_x_r
-                next_nabla_y_r_V_xy_phase = coef_xy_phase * next_x_i
-                next_nabla_y_i_V_xy_phase = - coef_xy_phase * next_x_r
+
+            nabla_x_r_V_xy_phase = - coef_xy_phase * y_i
+            nabla_x_i_V_xy_phase = coef_xy_phase * y_r
+            nabla_y_r_V_xy_phase = coef_xy_phase * x_i
+            nabla_y_i_V_xy_phase = - coef_xy_phase * x_r
+            next_nabla_y_r_V_xy_phase = coef_xy_phase * next_x_i
+            next_nabla_y_i_V_xy_phase = - coef_xy_phase * next_x_r
 
             # 4. For crossed terms: <y_j,x_k> should be 0 for j!=k
-            # For non-EMA modes, correlations already computed above with next_x
-            # For EMA mode, recompute with current states for coefficient purposes
+            cross_xryr = multi_ip(x_r, y_r)
+            cross_xiyi = multi_ip(x_i, y_i)
+            cross_xryi = multi_ip(x_r, y_i)
+            cross_xiryr = multi_ip(x_i, y_r)
+
+            corr_xy_real = cross_xryr + cross_xiyi  # (Shape: (k,k)) (First index: x, second index: y)
+            corr_xy_imag = -cross_xryi + cross_xiryr
+
+            corr_xy_real_lower = jnp.tril(corr_xy_real, k=-1)
+            corr_xy_imag_lower = jnp.tril(corr_xy_imag, k=-1)
+
+            corr_yx_real_lower = jnp.tril(corr_xy_real.T, k=-1)
+            corr_yx_imag_lower = jnp.tril(corr_xy_imag.T, k=-1)
+
+            cross_xryr2 = multi_ip(x2_r, y2_r)
+            cross_xiyi2 = multi_ip(x2_i, y2_i)
+            cross_xryi2 = multi_ip(x2_r, y2_i)
+            cross_xiryr2 = multi_ip(x2_i, y2_r)
+
+            cross_xy2_real = cross_xryr2 + cross_xiyi2
+            cross_xy2_imag = -cross_xryi2 + cross_xiryr2
+
+            corr_xy2_real_lower = jnp.tril(cross_xy2_real, k=-1)
+            corr_xy2_imag_lower = jnp.tril(cross_xy2_imag, k=-1)
+
+            corr_yx2_real_lower = jnp.tril(cross_xy2_real.T, k=-1)
+            corr_yx2_imag_lower = jnp.tril(cross_xy2_imag.T, k=-1)
+
+            # Select correlation coefficients based on mode
             if args.constraint_mode == "ema":
-                # EMA mode: use current states
-                cross_xryr = multi_ip(x_r, y_r)
-                cross_xiyi = multi_ip(x_i, y_i)
-                cross_xryi = multi_ip(x_r, y_i)
-                cross_xiryr = multi_ip(x_i, y_r)
-
-                corr_xy_real = cross_xryr + cross_xiyi
-                corr_xy_imag = -cross_xryi + cross_xiryr
-
-                corr_xy_real_lower = jnp.tril(corr_xy_real, k=-1)
-                corr_xy_imag_lower = jnp.tril(corr_xy_imag, k=-1)
-
-                corr_yx_real_lower = jnp.tril(corr_xy_real.T, k=-1)
-                corr_yx_imag_lower = jnp.tril(corr_xy_imag.T, k=-1)
-
-                cross_xryr2 = multi_ip(x2_r, y2_r)
-                cross_xiyi2 = multi_ip(x2_i, y2_i)
-                cross_xryi2 = multi_ip(x2_r, y2_i)
-                cross_xiryr2 = multi_ip(x2_i, y2_r)
-
-                cross_xy2_real = cross_xryr2 + cross_xiyi2
-                cross_xy2_imag = -cross_xryi2 + cross_xiryr2
-
-                corr_xy2_real_lower = jnp.tril(cross_xy2_real, k=-1)
-                corr_xy2_imag_lower = jnp.tril(cross_xy2_imag, k=-1)
-
-                corr_yx2_real_lower = jnp.tril(cross_xy2_real.T, k=-1)
-                corr_yx2_imag_lower = jnp.tril(cross_xy2_imag.T, k=-1)
-
-                coef_corr_xy_real_lower = jnp.tril(params['corr_xy_real_ema'], k=-1)
+                coef_corr_xy_real_lower = jnp.tril(params['corr_xy_real_ema'], k=-1)  # EMA-based
                 coef_corr_xy_imag_lower = jnp.tril(params['corr_xy_imag_ema'], k=-1)
                 coef_corr_yx_real_lower = jnp.tril(params['corr_xy_real_ema'].T, k=-1)
                 coef_corr_yx_imag_lower = jnp.tril(params['corr_xy_imag_ema'].T, k=-1)
-
             elif args.constraint_mode == "single_batch":
-                # Correlations already computed with next_x above
-                coef_corr_xy_real_lower = jnp.tril(corr_xy_real, k=-1)
-                coef_corr_xy_imag_lower = jnp.tril(corr_xy_imag, k=-1)
-                coef_corr_yx_real_lower = jnp.tril(corr_xy_real.T, k=-1)
-                coef_corr_yx_imag_lower = jnp.tril(corr_xy_imag.T, k=-1)
-
+                coef_corr_xy_real_lower = corr_xy_real_lower  # Batch1
+                coef_corr_xy_imag_lower = corr_xy_imag_lower
+                coef_corr_yx_real_lower = corr_yx_real_lower
+                coef_corr_yx_imag_lower = corr_yx_imag_lower
             else:  # two_batch, same_episodes
-                # Correlations already computed with next_x2 above
-                coef_corr_xy_real_lower = jnp.tril(corr_xy2_real, k=-1)
-                coef_corr_xy_imag_lower = jnp.tril(corr_xy2_imag, k=-1)
-                coef_corr_yx_real_lower = jnp.tril(corr_xy2_real.T, k=-1)
-                coef_corr_yx_imag_lower = jnp.tril(corr_xy2_imag.T, k=-1)
+                coef_corr_xy_real_lower = corr_xy2_real_lower  # Batch2
+                coef_corr_xy_imag_lower = corr_xy2_imag_lower
+                coef_corr_yx_real_lower = corr_yx2_real_lower
+                coef_corr_yx_imag_lower = corr_yx2_imag_lower
 
             V_xy_corr_real = jnp.sum(coef_corr_xy_real_lower ** 2, -1).reshape(1, -1) / 2  # (Shape: (1,k))
             V_xy_corr_imag = jnp.sum(coef_corr_xy_imag_lower ** 2, -1).reshape(1, -1) / 2
@@ -440,35 +394,18 @@ def create_update_function(encoder, args):
             V_yx_corr_imag = jnp.sum(coef_corr_yx_imag_lower ** 2, -1).reshape(1, -1) / 2
             V_xy_corr = V_xy_corr_real + V_xy_corr_imag + V_yx_corr_real + V_yx_corr_imag
 
-            # Compute gradients based on mode
-            if args.constraint_mode == "ema":
-                # EMA mode: use current states
-                nabla_x_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', coef_corr_xy_real_lower, y_r)
-                nabla_x_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', coef_corr_xy_real_lower, y_i)
-                nabla_x_r_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', coef_corr_xy_imag_lower, y_i)
-                nabla_x_i_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', coef_corr_xy_imag_lower, y_r)
-                nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower, x_r)
-                nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower, x_i)
-                nabla_y_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower, x_i)
-                nabla_y_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower, x_r)
-                next_nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower, next_x_r)
-                next_nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower, next_x_i)
-                next_nabla_y_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower, next_x_i)
-                next_nabla_y_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower, next_x_r)
-            else:
-                # Non-EMA modes: use next_x (Laplacian approximation)
-                nabla_x_r_V_xy_corr_real = jnp.zeros_like(x_r)  # No gradient w.r.t. current x
-                nabla_x_i_V_xy_corr_real = jnp.zeros_like(x_i)
-                nabla_x_r_V_xy_corr_imag = jnp.zeros_like(x_r)
-                nabla_x_i_V_xy_corr_imag = jnp.zeros_like(x_i)
-                nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower, next_x_r)
-                nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower, next_x_i)
-                nabla_y_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower, next_x_i)
-                nabla_y_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower, next_x_r)
-                next_nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower, next_x_r)
-                next_nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower, next_x_i)
-                next_nabla_y_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower, next_x_i)
-                next_nabla_y_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower, next_x_r)
+            nabla_x_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', coef_corr_xy_real_lower, y_r)
+            nabla_x_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', coef_corr_xy_real_lower, y_i)
+            nabla_x_r_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', coef_corr_xy_imag_lower, y_i)
+            nabla_x_i_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', coef_corr_xy_imag_lower, y_r)
+            nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower, x_r)
+            nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower, x_i)
+            nabla_y_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower, x_i)
+            nabla_y_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower, x_r)
+            next_nabla_y_r_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower, next_x_r)
+            next_nabla_y_i_V_xy_corr_real = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower, next_x_i)
+            next_nabla_y_r_V_xy_corr_imag = 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower, next_x_i)
+            next_nabla_y_i_V_xy_corr_imag = -2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower, next_x_r)
 
             # 5. Global
             V = V_x_norm + V_y_norm + V_xy_phase + V_xy_corr  # (Shape: (1,k))
