@@ -38,6 +38,20 @@ class Args:
     dual_learning_rate: float = 3e-4  # Learning rate for dual variables (duals_learner)
     barrier: float = 1.0  # Barrier strength for dual norm constraints (duals_learner)
 
+    # Gradient clipping
+    use_global_grad_clip: bool = True  # If True, use global norm clipping (original). If False, clip encoder and lambda separately
+
+    # Rejection sampling for uniform state distribution
+    use_rejection_sampling: bool = True  # Use rejection sampling to flatten state distribution (eliminates need for IS correction)
+    rejection_oversample_factor: int = 3  # How many extra samples to draw per rejection round
+
+    # Constraint error approximation method
+    constraint_mode: str = "ema"  # Options: "ema", "two_batch", "single_batch", "same_episodes"
+    # - "ema": EMA approximation (standard sampling)
+    # - "two_batch": Unbiased with two independent batches (standard sampling)
+    # - "single_batch": Biased with single batch (standard sampling)
+    # - "same_episodes": Intermediate bias - two batches from same episodes (special sampling)
+
     # Episodic replay buffer
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
     

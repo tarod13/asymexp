@@ -331,7 +331,104 @@ def learn_eigenvectors(args, learner_module):
         )
 
     encoder.apply = jax.jit(encoder.apply)
-    is_ratio = 1 / (sampling_probs[:, None].clip(min=1e-8) * len(sampling_probs))  # Shape: (num_states, 1)
+
+    # Configure sampling strategy
+    if args.use_rejection_sampling:
+        # Compute rejection sampling probabilities to flatten state distribution
+        # Accept probability: p_accept[i] = min_prob / sampling_probs[i]
+        # This makes rare states (small sampling_probs) always accepted (p ≈ 1)
+        # and common states rejected more often (p < 1)
+        min_sampling_prob = float(sampling_probs.min())
+        rejection_accept_probs = min_sampling_prob / np.array(sampling_probs)  # Shape: (num_states,)
+
+        print(f"\nRejection Sampling Configuration:")
+        print(f"  Original sampling prob range: [{sampling_probs.min():.6f}, {sampling_probs.max():.6f}]")
+        print(f"  Acceptance prob range: [{rejection_accept_probs.min():.3f}, {rejection_accept_probs.max():.3f}]")
+        print(f"  Expected rejection rate: {100 * (1 - rejection_accept_probs.mean()):.1f}%")
+        print(f"  Oversample factor: {args.rejection_oversample_factor}x")
+
+        # After rejection sampling, all states have equal weight (no IS correction needed)
+        # Shape: (num_states, 1) - all ones since we're sampling uniformly after rejection
+        is_ratio = jnp.ones((len(sampling_probs), 1))
+
+        # Evaluation distribution for metrics (uniform after rejection sampling)
+        eval_distribution = jnp.ones(len(sampling_probs)) / len(sampling_probs)
+
+        # Determine sampling behavior from constraint_mode
+        if args.constraint_mode == "same_episodes":
+            transitions_per_episode = 2
+            use_same_episodes = True
+        else:
+            transitions_per_episode = 1
+            use_same_episodes = False
+
+        def sample_batch_with_rejection(batch_size, discount):
+            """Sample a batch using rejection sampling to flatten the state distribution."""
+            accepted_samples = []
+
+            # Keep sampling until we have enough accepted samples
+            while len(accepted_samples) < batch_size:
+                # Sample from replay buffer (empirical distribution)
+                candidate_batch = replay_buffer.sample(
+                    batch_size * args.rejection_oversample_factor,
+                    discount=discount,
+                    transitions_per_episode=transitions_per_episode,
+                    use_same_episodes=use_same_episodes
+                )
+                candidate_obs = np.array(candidate_batch.obs).flatten()
+
+                # Apply rejection sampling: accept with probability p_accept[state]
+                accept_probs = rejection_accept_probs[candidate_obs]
+                random_uniform = np.random.rand(len(candidate_obs))
+                accept_mask = random_uniform < accept_probs
+
+                # Collect accepted samples
+                if np.any(accept_mask):
+                    accepted_indices = np.where(accept_mask)[0]
+                    for idx in accepted_indices:
+                        if len(accepted_samples) < batch_size:
+                            accepted_samples.append({
+                                'obs': candidate_batch.obs[idx],
+                                'next_obs': candidate_batch.next_obs[idx],
+                            })
+
+            # Convert to batch format (take exactly batch_size samples)
+            from collections import namedtuple
+            Batch = namedtuple('Batch', ['obs', 'next_obs'])
+            return Batch(
+                obs=np.array([s['obs'] for s in accepted_samples[:batch_size]]),
+                next_obs=np.array([s['next_obs'] for s in accepted_samples[:batch_size]]),
+            )
+
+        # Use rejection sampling
+        sample_batch = sample_batch_with_rejection
+
+    else:
+        # Use standard importance sampling with IS ratio correction
+        print(f"\nUsing Importance Sampling (no rejection)")
+        print(f"  Sampling prob range: [{sampling_probs.min():.6f}, {sampling_probs.max():.6f}]")
+
+        # Compute IS ratio
+        is_ratio = 1 / (sampling_probs[:, None].clip(min=1e-8) * len(sampling_probs))
+        print(f"  IS ratio range (unnormalized): [{is_ratio.min():.3f}, {is_ratio.max():.3f}]")
+
+        # Evaluation distribution for metrics (sampling_probs * is_ratio = uniform)
+        eval_distribution = sampling_probs * is_ratio.squeeze(-1)
+
+        # Determine sampling behavior from constraint_mode
+        if args.constraint_mode == "same_episodes":
+            transitions_per_episode = 2
+            use_same_episodes = True
+        else:
+            transitions_per_episode = 1
+            use_same_episodes = False
+
+        # Use standard replay buffer sampling
+        sample_batch = lambda batch_size, discount: replay_buffer.sample(
+            batch_size, discount,
+            transitions_per_episode=transitions_per_episode,
+            use_same_episodes=use_same_episodes
+        )
 
     # Get the update function from learner module
     update_encoder = learner_module.create_update_function(encoder, args)
@@ -495,6 +592,7 @@ def learn_eigenvectors(args, learner_module):
             warmup_coords,
             warmup_next_coords,
             warmup_coords,  # Use same batch for second set
+            warmup_next_coords,
             warmup_state_weighting,
         )
 
@@ -509,20 +607,45 @@ def learn_eigenvectors(args, learner_module):
     for gradient_step in tqdm(range(start_step, args.num_gradient_steps)):
         step_start = time.time()
 
-        # Sample batches from episodic replay buffer using truncated geometric distribution
+        # Sample batches (using configured sampling strategy)
         sample_start = time.time()
-        batch1 = replay_buffer.sample(args.batch_size, discount=args.gamma)
-        batch2 = replay_buffer.sample(args.batch_size, discount=args.gamma)
+        batch1 = sample_batch(args.batch_size, discount=args.gamma)
+        batch2 = sample_batch(args.batch_size, discount=args.gamma)
 
         # Extract state indices (canonical state indices)
         state_indices = jnp.array(batch1.obs)
         next_state_indices = jnp.array(batch1.next_obs)
         state_indices_2 = jnp.array(batch2.obs)
+        next_state_indices_2 = jnp.array(batch2.next_obs)
+
+        # Compute batch diversity metrics
+        all_batch_states = np.concatenate([
+            np.array(state_indices),
+            np.array(next_state_indices),
+            np.array(state_indices_2),
+            np.array(next_state_indices_2)
+        ])
+        unique_states = len(np.unique(all_batch_states))
+        total_states = len(sampling_probs)
+        coverage = unique_states / total_states
+
+        # Compute entropy of batch state distribution
+        state_counts = np.bincount(all_batch_states, minlength=total_states)
+        state_freqs = state_counts / state_counts.sum()
+        # Only compute entropy for states that appear (avoid log(0))
+        state_freqs_nonzero = state_freqs[state_freqs > 0]
+        batch_entropy = -np.sum(state_freqs_nonzero * np.log(state_freqs_nonzero))
+        max_entropy = np.log(total_states)  # Uniform distribution entropy
+        normalized_entropy = batch_entropy / max_entropy
+
+        # Most common state frequency
+        max_state_freq = state_freqs.max()
 
         # Get coordinates
         coords_batch = state_coords[state_indices]
         next_coords_batch = state_coords[next_state_indices]
         coords_batch_2 = state_coords[state_indices_2]
+        next_coords_batch_2 = state_coords[next_state_indices_2]
         sample_time = time.time() - sample_start
         state_weighting = is_ratio[state_indices]
 
@@ -533,6 +656,7 @@ def learn_eigenvectors(args, learner_module):
             coords_batch,
             next_coords_batch,
             coords_batch_2,
+            next_coords_batch_2,
             state_weighting,
         )
         # Block until GPU computation completes for accurate timing
@@ -561,7 +685,7 @@ def learn_eigenvectors(args, learner_module):
                 gt_right_imag=gt_right_imag,
                 gt_eigenvalues_real=gt_eigenvalues_real,
                 gt_eigenvalues_imag=gt_eigenvalues_imag,
-                sampling_probs=sampling_probs * is_ratio.squeeze(-1),
+                sampling_probs=eval_distribution,
                 skip_conjugates=skip_conjugates,
             )
 
@@ -604,6 +728,12 @@ def learn_eigenvectors(args, learner_module):
             for k, v in cosine_sims.items():
                 metrics_dict[k] = v
 
+            # Add batch diversity metrics
+            metrics_dict['batch_unique_states'] = unique_states
+            metrics_dict['batch_coverage'] = coverage
+            metrics_dict['batch_entropy_normalized'] = normalized_entropy
+            metrics_dict['batch_max_state_freq'] = max_state_freq
+
             metrics_history.append(metrics_dict)
 
             if gradient_step % (args.log_freq * 10) == 0:
@@ -616,6 +746,8 @@ def learn_eigenvectors(args, learner_module):
                         f"graph_loss={graph_loss:.4f}, clf_loss={clf_loss:.4f}, "
                         f"chirality_loss={chirality_loss:.4f}, "
                       f"left_sim={left_sim:.4f}, right_sim={right_sim:.4f}")
+                print(f"  Batch diversity: unique={unique_states}/{total_states} ({coverage*100:.1f}%), "
+                      f"entropy={normalized_entropy:.3f}, max_freq={max_state_freq:.4f}")
         log_time = time.time() - log_start
 
         # Collect timing samples (last 1000 steps for statistics)

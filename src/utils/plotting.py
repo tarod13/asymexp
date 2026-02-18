@@ -1280,3 +1280,341 @@ def create_hitting_time_visualization_report(
     plt.close()
 
     print(f"\nHitting time visualization reports saved to {output_dir}")
+
+
+# ─── Complex training diagnostics ──────────────────────────────────────────
+
+def plot_complex_learning_curves(metrics_history: list, save_path: str):
+    """
+    Plot comprehensive learning curves for complex eigenvector training.
+
+    Includes: ALLO loss, graph loss, gradient norm, dual losses, barrier loss,
+    orthogonality errors, per-component diagonal errors, and constraint distances.
+    """
+    if not metrics_history:
+        print("Warning: metrics_history is empty, skipping learning curves plot")
+        return
+
+    fig, axes = plt.subplots(4, 3, figsize=(18, 16))
+    fig.suptitle('Training Metrics (Comprehensive Diagnostics)', fontsize=16)
+
+    steps = [m['gradient_step'] for m in metrics_history]
+
+    if 'allo' in metrics_history[0]:
+        axes[0, 0].plot(steps, [m['allo'] for m in metrics_history])
+        axes[0, 0].set_xlabel('Gradient Step')
+        axes[0, 0].set_ylabel('Total Loss')
+        axes[0, 0].set_title('ALLO Loss')
+        axes[0, 0].grid(True, alpha=0.3)
+
+    if 'graph_loss' in metrics_history[0]:
+        axes[0, 1].plot(steps, [m['graph_loss'] for m in metrics_history])
+        axes[0, 1].set_xlabel('Gradient Step')
+        axes[0, 1].set_ylabel('Graph Loss')
+        axes[0, 1].set_title('Graph Drawing Loss')
+        axes[0, 1].grid(True, alpha=0.3)
+
+    if 'grad_norm' in metrics_history[0]:
+        axes[0, 2].plot(steps, [m['grad_norm'] for m in metrics_history])
+        axes[0, 2].set_xlabel('Gradient Step')
+        axes[0, 2].set_ylabel('Gradient Norm')
+        axes[0, 2].set_title('Gradient Norm')
+        axes[0, 2].grid(True, alpha=0.3)
+
+    if 'dual_loss' in metrics_history[0] or 'dual_loss_neg' in metrics_history[0]:
+        if 'dual_loss' in metrics_history[0]:
+            axes[1, 0].plot(steps, [m['dual_loss'] for m in metrics_history], label='Positive')
+        if 'dual_loss_neg' in metrics_history[0]:
+            axes[1, 0].plot(steps, [m['dual_loss_neg'] for m in metrics_history], label='Negative')
+        axes[1, 0].set_xlabel('Gradient Step')
+        axes[1, 0].set_ylabel('Dual Loss')
+        axes[1, 0].set_title('Dual Losses')
+        axes[1, 0].legend()
+        axes[1, 0].grid(True, alpha=0.3)
+
+    if 'barrier_loss' in metrics_history[0]:
+        axes[1, 1].plot(steps, [m['barrier_loss'] for m in metrics_history])
+        axes[1, 1].set_xlabel('Gradient Step')
+        axes[1, 1].set_ylabel('Barrier Loss')
+        axes[1, 1].set_title('Barrier Loss (Fixed Coefficient)')
+        axes[1, 1].grid(True, alpha=0.3)
+
+    if 'total_error' in metrics_history[0]:
+        axes[1, 2].plot(steps, [m['total_error'] for m in metrics_history], label='Total')
+    if 'total_norm_error' in metrics_history[0]:
+        axes[1, 2].plot(steps, [m['total_norm_error'] for m in metrics_history], label='Norm')
+    if 'total_two_component_error' in metrics_history[0]:
+        axes[1, 2].plot(steps, [m['total_two_component_error'] for m in metrics_history], label='First 2')
+    axes[1, 2].set_xlabel('Gradient Step')
+    axes[1, 2].set_ylabel('Error')
+    axes[1, 2].set_title('Orthogonality Errors')
+    axes[1, 2].legend()
+    axes[1, 2].grid(True, alpha=0.3)
+
+    for row_idx, (component, label) in enumerate([
+        ('left_real', 'Left Real'), ('left_imag', 'Left Imag'), ('right_real', 'Right Real')
+    ]):
+        ax = axes[2, row_idx]
+        ax.set_title(f'{label} Diagonal Errors')
+        for i in range(min(5, 11)):
+            key = f'error_{component}_{i}'
+            if key in metrics_history[0]:
+                ax.plot(steps, [m[key] for m in metrics_history], label=f'ev{i}', alpha=0.7)
+        ax.set_xlabel('Gradient Step')
+        ax.set_ylabel('Error')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    axes[3, 0].set_title('Right Imag Diagonal Errors')
+    for i in range(min(5, 11)):
+        key = f'error_right_imag_{i}'
+        if key in metrics_history[0]:
+            axes[3, 0].plot(steps, [m[key] for m in metrics_history], label=f'ev{i}', alpha=0.7)
+    axes[3, 0].set_xlabel('Gradient Step')
+    axes[3, 0].set_ylabel('Error')
+    axes[3, 0].legend(fontsize=8)
+    axes[3, 0].grid(True, alpha=0.3)
+
+    if 'distance_to_constraint_manifold' in metrics_history[0]:
+        axes[3, 1].plot(steps, [m['distance_to_constraint_manifold'] for m in metrics_history])
+        axes[3, 1].set_title('Distance to Constraint Manifold')
+    else:
+        axes[3, 1].text(0.5, 0.5, 'Metric not available', ha='center', va='center', transform=axes[3, 1].transAxes)
+        axes[3, 1].set_title('Distance to Constraint Manifold')
+    axes[3, 1].set_xlabel('Gradient Step')
+    axes[3, 1].set_ylabel('Distance')
+    axes[3, 1].grid(True, alpha=0.3)
+
+    if 'distance_to_origin' in metrics_history[0]:
+        axes[3, 2].plot(steps, [m['distance_to_origin'] for m in metrics_history])
+        axes[3, 2].set_title('Distance to Origin')
+    else:
+        axes[3, 2].text(0.5, 0.5, 'Metric not available', ha='center', va='center', transform=axes[3, 2].transAxes)
+        axes[3, 2].set_title('Distance to Origin')
+    axes[3, 2].set_xlabel('Gradient Step')
+    axes[3, 2].set_ylabel('Distance')
+    axes[3, 2].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Comprehensive learning curves saved to {save_path}")
+
+
+def plot_complex_dual_variable_evolution(
+    metrics_history, ground_truth_eigenvalues, gamma, save_path,
+    num_eigenvectors=11
+):
+    """
+    Plot evolution of complex dual variables (Laplacian eigenvalue estimates)
+    vs ground truth eigenvalues, showing real/imag components, magnitude, and errors.
+    """
+    steps = [m['gradient_step'] for m in metrics_history]
+    num_plot = min(num_eigenvectors, len(ground_truth_eigenvalues))
+
+    fig, axes = plt.subplots(3, 1, figsize=(12, 14))
+    colors = plt.cm.tab10(np.linspace(0, 1, num_plot))
+
+    ax1 = axes[0]
+    for i in range(num_plot):
+        dual_real_key = f'dual_real_{i}'
+        dual_imag_key = f'dual_imag_{i}'
+        if dual_real_key in metrics_history[0] and dual_imag_key in metrics_history[0]:
+            dual_values_real = np.array([m[dual_real_key] for m in metrics_history])
+            dual_values_imag = np.array([m[dual_imag_key] for m in metrics_history])
+            ax1.plot(steps, dual_values_real, label=f'lambda_{i} (real)',
+                     color=colors[i], linewidth=1.5, linestyle='-')
+            ax1.plot(steps, dual_values_imag, label=f'lambda_{i} (imag)',
+                     color=colors[i], linewidth=1.5, linestyle='--', alpha=0.7)
+            gt_value_real = float(ground_truth_eigenvalues[i].real)
+            gt_value_imag = float(ground_truth_eigenvalues[i].imag)
+            ax1.axhline(y=gt_value_real, color=colors[i], linestyle='-', alpha=0.2, linewidth=2)
+            ax1.axhline(y=gt_value_imag, color=colors[i], linestyle='--', alpha=0.2, linewidth=2)
+    ax1.set_xlabel('Gradient Step', fontsize=12)
+    ax1.set_ylabel('Dual Variable Value', fontsize=12)
+    ax1.set_title('Dual Variables: Real (solid) and Imaginary (dashed) Components', fontsize=14)
+    ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8, ncol=2)
+    ax1.grid(True, alpha=0.3)
+
+    ax2 = axes[1]
+    for i in range(num_plot):
+        dual_real_key = f'dual_real_{i}'
+        dual_imag_key = f'dual_imag_{i}'
+        if dual_real_key in metrics_history[0] and dual_imag_key in metrics_history[0]:
+            dual_values_real = np.array([m[dual_real_key] for m in metrics_history])
+            dual_values_imag = np.array([m[dual_imag_key] for m in metrics_history])
+            dual_magnitude = np.sqrt(dual_values_real**2 + dual_values_imag**2)
+            ax2.plot(steps, dual_magnitude, label=f'|lambda_{i}|', color=colors[i], linewidth=1.5)
+            gt_magnitude = np.abs(ground_truth_eigenvalues[i])
+            ax2.axhline(y=gt_magnitude, color=colors[i], linestyle='-', alpha=0.3, linewidth=2.5)
+    ax2.set_xlabel('Gradient Step', fontsize=12)
+    ax2.set_ylabel('Magnitude', fontsize=12)
+    ax2.set_title('Magnitude of Complex Dual Variables', fontsize=14)
+    ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+    ax2.grid(True, alpha=0.3)
+
+    ax3 = axes[2]
+    for i in range(num_plot):
+        dual_real_key = f'dual_real_{i}'
+        dual_imag_key = f'dual_imag_{i}'
+        if dual_real_key in metrics_history[0] and dual_imag_key in metrics_history[0]:
+            dual_values_real = np.array([m[dual_real_key] for m in metrics_history])
+            dual_values_imag = np.array([m[dual_imag_key] for m in metrics_history])
+            dual_values_real_scaled = 0.5 * dual_values_real
+            dual_values_imag_scaled = 0.5 * dual_values_imag
+            gt_value_real = float(ground_truth_eigenvalues[i].real)
+            gt_value_imag = float(ground_truth_eigenvalues[i].imag)
+            error_real = dual_values_real_scaled - gt_value_real
+            error_imag = dual_values_imag_scaled - gt_value_imag
+            error_magnitude = np.sqrt(error_real**2 + error_imag**2)
+            ax3.plot(steps, error_magnitude, label=f'|error lambda_{i}|',
+                     color=colors[i], linewidth=1.5)
+    ax3.set_xlabel('Gradient Step', fontsize=12)
+    ax3.set_ylabel('Error Magnitude', fontsize=12)
+    ax3.set_title('Complex Error Magnitude in Complex Plane', fontsize=14)
+    ax3.set_yscale('log')
+    ax3.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+    ax3.grid(True, alpha=0.3, which='both')
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Dual variable evolution plot saved to {save_path}")
+
+
+def plot_complex_cosine_similarity_evolution(
+    metrics_history: list, save_path: str, num_eigenvectors: int = None
+):
+    """
+    Plot evolution of cosine similarities for complex (left/right) eigenvectors.
+    """
+    steps = [m['gradient_step'] for m in metrics_history]
+    has_left = 'left_cosine_sim_avg' in metrics_history[0]
+    has_right = 'right_cosine_sim_avg' in metrics_history[0]
+
+    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+
+    if has_left:
+        left_values = [m['left_cosine_sim_avg'] for m in metrics_history]
+        ax.plot(steps, left_values, label='Left Eigenvectors',
+                color='blue', linewidth=2.5, linestyle='-',
+                marker='o', markersize=3, markevery=max(1, len(steps)//20))
+
+    if has_right:
+        right_values = [m['right_cosine_sim_avg'] for m in metrics_history]
+        ax.plot(steps, right_values, label='Right Eigenvectors',
+                color='red', linewidth=2.5, linestyle='-',
+                marker='s', markersize=3, markevery=max(1, len(steps)//20))
+
+    if has_left and has_right:
+        avg_values = [(left_values[i] + right_values[i]) / 2 for i in range(len(steps))]
+        ax.plot(steps, avg_values, label='Average (Left + Right)',
+                color='green', linewidth=2.0, linestyle='--', alpha=0.7)
+
+    ax.set_xlabel('Gradient Step', fontsize=12)
+    ax.set_ylabel('|Re(Complex Cosine Similarity)|', fontsize=12)
+    ax.set_title('Evolution of Complex Cosine Similarity', fontsize=14)
+    ax.legend(loc='best', fontsize=11)
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim([-0.05, 1.05])
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Cosine similarity evolution plot saved to {save_path}")
+
+
+def plot_complex_all_duals_evolution(
+    metrics_history: list, save_path: str, num_eigenvectors: int = 6
+):
+    """
+    Plot dual variable evolution for diagonal norm constraints (real and imaginary).
+    """
+    steps = [m['gradient_step'] for m in metrics_history]
+
+    fig, axes = plt.subplots(num_eigenvectors, 2, figsize=(16, 4 * num_eigenvectors))
+    fig.suptitle('Dual Variables Evolution (Diagonal Norms)', fontsize=16)
+
+    if num_eigenvectors == 1:
+        axes = axes.reshape(1, -1)
+
+    for i in range(num_eigenvectors):
+        ax_real = axes[i, 0]
+        if f'dual_real_{i}' in metrics_history[0]:
+            dual_real = [m[f'dual_real_{i}'] for m in metrics_history]
+            ax_real.plot(steps, dual_real, label='Dual (Real)', linewidth=2.0, color='blue')
+        ax_real.set_xlabel('Gradient Step')
+        ax_real.set_ylabel('Dual Value (Real)')
+        ax_real.set_title(f'Eigenvector {i} - Real Part Dual')
+        ax_real.legend()
+        ax_real.grid(True, alpha=0.3)
+
+        ax_imag = axes[i, 1]
+        if f'dual_imag_{i}' in metrics_history[0]:
+            dual_imag = [m[f'dual_imag_{i}'] for m in metrics_history]
+            ax_imag.plot(steps, dual_imag, label='Dual (Imag)', linewidth=2.0, color='red')
+        ax_imag.set_xlabel('Gradient Step')
+        ax_imag.set_ylabel('Dual Value (Imag)')
+        ax_imag.set_title(f'Eigenvector {i} - Imaginary Part Dual')
+        ax_imag.legend()
+        ax_imag.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"All duals evolution plot saved to {save_path}")
+
+
+def plot_sampling_distribution(
+    sampling_probs: jnp.ndarray,
+    canonical_states: jnp.ndarray,
+    grid_width: int,
+    grid_height: int,
+    save_path: str,
+    portals: dict = None,
+):
+    """Visualize the empirical sampling distribution D on the grid."""
+    fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+
+    grid_values = np.full((grid_height, grid_width), np.nan)
+    for canon_idx, full_state_idx in enumerate(canonical_states):
+        y = int(full_state_idx) // grid_width
+        x = int(full_state_idx) % grid_width
+        grid_values[y, x] = float(sampling_probs[canon_idx])
+
+    im = ax.imshow(grid_values, cmap='viridis', interpolation='nearest', origin='upper')
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Sampling Probability', fontsize=12)
+
+    ax.set_xticks(np.arange(grid_width) - 0.5, minor=True)
+    ax.set_yticks(np.arange(grid_height) - 0.5, minor=True)
+    ax.grid(which="minor", color="gray", linestyle='-', linewidth=0.5, alpha=0.3)
+
+    if portals:
+        for (state, action), next_state in portals.items():
+            y = state // grid_width
+            x = state % grid_width
+            next_y = next_state // grid_width
+            next_x = next_state % grid_width
+            dx = next_x - x
+            dy = next_y - y
+            ax.arrow(x, y, dx * 0.3, dy * 0.3,
+                     head_width=0.2, head_length=0.15,
+                     fc='red', ec='red', linewidth=2, alpha=0.7)
+
+    ax.set_xlabel('X', fontsize=12)
+    ax.set_ylabel('Y', fontsize=12)
+    ax.set_title('Empirical Sampling Distribution D', fontsize=14, fontweight='bold')
+
+    stats_text = (f'Min: {np.nanmin(grid_values):.6f}\n'
+                  f'Max: {np.nanmax(grid_values):.6f}\n'
+                  f'Mean: {np.nanmean(grid_values):.6f}\n'
+                  f'Std: {np.nanstd(grid_values):.6f}')
+    ax.text(0.02, 0.98, stats_text,
+            transform=ax.transAxes, fontsize=10, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Sampling distribution visualization saved to {save_path}")

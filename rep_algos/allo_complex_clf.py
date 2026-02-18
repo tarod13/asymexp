@@ -570,18 +570,23 @@ def learn_eigenvectors(args):
         # Compute loss and gradients
         (total_loss, aux), grads = jax.value_and_grad(
             encoder_loss, has_aux=True)(encoder_state.params)
-        
-        # Get grad norm
-        grads_flat, _ = jax.tree_util.tree_flatten(grads)
-        grads_vector = jnp.concatenate([jnp.ravel(g) for g in grads_flat])
-        grad_norm = jnp.linalg.norm(grads_vector)
-        aux['grad_norm'] = grad_norm
 
-        # Clip gradients if necessary
+        # Compute encoder gradient norm for clipping
+        encoder_grads_flat, _ = jax.tree_util.tree_flatten(grads['encoder'])
+        encoder_grads_vector = jnp.concatenate([jnp.ravel(g) for g in encoder_grads_flat])
+        encoder_grad_norm = jnp.linalg.norm(encoder_grads_vector)
+        aux['grad_norm'] = encoder_grad_norm
+
+        # Clip encoder gradients (norm-based)
         max_norm = 1.0
-        grads = jax.tree_util.tree_map(
-            lambda g: g * (max_norm / jnp.maximum(grad_norm, max_norm)), grads
-        )
+        encoder_clip_factor = max_norm / jnp.maximum(encoder_grad_norm, max_norm)
+
+        # Clip EMA gradients (element-wise, independent per estimator)
+        grads = {
+            'encoder': jax.tree_util.tree_map(lambda g: g * encoder_clip_factor, grads['encoder']),
+            'lambda_real': jnp.clip(grads['lambda_real'], -1.0, 1.0),
+            'lambda_imag': jnp.clip(grads['lambda_imag'], -1.0, 1.0),
+        }
 
         # Apply optimizer updates
         updates, new_opt_state = encoder_state.tx.update(
