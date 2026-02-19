@@ -198,7 +198,7 @@ def plot_metric_grid(
                        label=f"lr={lr_label(lr)}", color=color)
 
     # Shared legend on first subplot
-    if axes:
+    if axes is not None:
         handles, labels = axes[0].get_legend_handles_labels()
         if handles:
             axes[0].legend(handles, labels, fontsize=7,
