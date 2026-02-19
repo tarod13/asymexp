@@ -38,13 +38,18 @@ def load_run(run_dir: Path):
     metrics_file = run_dir / "metrics_history.json"
     if not args_file.exists() or not metrics_file.exists():
         return None
-    with open(args_file) as f:
-        args = json.load(f)
-    with open(metrics_file) as f:
-        metrics = json.load(f)
-    if not metrics:
+    try:
+        with open(args_file) as f:
+            args = json.load(f)
+        with open(metrics_file) as f:
+            metrics = json.load(f)
+        if not metrics:
+            return None
+        return args, metrics
+    except (json.JSONDecodeError, KeyError, ValueError) as e:
+        # Skip runs with corrupted/incomplete JSON files
+        print(f"    Warning: Skipping {run_dir.name} - {type(e).__name__}: {e}")
         return None
-    return args, metrics
 
 
 def collect_runs(results_dir: Path, exp_name: str, env_type: str):
