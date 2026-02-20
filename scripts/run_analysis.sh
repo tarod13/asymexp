@@ -75,13 +75,14 @@ fi
 EXPERIMENT_TYPE=$1
 shift
 
-# Validate experiment type
+# Validate experiment type and set absolute paths
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 case "$EXPERIMENT_TYPE" in
     portal)
-        SCRIPT_PATH="$SCRIPT_DIR/../experiments/01/run_analysis.py"
+        SCRIPT_PATH="$PROJECT_ROOT/experiments/01/run_analysis.py"
         ;;
     door)
-        SCRIPT_PATH="$SCRIPT_DIR/../experiments/02/run_analysis.py"
+        SCRIPT_PATH="$PROJECT_ROOT/experiments/02/run_analysis.py"
         ;;
     sweep)
         SCRIPT_PATH="$SCRIPT_DIR/analyze_sweep.py"
@@ -101,6 +102,8 @@ esac
 # Check if script exists
 if [ ! -f "$SCRIPT_PATH" ]; then
     echo -e "${RED}Error: Analysis script not found at ${SCRIPT_PATH}${NC}"
+    echo -e "${YELLOW}Script directory: ${SCRIPT_DIR}${NC}"
+    echo -e "${YELLOW}Project root: ${PROJECT_ROOT}${NC}"
     exit 1
 fi
 
@@ -109,13 +112,15 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}Running ${EXPERIMENT_TYPE} analysis${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo "Script: $SCRIPT_PATH"
+echo "Working directory: $PROJECT_ROOT"
 echo "Arguments: $@"
 echo ""
 
-# Run the analysis
+# Run the analysis (change to project root first)
 echo -e "${YELLOW}Starting analysis...${NC}"
 echo ""
 
+cd "$PROJECT_ROOT"
 python "$SCRIPT_PATH" "$@"
 
 EXIT_CODE=$?
