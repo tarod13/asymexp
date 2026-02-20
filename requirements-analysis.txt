@@ -1,0 +1,5 @@
+# Requirements for analysis scripts
+# Install with: pip install -r requirements-analysis.txt
+
+numpy>=1.24.0
+matplotlib>=3.7.0
