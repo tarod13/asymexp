@@ -14,14 +14,41 @@ import jax.numpy as jnp
 import numpy as np
 import pickle
 import argparse
+import os
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple
 import sys
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
+
+def find_project_root():
+    """Find project root. Tries ASYMEXP_ROOT env var, then searches upward."""
+    if "ASYMEXP_ROOT" in os.environ:
+        root = Path(os.environ["ASYMEXP_ROOT"])
+        if root.is_dir():
+            return root
+
+    current = Path.cwd()
+    while current != current.parent:
+        if ((current / ".git").is_dir() and
+            (current / "experiments").is_dir() and
+            (current / "src").is_dir()):
+            return current
+        current = current.parent
+
+    # Fallback: try parent of parent of this script
+    script_path = Path(__file__).resolve()
+    potential_root = script_path.parent.parent.parent
+    if (potential_root / "src").is_dir():
+        return potential_root
+
+    return Path.cwd()
+
+
 # Add project root to path for imports
-sys.path.append(str(Path(__file__).parent.parent.parent))
+project_root = find_project_root()
+sys.path.insert(0, str(project_root))
 
 from src.utils.laplacian import compute_eigendecomposition_batched
 from src.utils.metrics import compute_hitting_times_batched
