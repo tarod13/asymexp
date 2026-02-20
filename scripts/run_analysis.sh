@@ -17,6 +17,18 @@
 
 set -e  # Exit on error
 
+# Load required modules on Compute Canada
+# scipy-stack provides numpy, scipy, matplotlib
+# JAX is installed in the virtual environment
+if command -v module &> /dev/null; then
+    module load StdEnv/2023 gcc/14.3 python/3.11 scipy-stack/2024b 2>/dev/null || true
+fi
+
+# Activate virtual environment if it exists (needed for JAX)
+if [ -f "$HOME/ENV/bin/activate" ]; then
+    source "$HOME/ENV/bin/activate"
+fi
+
 # Default values
 EXPERIMENT_TYPE=""
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
