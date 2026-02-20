@@ -24,8 +24,7 @@ source ~/ENV/bin/activate
 
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
-# Run the appropriate analysis
-cd ~/asymexp
+# Run the appropriate analysis (from current directory)
 
 case "$ANALYSIS_TYPE" in
     portal)
