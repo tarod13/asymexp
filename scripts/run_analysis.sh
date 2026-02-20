@@ -78,13 +78,13 @@ shift
 # Validate experiment type
 case "$EXPERIMENT_TYPE" in
     portal)
-        SCRIPT_PATH="$SCRIPT_DIR/experiments/01/run_analysis.py"
+        SCRIPT_PATH="$SCRIPT_DIR/../experiments/01/run_analysis.py"
         ;;
     door)
-        SCRIPT_PATH="$SCRIPT_DIR/experiments/02/run_analysis.py"
+        SCRIPT_PATH="$SCRIPT_DIR/../experiments/02/run_analysis.py"
         ;;
     sweep)
-        SCRIPT_PATH="$SCRIPT_DIR/scripts/analyze_sweep.py"
+        SCRIPT_PATH="$SCRIPT_DIR/analyze_sweep.py"
         ;;
     -h|--help|help)
         print_usage
