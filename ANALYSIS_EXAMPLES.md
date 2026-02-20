@@ -85,6 +85,28 @@ This file contains common usage examples for the `scripts/run_analysis.sh` scrip
     --output_dir ./results/sweeps/analysis/my_sweep_v2
 ```
 
+## Using with SLURM
+
+When running analysis from SLURM jobs, set the `ASYMEXP_ROOT` environment variable to point to your project directory:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=sweep_analysis
+#SBATCH --output=analysis_%j.log
+
+export ASYMEXP_ROOT=/home/user/asymexp
+
+$ASYMEXP_ROOT/scripts/run_analysis.sh sweep \
+    --exp_name batch_lr_sweep \
+    --results_dir $ASYMEXP_ROOT/results/sweeps
+```
+
+Or export it in your `.bashrc` or job submission script:
+```bash
+export ASYMEXP_ROOT=/home/user/asymexp
+sbatch your_analysis_job.sh
+```
+
 ## Tips
 
 1. **View all options**: Run `./scripts/run_analysis.sh --help` to see all available options
@@ -97,17 +119,19 @@ This file contains common usage examples for the `scripts/run_analysis.sh` scrip
    - num-steps: 100
    - seed: 42
 
-3. **Output location**: Results are saved to:
+3. **SLURM usage**: Always set `ASYMEXP_ROOT` when running from SLURM jobs, as the script gets copied to a temporary job directory
+
+4. **Output location**: Results are saved to:
    - Portal: `experiments/01/results/` (or custom --output-dir)
    - Door: `experiments/02/results/` (or custom --output-dir)
    - Sweep: `results/sweeps/analysis/{exp_name}/` (or custom --output-dir)
 
-4. **Visualizations**: All analysis scripts generate:
+5. **Visualizations**: All analysis scripts generate:
    - Eigenvalue/eigenvector visualizations
    - Summary statistics
    - Plots saved as PNG files in the output directory
 
-5. **Progress tracking**: The script shows colored output:
+6. **Progress tracking**: The script shows colored output:
    - Green: Success messages
    - Yellow: Progress indicators
    - Red: Error messages

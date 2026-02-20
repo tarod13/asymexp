@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import json
+import os
 import pickle
 from pathlib import Path
 from collections import defaultdict
@@ -28,6 +29,32 @@ import matplotlib.cm as cm
 # =============================================================================
 # Helpers
 # =============================================================================
+
+def find_project_root():
+    """
+    Find the project root directory. Tries multiple methods:
+    1. ASYMEXP_ROOT environment variable
+    2. Search upward from current directory for project markers
+    3. Fallback to common location
+    """
+    # Method 1: Environment variable
+    if "ASYMEXP_ROOT" in os.environ:
+        root = Path(os.environ["ASYMEXP_ROOT"])
+        if root.is_dir():
+            return root
+
+    # Method 2: Search upward from current directory
+    current = Path.cwd()
+    while current != current.parent:
+        # Check for project markers
+        if ((current / ".git").is_dir() and
+            (current / "experiments").is_dir() and
+            (current / "scripts").is_dir()):
+            return current
+        current = current.parent
+
+    # Method 3: Fallback - assume we're in the project directory
+    return Path.cwd()
 
 def load_run(run_dir: Path):
     """
@@ -215,16 +242,36 @@ def plot_metric_grid(
 # =============================================================================
 
 def main():
+    # Find project root to resolve relative paths correctly
+    project_root = find_project_root()
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--results_dir", type=str, default="./results/sweeps")
+    parser.add_argument("--results_dir", type=str, default=None)
     parser.add_argument("--exp_name", type=str, default="batch_lr_sweep")
     parser.add_argument("--env_type", type=str, default="file")
     parser.add_argument("--output_dir", type=str, default=None)
     args = parser.parse_args()
 
-    results_dir = Path(args.results_dir)
-    output_dir = Path(args.output_dir) if args.output_dir else results_dir / "analysis" / args.exp_name
+    # Use project root for default paths
+    if args.results_dir:
+        results_dir = Path(args.results_dir)
+        if not results_dir.is_absolute():
+            results_dir = project_root / results_dir
+    else:
+        results_dir = project_root / "results" / "sweeps"
+
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+        if not output_dir.is_absolute():
+            output_dir = project_root / output_dir
+    else:
+        output_dir = results_dir / "analysis" / args.exp_name
+
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\nProject root: {project_root}")
+    print(f"Results directory: {results_dir}")
+    print(f"Output directory: {output_dir}")
 
     # -------------------------------------------------------------------------
     # 1. Collect all runs

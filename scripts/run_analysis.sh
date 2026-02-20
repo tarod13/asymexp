@@ -27,6 +27,46 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# Function to find project root
+find_project_root() {
+    # Method 1: Check if ASYMEXP_ROOT environment variable is set
+    if [ -n "$ASYMEXP_ROOT" ] && [ -d "$ASYMEXP_ROOT" ]; then
+        echo "$ASYMEXP_ROOT"
+        return 0
+    fi
+
+    # Method 2: Search upward from current directory for markers
+    local dir="$PWD"
+    while [ "$dir" != "/" ]; do
+        # Check for project markers
+        if [ -d "$dir/.git" ] && [ -f "$dir/setup.py" ] && [ -d "$dir/experiments" ]; then
+            echo "$dir"
+            return 0
+        fi
+        # Check specifically for asymexp project structure
+        if [ -d "$dir/experiments/01" ] && [ -d "$dir/experiments/02" ] && [ -d "$dir/scripts" ]; then
+            echo "$dir"
+            return 0
+        fi
+        dir="$(dirname "$dir")"
+    done
+
+    # Method 3: Try script directory (works if not copied by SLURM)
+    if [ -d "$SCRIPT_DIR/../experiments" ]; then
+        echo "$(cd "$SCRIPT_DIR/.." && pwd)"
+        return 0
+    fi
+
+    # Method 4: Common installation location
+    if [ -d "/home/user/asymexp" ]; then
+        echo "/home/user/asymexp"
+        return 0
+    fi
+
+    # Failed to find project root
+    return 1
+}
+
 print_usage() {
     echo -e "${GREEN}Usage:${NC}"
     echo "  $0 [experiment_type] [options...]"
@@ -40,6 +80,10 @@ print_usage() {
     echo "  $0 portal --num-envs 20 --k 30 --output-dir ./results/portal_20envs"
     echo "  $0 door --num-doors 10 --num-envs 50"
     echo "  $0 sweep --exp_name batch_lr_sweep --results_dir ./results/sweeps"
+    echo ""
+    echo -e "${GREEN}For SLURM jobs:${NC}"
+    echo "  export ASYMEXP_ROOT=/path/to/asymexp"
+    echo "  $0 sweep --exp_name batch_lr_sweep"
     echo ""
     echo -e "${GREEN}Common options for portal/door:${NC}"
     echo "  --num-envs N       Number of environments (default: 10)"
@@ -75,8 +119,20 @@ fi
 EXPERIMENT_TYPE=$1
 shift
 
+# Find project root
+PROJECT_ROOT="$(find_project_root)"
+if [ $? -ne 0 ] || [ -z "$PROJECT_ROOT" ]; then
+    echo -e "${RED}Error: Could not find project root directory${NC}"
+    echo -e "${YELLOW}Tried searching from: $PWD${NC}"
+    echo -e "${YELLOW}Script location: $SCRIPT_DIR${NC}"
+    echo ""
+    echo -e "${GREEN}Hint: You can set the ASYMEXP_ROOT environment variable:${NC}"
+    echo "  export ASYMEXP_ROOT=/path/to/asymexp"
+    echo "  $0 $EXPERIMENT_TYPE $@"
+    exit 1
+fi
+
 # Validate experiment type and set absolute paths
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 case "$EXPERIMENT_TYPE" in
     portal)
         SCRIPT_PATH="$PROJECT_ROOT/experiments/01/run_analysis.py"
@@ -85,7 +141,7 @@ case "$EXPERIMENT_TYPE" in
         SCRIPT_PATH="$PROJECT_ROOT/experiments/02/run_analysis.py"
         ;;
     sweep)
-        SCRIPT_PATH="$SCRIPT_DIR/analyze_sweep.py"
+        SCRIPT_PATH="$PROJECT_ROOT/scripts/analyze_sweep.py"
         ;;
     -h|--help|help)
         print_usage
