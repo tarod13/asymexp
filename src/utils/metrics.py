@@ -134,7 +134,40 @@ def compute_complex_cosine_similarities(
     j =0
     while j < num_components:
         is_real_eigval = eigenvalues_imag[j] < 1e-8
-        if is_real_eigval:
+        has_enough_components = j + 1 < num_components
+        if not is_real_eigval and has_enough_components:
+            # Extract complex vectors
+            u_real = learned_real[:, j:j+2]
+            u_imag = learned_imag[:, j:j+2]
+            v_real = gt_real[:, j:j+2]
+            v_imag = gt_imag[:, j:j+2]
+
+            # Standard complex inner product (with conjugate): <u, v> = conj(u)^T v
+            # Real part: u_real^T v_real + u_imag^T v_imag
+            # Imag part: u_real^T v_imag - u_imag^T v_real
+            inner_real = jnp.einsum('ij,ik->jk', u_real, v_real) + jnp.einsum('ij,ik->jk', u_imag, v_imag)
+            inner_imag = jnp.einsum('ij,ik->jk', u_real, v_imag) - jnp.einsum('ij,ik->jk', u_imag, v_real)
+
+            # Magnitudes: ||u|| = sqrt(u_real^T u_real + u_imag^T u_imag)
+            u_norm = jnp.sqrt(jnp.einsum('ij,ij->j', u_real, u_real) + jnp.einsum('ij,ij->j', u_imag, u_imag)).reshape(-1, 1)
+            v_norm = jnp.sqrt(jnp.einsum('ij,ij->j', v_real, v_real) + jnp.einsum('ij,ij->j', v_imag, v_imag)).reshape(1, -1)
+
+            # Complex cosine similarity
+            cos_real = inner_real / (u_norm * v_norm + 1e-10)
+            cos_imag = inner_imag / (u_norm * v_norm + 1e-10)
+
+            # Take absolute value of real part
+            abs_cos_real = (cos_real**2 + cos_imag**2).sum(axis=1)**0.5
+
+            similarities[f'{prefix}cosine_sim_{j}'] = float(abs_cos_real[0])
+            similarities[f'{prefix}cosine_sim_{j+1}'] = float(abs_cos_real[1])
+            cosine_sims.append(float(abs_cos_real[0]))
+            cosine_sims.append(float(abs_cos_real[1]))
+
+            j += 2
+
+        else:
+
             # Real eigenvalue: single real eigenvector
             u_real = learned_real[:, j]
             u_imag = learned_imag[:, j]
@@ -163,37 +196,6 @@ def compute_complex_cosine_similarities(
             cosine_sims.append(sim)
 
             j += 1
-
-        else:
-            # Extract complex vectors
-            u_real = learned_real[:, j:j+2]
-            u_imag = learned_imag[:, j:j+2]
-            v_real = gt_real[:, j:j+2]
-            v_imag = gt_imag[:, j:j+2]
-
-            # Standard complex inner product (with conjugate): <u, v> = conj(u)^T v
-            # Real part: u_real^T v_real + u_imag^T v_imag
-            # Imag part: u_real^T v_imag - u_imag^T v_real
-            inner_real = jnp.einsum('ij,ik->jk', u_real, v_real) + jnp.einsum('ij,ik->jk', u_imag, v_imag)
-            inner_imag = jnp.einsum('ij,ik->jk', u_real, v_imag) - jnp.einsum('ij,ik->jk', u_imag, v_real)
-
-            # Magnitudes: ||u|| = sqrt(u_real^T u_real + u_imag^T u_imag)
-            u_norm = jnp.sqrt(jnp.einsum('ij,ij->j', u_real, u_real) + jnp.einsum('ij,ij->j', u_imag, u_imag)).reshape(-1, 1)
-            v_norm = jnp.sqrt(jnp.einsum('ij,ij->j', v_real, v_real) + jnp.einsum('ij,ij->j', v_imag, v_imag)).reshape(1, -1)
-
-            # Complex cosine similarity
-            cos_real = inner_real / (u_norm * v_norm + 1e-10)
-            cos_imag = inner_imag / (u_norm * v_norm + 1e-10)
-
-            # Take absolute value of real part
-            abs_cos_real = (cos_real**2 + cos_imag**2).sum(-1)**0.5
-
-            similarities[f'{prefix}cosine_sim_{j}'] = float(abs_cos_real[0])
-            similarities[f'{prefix}cosine_sim_{j+1}'] = float(abs_cos_real[1])
-            cosine_sims.append(float(abs_cos_real[0]))
-            cosine_sims.append(float(abs_cos_real[1]))
-
-            j += 2
 
     # Average across all components
     similarities[f'{prefix}cosine_sim_avg'] = float(np.mean(cosine_sims))
