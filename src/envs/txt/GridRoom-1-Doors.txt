@@ -1,0 +1,6 @@
+X,X,X,X,X,X
+X, , , , ,X
+X, ,DR, , ,X
+X, ,DR, , ,X
+X, ,DR, , ,X
+X,X,X,X,X,X

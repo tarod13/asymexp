@@ -1,5 +1,7 @@
 import os
 from src.envs.gridworld import GridWorldEnv
+from src.envs.door_gridworld import DoorGridWorldEnv
+from src.envs.portal_gridworld import PortalGridWorldEnv
 
 
 # Example environment layouts as strings
@@ -192,7 +194,6 @@ def _parse_legacy_format(lines, **env_kwargs):
 
 def _parse_comma_format(lines, **env_kwargs):
     """Parse the new comma-separated format with support for doors and multiple elements per tile."""
-    from src.envs.door_gridworld import DoorGridWorldEnv
 
     # Parse grid
     grid = []
@@ -214,6 +215,7 @@ def _parse_comma_format(lines, **env_kwargs):
     start_pos = None
     goal_pos = None
     blocked_transitions = set()  # For doors: (state_idx, action)
+    portals = {}  # For portals: (source_state_idx, action): dest_state_idx
 
     # Action mapping
     action_map = {'U': 0, 'R': 1, 'D': 2, 'L': 3}
@@ -274,11 +276,7 @@ def _parse_comma_format(lines, **env_kwargs):
                 dest_state = int(match.group(2))
                 action_char = match.group(3)
                 action = action_map[action_char]
-
-                # Block the reverse transition
-                reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}  # U<->D, L<->R
-                reverse_action = reverse_action_map[action]
-                blocked_transitions.add((dest_state, reverse_action))
+                portals[(source_state, action)] = dest_state
 
     # Create environment
     if blocked_transitions:
@@ -289,6 +287,16 @@ def _parse_comma_format(lines, **env_kwargs):
             start_pos=start_pos,
             goal_pos=goal_pos,
             blocked_transitions=blocked_transitions,
+            **env_kwargs,
+        )
+    elif portals:
+        return PortalGridWorldEnv(
+            width=width,
+            height=height,
+            obstacles=obstacles,
+            start_pos=start_pos,
+            goal_pos=goal_pos,
+            portals=portals,
             **env_kwargs,
         )
     else:
