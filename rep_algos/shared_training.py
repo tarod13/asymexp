@@ -900,7 +900,7 @@ def learn_eigenvectors(args, learner_module):
         portals=door_markers if door_markers else None,
         ncols=min(6, num_states_to_viz),
         save_path=str(plots_dir / "hitting_times_learned.png"),
-        log_scale=True,
+        log_scale=False,
         shared_colorbar=True,
     )
     plt.close()
@@ -915,7 +915,7 @@ def learn_eigenvectors(args, learner_module):
         portals=door_markers if door_markers else None,
         ncols=min(6, num_states_to_viz),
         save_path=str(plots_dir / "hitting_times_ground_truth.png"),
-        log_scale=True,
+        log_scale=False,
         shared_colorbar=True,
     )
     plt.close()
