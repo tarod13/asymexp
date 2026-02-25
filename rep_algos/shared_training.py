@@ -172,31 +172,18 @@ def learn_eigenvectors(args, learner_module):
             viz_metadata = pickle.load(f)
         canonical_states = viz_metadata['canonical_states']
 
-        # Reconstruct door_config if it exists
-        door_config = None
-        door_config_path = results_dir / "door_config.pkl"
-        if door_config_path.exists():
-            with open(door_config_path, 'rb') as f:
-                door_config = pickle.load(f)
-
         # Recreate replay buffer (much faster than recomputing everything)
         # Note: We don't save/load the replay buffer; we recreate it
         # This is acceptable since sampling is random anyway
         replay_buffer = create_replay_buffer_only(env, canonical_states, args)
-
-        # Recreate data_env if doors were used
-        if door_config is not None and 'doors' in door_config:
-            from src.envs.door_gridworld import create_door_gridworld_from_base
-            data_env = create_door_gridworld_from_base(env, door_config['doors'], canonical_states)
-        else:
-            data_env = env
+        data_env = env
 
         print("Loaded saved data successfully")
     else:
         # Create environment and collect data (new run)
         env = create_gridworld_env(args)
         laplacian_matrix, eigendecomp, state_coords, canonical_states, \
-            sampling_probs, door_config, data_env, replay_buffer, transition_matrix = \
+            sampling_probs, data_env, replay_buffer, transition_matrix = \
                 collect_data_and_compute_eigenvectors(env, args)
 
         # Compute eigendecomposition for ground truth
@@ -229,18 +216,6 @@ def learn_eigenvectors(args, learner_module):
 
     # Save data for new runs (skip if resuming)
     if checkpoint_data is None:
-        # Save door configuration if doors were used
-        if door_config is not None:
-            door_save_path = results_dir / "door_config.pkl"
-            with open(door_save_path, 'wb') as f:
-                pickle.dump({
-                    'doors': door_config['doors'],
-                    'num_doors': door_config['num_doors'],
-                    'total_reversible': door_config['total_reversible'],
-                    'canonical_states': np.array(canonical_states),
-                }, f)
-            print(f"Door configuration saved to {door_save_path}")
-
         # Save ground truth eigendecomposition and state coords
         # Non-symmetric Laplacian: L = I - (1-γ)P·SR_γ (complex eigenvalues and eigenvectors)
         np.save(results_dir / "gt_eigenvalues_real.npy", np.array(gt_eigenvalues_real))
@@ -253,16 +228,6 @@ def learn_eigenvectors(args, learner_module):
         np.save(results_dir / "state_coords.npy", np.array(state_coords))
         # Sampling distribution
         np.save(results_dir / "sampling_distribution.npy", np.array(sampling_probs))
-
-        # Visualize and save sampling distribution
-        if args.plot_during_training:
-            # Convert doors to portal markers for visualization
-            door_markers = {}
-            if door_config is not None and 'doors' in door_config:
-                for s_canonical, a_forward, s_prime_canonical, a_reverse in door_config['doors']:
-                    s_full = int(canonical_states[s_canonical])
-                    s_prime_full = int(canonical_states[s_prime_canonical])
-                    door_markers[(s_full, a_forward)] = s_prime_full
 
     # Initialize the encoder
     encoder = CoordinateEncoder(
@@ -442,44 +407,9 @@ def learn_eigenvectors(args, learner_module):
     start_time = time.time()
     num_states = state_coords.shape[0]
 
-    # Convert doors to portal markers for visualization
-    door_markers = {}
-
-    # First, extract doors from random door config if available
-    if door_config is not None and 'doors' in door_config:
-        for s_canonical, a_forward, s_prime_canonical, a_reverse in door_config['doors']:
-            s_full = int(canonical_states[s_canonical])
-            s_prime_full = int(canonical_states[s_prime_canonical])
-            door_markers[(s_full, a_forward)] = s_prime_full
-
-    # Also extract doors directly from environment (for file-defined doors)
-    from src.envs.door_gridworld import DoorGridWorldEnv
-    if isinstance(data_env, DoorGridWorldEnv) and data_env.has_doors:
-        # Extract doors from blocked_transitions
-        full_to_canonical = {int(full_idx): canon_idx for canon_idx, full_idx in enumerate(canonical_states)}
-
-        for state_full, action in data_env.blocked_transitions:
-            reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}  # U<->D, L<->R
-            forward_action = reverse_action_map[action]
-
-            action_effects = {
-                0: (0, -1),  # Up
-                1: (1, 0),   # Right
-                2: (0, 1),   # Down
-                3: (-1, 0),  # Left
-            }
-            dx, dy = action_effects[action]
-            dest_y = state_full // data_env.width
-            dest_x = state_full % data_env.width
-            source_x = dest_x + dx
-            source_y = dest_y + dy
-
-            # Check if source is valid
-            if 0 <= source_x < data_env.width and 0 <= source_y < data_env.height:
-                source_full = source_y * data_env.width + source_x
-                # Add to door_markers if not already there
-                if (source_full, forward_action) not in door_markers:
-                    door_markers[(source_full, forward_action)] = state_full
+    # Build transition markers (doors or portals) for visualization
+    from src.utils.envs import get_env_transition_markers
+    door_markers = get_env_transition_markers(data_env)
 
     # Save visualization metadata for new runs (skip if resuming)
     if checkpoint_data is None:
@@ -970,7 +900,7 @@ def learn_eigenvectors(args, learner_module):
         portals=door_markers if door_markers else None,
         ncols=min(6, num_states_to_viz),
         save_path=str(plots_dir / "hitting_times_learned.png"),
-        log_scale=True,
+        log_scale=False,
         shared_colorbar=True,
     )
     plt.close()
@@ -985,7 +915,7 @@ def learn_eigenvectors(args, learner_module):
         portals=door_markers if door_markers else None,
         ncols=min(6, num_states_to_viz),
         save_path=str(plots_dir / "hitting_times_ground_truth.png"),
-        log_scale=True,
+        log_scale=False,
         shared_colorbar=True,
     )
     plt.close()

@@ -6,11 +6,6 @@ from src.data_collection import collect_transition_counts_and_episodes
 from src.utils.episodic_replay_buffer import EpisodicReplayBuffer
 from src.utils.envs import get_canonical_free_states
 
-from src.envs.door_gridworld import (
-    create_door_gridworld_from_base,
-    create_random_doors,
-)
-
 from src.utils.laplacian import (
     get_transition_matrix,
     compute_sampling_distribution,
@@ -88,8 +83,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         state_coords: Array of (x,y) coordinates for each state
         canonical_states: Array of free state indices
         sampling_probs: 1D array of empirical sampling probabilities for each canonical state
-        door_config: Door configuration (if use_doors=True)
-        data_env: The environment used for data collection (with doors if applicable)
+        data_env: The environment used for data collection
         replay_buffer: Episodic replay buffer filled with collected episodes
     """
     print("Collecting transition data...")
@@ -100,23 +94,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     num_canonical = len(canonical_states)
     print(f"Number of free states: {num_canonical} (out of {num_states} total)")
 
-    # Create door environment if requested
-    door_config = None
-    data_env = env  # Default to base environment
-
-    if args.use_doors:
-        print(f"\nCreating {args.num_doors} irreversible doors...")
-        door_config = create_random_doors(
-            env,
-            canonical_states,
-            num_doors=args.num_doors,
-            seed=args.door_seed
-        )
-        print(f"  Created {door_config['num_doors']} doors (out of {door_config['total_reversible']} reversible transitions)")
-
-        # Create environment with doors in the dynamics
-        data_env = create_door_gridworld_from_base(env, door_config['doors'], canonical_states)
-        print("  Created DoorGridWorld environment with irreversible transitions")
+    data_env = env
 
     # Collect transition counts and episodes in a single efficient pass
     print("Collecting transition data and episodes...")
@@ -219,4 +197,4 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print(f"  Coordinate range: x=[{state_coords[:, 0].min():.3f}, {state_coords[:, 0].max():.3f}], "
           f"y=[{state_coords[:, 1].min():.3f}, {state_coords[:, 1].max():.3f}]")
 
-    return laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer, transition_matrix
+    return laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, data_env, replay_buffer, transition_matrix

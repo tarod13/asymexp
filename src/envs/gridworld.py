@@ -12,7 +12,19 @@ class GridWorldState(NamedTuple):
 
 # GridWorld Environment
 class GridWorldEnv:
-    def __init__(self, width, height, obstacles=None, start_pos=None, goal_pos=None, max_steps=100, precision=32, **kwargs):
+    def __init__(
+        self,
+        width,
+        height,
+        obstacles=None,
+        start_pos=None,
+        goal_pos=None,
+        max_steps=100,
+        precision=32,
+        asymmetric_transitions=None,
+        portals=None,
+        **kwargs,
+    ):
         """
         Initialize the GridWorld environment.
 
@@ -23,6 +35,15 @@ class GridWorldEnv:
             start_pos: Starting position (x, y) or None for random start
             goal_pos: Goal position (x, y) or None for no goal
             max_steps: Maximum steps per episode
+            precision: 32 or 64
+            asymmetric_transitions: Dict mapping (state_idx, action) -> float,
+                where the float is the probability [0, 1] that the reverse
+                transition succeeds.  0 = fully blocked (hard door), 1 = fully
+                reversible (no effect).  Agent stays in place when the sampled
+                uniform exceeds the probability.
+            portals: Dict mapping (state_idx, action) -> dest_state_idx.
+                Portals override normal physics and teleport the agent.
+                Portals are checked before doors.
         """
         self.width = width
         self.height = height
@@ -59,6 +80,34 @@ class GridWorldEnv:
             [0, 1],   # down
             [-1, 0],  # left
         ], dtype=self.dtype)
+
+        # --- Doors (asymmetric_transitions) ---
+        self.asymmetric_transitions = asymmetric_transitions if asymmetric_transitions is not None else {}
+        if len(self.asymmetric_transitions) > 0:
+            asym_list = list(self.asymmetric_transitions.items())
+            self.asym_states  = jnp.array([k[0] for k, _ in asym_list], dtype=self.dtype)
+            self.asym_actions = jnp.array([k[1] for k, _ in asym_list], dtype=self.dtype)
+            self.asym_probs   = jnp.array([v      for _, v in asym_list], dtype=jnp.float32)
+            self.has_doors = True
+        else:
+            self.asym_states  = jnp.array([], dtype=self.dtype)
+            self.asym_actions = jnp.array([], dtype=self.dtype)
+            self.asym_probs   = jnp.array([], dtype=jnp.float32)
+            self.has_doors = False
+
+        # --- Portals ---
+        self.portals = portals if portals is not None else {}
+        if len(self.portals) > 0:
+            portal_keys = list(self.portals.keys())
+            self.portal_states       = jnp.array([k[0] for k in portal_keys], dtype=self.dtype)
+            self.portal_actions      = jnp.array([k[1] for k in portal_keys], dtype=self.dtype)
+            self.portal_destinations = jnp.array(list(self.portals.values()),  dtype=self.dtype)
+            self.has_portals = True
+        else:
+            self.portal_states       = jnp.array([], dtype=self.dtype)
+            self.portal_actions      = jnp.array([], dtype=self.dtype)
+            self.portal_destinations = jnp.array([], dtype=self.dtype)
+            self.has_portals = False
 
         # Precompute valid start positions (positions that are not obstacles or goal)
         self.valid_positions = self._compute_valid_positions()
@@ -99,6 +148,12 @@ class GridWorldEnv:
             # Fallback to (0,0) if no valid positions
             return jnp.array([0, 0], dtype=self.dtype)
 
+    def _state_idx_to_position(self, state_idx):
+        """Convert a flat state index to (x, y) position."""
+        x = state_idx % self.width
+        y = state_idx // self.width
+        return jnp.array([x, y], dtype=self.dtype)
+
     def reset(self, key, params=None):
         """Reset the environment and return initial state."""
         # Decide on the start position
@@ -115,82 +170,108 @@ class GridWorldEnv:
         )
 
     def step(self, key, state, action, params=None):
-        """Take a step in the environment."""
-        # Get current position and status
+        """Take a step in the environment.
+
+        Priority order for non-terminal states:
+          1. Portal  — teleport to destination if (state, action) is a portal
+          2. Door    — stay in place if (state, action) is blocked
+          3. Physics — normal movement with boundary/obstacle checks
+        """
         position = state.position
         terminal = state.terminal
-        steps = state.steps
+        steps    = state.steps
+        current_state_idx = self.get_state_representation(state)
 
-        # Only take action if not in terminal state
+        key, door_key = jax.random.split(key)
+
         def _step_impl(args):
-            position, steps = args
+            pos, st, csidx = args
 
-            # Get action effect
-            action_effect = self.action_effects[action]
+            # ----------------------------------------------------------
+            # 3. Normal physics
+            # ----------------------------------------------------------
+            def normal_physics(_):
+                new_pos_raw = pos + self.action_effects[action]
+                new_pos = jnp.clip(
+                    new_pos_raw,
+                    jnp.array([0, 0]),
+                    jnp.array([self.width - 1, self.height - 1]),
+                )
+                if self.has_obstacles:
+                    is_obstacle = jnp.any(jnp.all(new_pos == self.obstacles, axis=1))
+                    final_pos   = jnp.where(is_obstacle, pos, new_pos)
+                else:
+                    final_pos = new_pos
+                return final_pos, st + 1
 
-            # Calculate tentative new position
-            new_position_raw = position + action_effect
+            # ----------------------------------------------------------
+            # 2. Door check
+            # ----------------------------------------------------------
+            if self.has_doors:
+                def check_door(i):
+                    return (self.asym_states[i] == csidx) & (self.asym_actions[i] == action)
 
-            # Apply boundary constraints
-            new_position = jnp.clip(
-                new_position_raw,
-                jnp.array([0, 0]),
-                jnp.array([self.width - 1, self.height - 1])
-            )
+                matches   = jax.vmap(check_door)(jnp.arange(len(self.asym_states)))
+                has_door  = jnp.any(matches)
+                door_idx  = jnp.argmax(matches)
+                door_prob = jnp.where(has_door, self.asym_probs[door_idx], jnp.array(1.0))
+                u         = jax.random.uniform(door_key)
+                is_blocked = has_door & (u >= door_prob)
+                after_door = jax.lax.cond(
+                    is_blocked,
+                    lambda _: (pos, st + 1),
+                    normal_physics,
+                    operand=None,
+                )
+            else:
+                after_door = normal_physics(None)
 
-            # Check if new position is an obstacle (vectorized)
-            is_obstacle = jax.lax.cond(
-                self.has_obstacles,
-                lambda _: jnp.any(jnp.all(new_position == self.obstacles, axis=1)),
-                lambda _: jnp.array(False),
-                operand=None
-            )
+            # ----------------------------------------------------------
+            # 1. Portal check (takes priority over doors)
+            # ----------------------------------------------------------
+            if self.has_portals:
+                def check_portal(i):
+                    return (self.portal_states[i] == csidx) & (self.portal_actions[i] == action)
 
-            # If obstacle, stay in place
-            final_position = jnp.where(
-                is_obstacle,
-                position,
-                new_position
-            )
+                matches     = jax.vmap(check_portal)(jnp.arange(len(self.portal_states)))
+                portal_match = jnp.any(matches)
+                portal_idx   = jnp.argmax(matches)
+                portal_dest  = self._state_idx_to_position(self.portal_destinations[portal_idx])
 
-            # Increment step counter
-            new_steps = steps + 1
+                return jax.lax.cond(
+                    portal_match,
+                    lambda _: (portal_dest, st + 1),
+                    lambda _: after_door,
+                    operand=None,
+                )
+            else:
+                return after_door
 
-            return final_position, new_steps
-
-        # Either take action or keep same state if terminal
+        # Either advance (non-terminal) or keep position (terminal)
         position, steps = jax.lax.cond(
             terminal,
-            lambda args: args,  # If terminal, stay in place
-            _step_impl,  # If not terminal, apply step function
-            (position, steps)
+            lambda args: (args[0], args[1]),
+            _step_impl,
+            (position, steps, current_state_idx),
         )
 
-        # Check if at goal or max steps reached
         at_goal = jax.lax.cond(
             self.has_goal,
             lambda _: jnp.all(position == self.goal_pos),
             lambda _: jnp.array(False),
-            operand=None
+            operand=None,
         )
         max_steps_reached = steps >= self.max_steps
-
-        # Determine if terminal state
         new_terminal = jnp.logical_or(terminal, jnp.logical_or(at_goal, max_steps_reached))
 
-        # Create new state
         next_state = GridWorldState(
             position=position,
             terminal=new_terminal,
-            steps=steps
+            steps=steps,
         )
 
-        # Reward is always 0.0
         reward = jnp.array(0.0)
-
-        # Done flag for buffer
-        done = new_terminal
-
+        done   = new_terminal
         return next_state, reward, done, {}
 
     def get_state_representation(self, state):
@@ -214,5 +295,7 @@ class GridWorldEnv:
             "start_pos": self.start_pos if self.fixed_start else None,
             "goal_pos": self.goal_pos if self.has_goal else None,
             "max_steps": self.max_steps,
-            "fixed_start": self.fixed_start
+            "fixed_start": self.fixed_start,
+            "asymmetric_transitions": self.asymmetric_transitions,
+            "portals": self.portals,
         }

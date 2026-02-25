@@ -1,7 +1,8 @@
 import os
+import re
+
 from src.envs.gridworld import GridWorldEnv
-from src.envs.door_gridworld import DoorGridWorldEnv
-from src.envs.portal_gridworld import PortalGridWorldEnv
+
 
 
 # Example environment layouts as strings
@@ -123,15 +124,20 @@ def create_environment_from_text(text_content=None, file_name=None, file_path=No
         - 'X' or '#' for obstacle
         - 'S' for starting position
         - 'G' for goal position
-        - 'D{actions}' for doors (one-way passages from this tile)
+        - 'D{actions}' or 'D{actions}:{prob}' for doors (asymmetric passages)
           - First character 'D' marks door, each following character is an action
-          - e.g., 'DD' = one door Down, 'DDL' = two doors (Down and Left)
+          - Optional ':{prob}' sets reversal probability in [0, 1] (default 0 = fully blocked)
+          - e.g., 'DD' = hard door Down, 'DD:0.3' = door Down with 30% reversal chance
+          - 'DDL:0.5' = doors Down and Left, both with 50% reversal chance
           - Actions: U (up), D (down), L (left), R (right)
-        - 'P{source}>{dest}{action}' for portals (non-adjacent teleports)
+        - 'P{action}:{dest}' for portals (non-adjacent teleports from this tile)
+          - Source is always the tile's own position; one token per direction
+          - e.g., 'PU:12' = going Up from this tile teleports to state 12
+          - 'PU:12PD:5' = two portals from this tile (Up→12, Down→5)
         - Multiple elements can be combined in a tile: 'X', 'DD', 'DDLR', etc.
 
     Returns:
-        env: GridWorld environment instance (may be DoorGridWorldEnv if doors are specified)
+        env: GridWorldEnv instance (with doors and/or portals if specified in the file)
     """
     # Load text with file name if provided
     if file_name is not None:
@@ -214,7 +220,7 @@ def _parse_comma_format(lines, **env_kwargs):
     obstacles = []
     start_pos = None
     goal_pos = None
-    blocked_transitions = set()  # For doors: (state_idx, action)
+    asymmetric_transitions = {}  # For doors: (state_idx, action) -> reversal_prob
     portals = {}  # For portals: (source_state_idx, action): dest_state_idx
 
     # Action mapping
@@ -232,82 +238,51 @@ def _parse_comma_format(lines, **env_kwargs):
                 goal_pos = (x, y)
 
             # Parse door specifications:
-            # Format: D followed by one or more action characters
-            # Each action character creates a separate door from this tile
-            # Example: DD = one door Down, DDL = two doors (Down and Left), DDLR = three doors
-            import re
+            # Format: D{actions} or D{actions}:{prob}
+            # Each action character creates a separate door from this tile.
+            # The optional :{prob} sets the reversal probability (default 0 = fully blocked).
+            # Example: DD = hard door Down, DD:0.3 = door Down with 30% reversal chance
+            action_effects_map = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
+            reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}
 
-            # Door format: D{actions} where each action is U/D/L/R
-            door_pattern = r'D([UDLR]+)'
+            door_pattern = r'D([UDLR]+)(?::([0-9]*\.?[0-9]+))?'
             for match in re.finditer(door_pattern, tile):
-                actions_str = match.group(1)
+                actions_str  = match.group(1)
+                reversal_prob = float(match.group(2)) if match.group(2) is not None else 0.0
 
-                # Each character in actions_str creates a separate door
                 for action_char in actions_str:
                     action = action_map[action_char]
-
-                    # Calculate source and destination states
-                    source_state = y * width + x
-
-                    # Calculate destination based on action
-                    action_effects = {
-                        0: (0, -1),  # Up
-                        1: (1, 0),   # Right
-                        2: (0, 1),   # Down
-                        3: (-1, 0),  # Left
-                    }
-                    dx, dy = action_effects[action]
+                    dx, dy = action_effects_map[action]
                     dest_x, dest_y = x + dx, y + dy
 
-                    # Only add door if destination is within bounds
                     if 0 <= dest_x < width and 0 <= dest_y < height:
-                        dest_state = dest_y * width + dest_x
-
-                        # Block the reverse transition
-                        reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}  # U<->D, L<->R
+                        dest_state     = dest_y * width + dest_x
                         reverse_action = reverse_action_map[action]
-                        blocked_transitions.add((dest_state, reverse_action))
+                        asymmetric_transitions[(dest_state, reverse_action)] = reversal_prob
 
-            # Portal format (for non-adjacent teleportation): P{source}>{dest}{action}
-            # Example: P5>12U means portal from state 5 to state 12 via Up action
-            portal_pattern = r'P(\d+)>(\d+)([UDLR])'
+            # Portal format: P{action}:{dest}
+            # Source is this tile; one token per direction.
+            # Example: PU:12 = going Up from this tile teleports to state 12
+            #          PU:12PD:5 = two portals from this tile
+            source_state  = y * width + x
+            portal_pattern = r'P([UDLR]):(\d+)'
             for match in re.finditer(portal_pattern, tile):
-                source_state = int(match.group(1))
-                dest_state = int(match.group(2))
-                action_char = match.group(3)
-                action = action_map[action_char]
+                action_char = match.group(1)
+                dest_state  = int(match.group(2))
+                action      = action_map[action_char]
                 portals[(source_state, action)] = dest_state
 
-    # Create environment
-    if blocked_transitions:
-        return DoorGridWorldEnv(
-            width=width,
-            height=height,
-            obstacles=obstacles,
-            start_pos=start_pos,
-            goal_pos=goal_pos,
-            blocked_transitions=blocked_transitions,
-            **env_kwargs,
-        )
-    elif portals:
-        return PortalGridWorldEnv(
-            width=width,
-            height=height,
-            obstacles=obstacles,
-            start_pos=start_pos,
-            goal_pos=goal_pos,
-            portals=portals,
-            **env_kwargs,
-        )
-    else:
-        return GridWorldEnv(
-            width=width,
-            height=height,
-            obstacles=obstacles,
-            start_pos=start_pos,
-            goal_pos=goal_pos,
-            **env_kwargs,
-        )
+    # Always create a single GridWorldEnv; doors and portals are optional
+    return GridWorldEnv(
+        width=width,
+        height=height,
+        obstacles=obstacles,
+        start_pos=start_pos,
+        goal_pos=goal_pos,
+        asymmetric_transitions=asymmetric_transitions if asymmetric_transitions else None,
+        portals=portals if portals else None,
+        **env_kwargs,
+    )
 
 
 def save_environment_to_text(env, file_path):

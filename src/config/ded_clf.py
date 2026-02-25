@@ -13,11 +13,6 @@ class Args:
     num_envs: int = 1000
     num_steps: int = 1000
 
-    # Irreversible doors
-    use_doors: bool = False
-    num_doors: int = 5  # Number of irreversible doors to create
-    door_seed: int = 42  # Seed for door placement
-
     # Model
     num_eigenvector_pairs: int = 10  # Number of complex eigenvector pairs to learn
     hidden_dim: int = 256

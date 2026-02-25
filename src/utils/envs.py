@@ -48,15 +48,51 @@ def create_gridworld_env(args: Args):
     print(f"Loaded environment: {args.env_type}")
     print(f"  Grid size: {env.width} x {env.height}")
     print(f"  Number of obstacles: {len(env.obstacles) if env.has_obstacles else 0}")
-
-    # Check if environment has doors from file
-    from src.envs.door_gridworld import DoorGridWorldEnv
-    if isinstance(env, DoorGridWorldEnv):
-        print(f"  Environment has doors from file: {len(env.blocked_transitions)} blocked transitions")
-    else:
-        print(f"  Environment type: {type(env).__name__} (no file-defined doors)")
+    if env.has_doors:
+        print(f"  Doors: {len(env.asymmetric_transitions)} asymmetric transitions")
+    if env.has_portals:
+        print(f"  Portals: {len(env.portals)} portal transitions")
+    if not env.has_doors and not env.has_portals:
+        print(f"  No doors or portals")
 
     return env
+
+
+def get_env_transition_markers(env) -> dict:
+    """
+    Return a dict {(source_state_full, action): dest_state_full} for all
+    non-standard transitions in the environment (doors and/or portals).
+
+    Doors: reconstructs (source, forward_action) -> dest from the stored
+           (dest, reverse_action) asymmetric_transitions.
+    Portals: reads the portals dict directly.
+
+    Both are collected into the same dict (portals take precedence over doors
+    for the same (source, action) key, matching the step() priority).
+    """
+    markers = {}
+
+    if env.has_doors:
+        action_reverse = {0: 2, 1: 3, 2: 0, 3: 1}
+        action_delta   = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
+        for state_full, action in env.asymmetric_transitions:
+            state_full = int(state_full)
+            action = int(action)
+            forward_action = action_reverse[action]
+            dx, dy = action_delta[action]
+            dest_y, dest_x = divmod(state_full, env.width)
+            source_x = dest_x + dx
+            source_y = dest_y + dy
+            if 0 <= source_x < env.width and 0 <= source_y < env.height:
+                source_full = source_y * env.width + source_x
+                if (source_full, forward_action) not in markers:
+                    markers[(source_full, forward_action)] = state_full
+
+    if env.has_portals:
+        for (source_full, action), dest_full in env.portals.items():
+            markers[(int(source_full), int(action))] = int(dest_full)
+
+    return markers
 
 
 def get_canonical_free_states(env):
