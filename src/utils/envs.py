@@ -48,37 +48,31 @@ def create_gridworld_env(args: Args):
     print(f"Loaded environment: {args.env_type}")
     print(f"  Grid size: {env.width} x {env.height}")
     print(f"  Number of obstacles: {len(env.obstacles) if env.has_obstacles else 0}")
-
-    # Report environment type
-    from src.envs.door_gridworld import DoorGridWorldEnv
-    from src.envs.portal_gridworld import PortalGridWorldEnv
-    if isinstance(env, DoorGridWorldEnv):
-        print(f"  Environment has doors: {len(env.blocked_transitions)} blocked transitions")
-    elif isinstance(env, PortalGridWorldEnv):
-        print(f"  Environment has portals: {len(env.portals)} portal transitions")
-    else:
-        print(f"  Environment type: {type(env).__name__}")
+    if env.has_doors:
+        print(f"  Doors: {len(env.blocked_transitions)} blocked transitions")
+    if env.has_portals:
+        print(f"  Portals: {len(env.portals)} portal transitions")
+    if not env.has_doors and not env.has_portals:
+        print(f"  No doors or portals")
 
     return env
 
 
 def get_env_transition_markers(env) -> dict:
     """
-    Return a dict {(source_state_full, action): dest_state_full} representing
-    all non-standard transitions in the environment (doors or portals).
+    Return a dict {(source_state_full, action): dest_state_full} for all
+    non-standard transitions in the environment (doors and/or portals).
 
-    For DoorGridWorldEnv: reconstructs (source, forward_action) -> dest from
-    the stored (dest, reverse_action) blocked_transitions.
-    For PortalGridWorldEnv: directly reads the portals dict.
+    Doors: reconstructs (source, forward_action) -> dest from the stored
+           (dest, reverse_action) blocked_transitions.
+    Portals: reads the portals dict directly.
 
-    Used for visualization (portal markers overlaid on grid plots).
+    Both are collected into the same dict (portals take precedence over doors
+    for the same (source, action) key, matching the step() priority).
     """
-    from src.envs.door_gridworld import DoorGridWorldEnv
-    from src.envs.portal_gridworld import PortalGridWorldEnv
-
     markers = {}
 
-    if isinstance(env, DoorGridWorldEnv) and env.has_doors:
+    if env.has_doors:
         action_reverse = {0: 2, 1: 3, 2: 0, 3: 1}
         action_delta   = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
         for state_full, action in env.blocked_transitions:
@@ -94,7 +88,7 @@ def get_env_transition_markers(env) -> dict:
                 if (source_full, forward_action) not in markers:
                     markers[(source_full, forward_action)] = state_full
 
-    elif isinstance(env, PortalGridWorldEnv) and env.has_portals:
+    if env.has_portals:
         for (source_full, action), dest_full in env.portals.items():
             markers[(int(source_full), int(action))] = int(dest_full)
 

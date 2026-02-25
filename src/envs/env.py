@@ -1,7 +1,9 @@
 import os
 from src.envs.gridworld import GridWorldEnv
-from src.envs.door_gridworld import DoorGridWorldEnv
-from src.envs.portal_gridworld import PortalGridWorldEnv
+
+# Kept for any code that still imports these names
+DoorGridWorldEnv   = GridWorldEnv
+PortalGridWorldEnv = GridWorldEnv
 
 
 # Example environment layouts as strings
@@ -278,36 +280,17 @@ def _parse_comma_format(lines, **env_kwargs):
                 action = action_map[action_char]
                 portals[(source_state, action)] = dest_state
 
-    # Create environment
-    if blocked_transitions:
-        return DoorGridWorldEnv(
-            width=width,
-            height=height,
-            obstacles=obstacles,
-            start_pos=start_pos,
-            goal_pos=goal_pos,
-            blocked_transitions=blocked_transitions,
-            **env_kwargs,
-        )
-    elif portals:
-        return PortalGridWorldEnv(
-            width=width,
-            height=height,
-            obstacles=obstacles,
-            start_pos=start_pos,
-            goal_pos=goal_pos,
-            portals=portals,
-            **env_kwargs,
-        )
-    else:
-        return GridWorldEnv(
-            width=width,
-            height=height,
-            obstacles=obstacles,
-            start_pos=start_pos,
-            goal_pos=goal_pos,
-            **env_kwargs,
-        )
+    # Always create a single GridWorldEnv; doors and portals are optional
+    return GridWorldEnv(
+        width=width,
+        height=height,
+        obstacles=obstacles,
+        start_pos=start_pos,
+        goal_pos=goal_pos,
+        blocked_transitions=blocked_transitions if blocked_transitions else None,
+        portals=portals if portals else None,
+        **env_kwargs,
+    )
 
 
 def save_environment_to_text(env, file_path):

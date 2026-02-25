@@ -58,8 +58,6 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from src.utils.envs import create_gridworld_env
 from src.utils.metrics import compute_hitting_times_from_eigenvectors
-from src.envs.door_gridworld import DoorGridWorldEnv
-from src.envs.portal_gridworld import PortalGridWorldEnv
 
 
 # ===========================================================================
@@ -137,8 +135,8 @@ def build_transition_table(
     action a from canonical state s.
 
     Priority order (highest first):
-      1. Portal: teleport to destination state (PortalGridWorldEnv)
-      2. Door: blocked reverse transition stays in place (DoorGridWorldEnv)
+      1. Portal: teleport to destination state
+      2. Door: blocked transition stays in place
       3. Normal physics: boundary/obstacle → stay, else move
 
     Actions: 0=up, 1=right, 2=down, 3=left
@@ -153,13 +151,13 @@ def build_transition_table(
 
     # Blocked transitions (doors)
     blocked: set[tuple[int, int]] = set()
-    if isinstance(env, DoorGridWorldEnv):
+    if env.has_doors:
         for state_full, action in env.blocked_transitions:
             blocked.add((int(state_full), int(action)))
 
     # Portal overrides: (source_full, action) -> dest_full
     portals: dict[tuple[int, int], int] = {}
-    if isinstance(env, PortalGridWorldEnv):
+    if env.has_portals:
         for (state_full, action), dest_full in env.portals.items():
             portals[(int(state_full), int(action))] = int(dest_full)
 
