@@ -33,10 +33,6 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from src.envs.gridworld import GridWorldEnv
 from src.envs.env import create_environment_from_text, EXAMPLE_ENVIRONMENTS
-from src.envs.door_gridworld import (
-    create_door_gridworld_from_base,
-    create_random_doors,
-)
 from src.data_collection import collect_transition_counts_and_episodes
 from src.utils.plotting import (
     visualize_multiple_eigenvectors,
@@ -997,23 +993,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     num_canonical = len(canonical_states)
     print(f"Number of free states: {num_canonical} (out of {num_states} total)")
 
-    # Create door environment if requested
-    door_config = None
-    data_env = env  # Default to base environment
-
-    if args.use_doors:
-        print(f"\nCreating {args.num_doors} irreversible doors...")
-        door_config = create_random_doors(
-            env,
-            canonical_states,
-            num_doors=args.num_doors,
-            seed=args.door_seed
-        )
-        print(f"  Created {door_config['num_doors']} doors (out of {door_config['total_reversible']} reversible transitions)")
-
-        # Create environment with doors in the dynamics
-        data_env = create_door_gridworld_from_base(env, door_config['doors'], canonical_states)
-        print("  Created DoorGridWorld environment with irreversible transitions")
+    data_env = env
 
     # Collect transition counts and episodes in a single efficient pass
     print("Collecting transition data and episodes...")
@@ -1153,7 +1133,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print(f"  Coordinate range: x=[{state_coords[:, 0].min():.3f}, {state_coords[:, 0].max():.3f}], "
           f"y=[{state_coords[:, 1].min():.3f}, {state_coords[:, 1].max():.3f}]")
 
-    return laplacian_matrix, eigendecomp, eigendecomp_simple, eigendecomp_weighted, eigendecomp_invweighted, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer
+    return laplacian_matrix, eigendecomp, eigendecomp_simple, eigendecomp_weighted, eigendecomp_invweighted, state_coords, canonical_states, sampling_probs, data_env, replay_buffer
 
 
 def learn_eigenvectors(args):
@@ -1278,30 +1258,17 @@ def learn_eigenvectors(args):
             viz_metadata = pickle.load(f)
         canonical_states = viz_metadata['canonical_states']
 
-        # Reconstruct door_config if it exists
-        door_config = None
-        door_config_path = results_dir / "door_config.pkl"
-        if door_config_path.exists():
-            with open(door_config_path, 'rb') as f:
-                door_config = pickle.load(f)
-
         # Recreate replay buffer (much faster than recomputing everything)
         # Note: We don't save/load the replay buffer; we recreate it
         # This is acceptable since sampling is random anyway
         replay_buffer = create_replay_buffer_only(env, canonical_states, args)
-
-        # Recreate data_env if doors were used
-        if door_config is not None and 'doors' in door_config:
-            from src.envs.door_gridworld import create_door_gridworld_from_base
-            data_env = create_door_gridworld_from_base(env, door_config['doors'], canonical_states)
-        else:
-            data_env = env
+        data_env = env
 
         print("Loaded saved data successfully")
     else:
         # Create environment and collect data (new run)
         env = create_gridworld_env(args)
-        laplacian_matrix, eigendecomp, eigendecomp_simple, eigendecomp_weighted, eigendecomp_invweighted, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
+        laplacian_matrix, eigendecomp, eigendecomp_simple, eigendecomp_weighted, eigendecomp_invweighted, state_coords, canonical_states, sampling_probs, data_env, replay_buffer = collect_data_and_compute_eigenvectors(env, args)
 
         gt_eigenvalues = eigendecomp['eigenvalues_real']
         gt_eigenvectors = eigendecomp['right_eigenvectors_real']
@@ -1317,18 +1284,6 @@ def learn_eigenvectors(args):
 
     # Save data for new runs (skip if resuming)
     if checkpoint_data is None:
-        # Save door configuration if doors were used
-        if door_config is not None:
-            door_save_path = results_dir / "door_config.pkl"
-            with open(door_save_path, 'wb') as f:
-                pickle.dump({
-                    'doors': door_config['doors'],
-                    'num_doors': door_config['num_doors'],
-                    'total_reversible': door_config['total_reversible'],
-                    'canonical_states': np.array(canonical_states),
-                }, f)
-            print(f"Door configuration saved to {door_save_path}")
-
         # Save ground truth eigendecomposition and state coords
         # Inverse-weighted Laplacian (main baseline): L = I - (1-γ)(SR_γ + D^{-1}SR_γ^TD)/2
         np.save(results_dir / "gt_eigenvalues.npy", np.array(gt_eigenvalues))

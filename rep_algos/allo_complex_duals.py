@@ -28,10 +28,6 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from src.envs.gridworld import GridWorldEnv
 from src.envs.env import create_environment_from_text, EXAMPLE_ENVIRONMENTS
-from src.envs.door_gridworld import (
-    create_door_gridworld_from_base,
-    create_random_doors,
-)
 from src.data_collection import collect_transition_counts_and_episodes
 from src.utils.plotting import (
     visualize_multiple_eigenvectors,
@@ -1128,8 +1124,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         state_coords: Array of (x,y) coordinates for each state
         canonical_states: Array of free state indices
         sampling_probs: 1D array of empirical sampling probabilities for each canonical state
-        door_config: Door configuration (if use_doors=True)
-        data_env: The environment used for data collection (with doors if applicable)
+        data_env: The environment used for data collection
         replay_buffer: Episodic replay buffer filled with collected episodes
     """
     print("Collecting transition data...")
@@ -1140,23 +1135,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     num_canonical = len(canonical_states)
     print(f"Number of free states: {num_canonical} (out of {num_states} total)")
 
-    # Create door environment if requested
-    door_config = None
-    data_env = env  # Default to base environment
-
-    if args.use_doors:
-        print(f"\nCreating {args.num_doors} irreversible doors...")
-        door_config = create_random_doors(
-            env,
-            canonical_states,
-            num_doors=args.num_doors,
-            seed=args.door_seed
-        )
-        print(f"  Created {door_config['num_doors']} doors (out of {door_config['total_reversible']} reversible transitions)")
-
-        # Create environment with doors in the dynamics
-        data_env = create_door_gridworld_from_base(env, door_config['doors'], canonical_states)
-        print("  Created DoorGridWorld environment with irreversible transitions")
+    data_env = env
 
     # Collect transition counts and episodes in a single efficient pass
     print("Collecting transition data and episodes...")
@@ -1259,7 +1238,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
     print(f"  Coordinate range: x=[{state_coords[:, 0].min():.3f}, {state_coords[:, 0].max():.3f}], "
           f"y=[{state_coords[:, 1].min():.3f}, {state_coords[:, 1].max():.3f}]")
 
-    return laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, door_config, data_env, replay_buffer, transition_matrix
+    return laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, data_env, replay_buffer, transition_matrix
 
 
 def learn_eigenvectors(args):
@@ -1358,31 +1337,18 @@ def learn_eigenvectors(args):
             viz_metadata = pickle.load(f)
         canonical_states = viz_metadata['canonical_states']
 
-        # Reconstruct door_config if it exists
-        door_config = None
-        door_config_path = results_dir / "door_config.pkl"
-        if door_config_path.exists():
-            with open(door_config_path, 'rb') as f:
-                door_config = pickle.load(f)
-
         # Recreate replay buffer (much faster than recomputing everything)
         # Note: We don't save/load the replay buffer; we recreate it
         # This is acceptable since sampling is random anyway
         replay_buffer = create_replay_buffer_only(env, canonical_states, args)
-
-        # Recreate data_env if doors were used
-        if door_config is not None and 'doors' in door_config:
-            from src.envs.door_gridworld import create_door_gridworld_from_base
-            data_env = create_door_gridworld_from_base(env, door_config['doors'], canonical_states)
-        else:
-            data_env = env
+        data_env = env
 
         print("Loaded saved data successfully")
     else:
         # Create environment and collect data (new run)
         env = create_gridworld_env(args)
         laplacian_matrix, eigendecomp, state_coords, canonical_states, \
-            sampling_probs, door_config, data_env, replay_buffer, transition_matrix = \
+            sampling_probs, data_env, replay_buffer, transition_matrix = \
                 collect_data_and_compute_eigenvectors(env, args)
 
         # Extract ground truth eigenvalues and eigenvectors (complex)
@@ -1400,18 +1366,6 @@ def learn_eigenvectors(args):
 
     # Save data for new runs (skip if resuming)
     if checkpoint_data is None:
-        # Save door configuration if doors were used
-        if door_config is not None:
-            door_save_path = results_dir / "door_config.pkl"
-            with open(door_save_path, 'wb') as f:
-                pickle.dump({
-                    'doors': door_config['doors'],
-                    'num_doors': door_config['num_doors'],
-                    'total_reversible': door_config['total_reversible'],
-                    'canonical_states': np.array(canonical_states),
-                }, f)
-            print(f"Door configuration saved to {door_save_path}")
-
         # Save ground truth eigendecomposition and state coords
         # Non-symmetric Laplacian: L = I - (1-γ)P·SR_γ (complex eigenvalues and eigenvectors)
         np.save(results_dir / "gt_eigenvalues_real.npy", np.array(gt_eigenvalues_real))
@@ -1426,15 +1380,6 @@ def learn_eigenvectors(args):
         np.save(results_dir / "sampling_distribution.npy", np.array(sampling_probs))
 
         # Visualize and save sampling distribution
-        if args.plot_during_training:
-            # Convert doors to portal markers for visualization
-            door_markers = {}
-            if door_config is not None and 'doors' in door_config:
-                for s_canonical, a_forward, s_prime_canonical, a_reverse in door_config['doors']:
-                    s_full = int(canonical_states[s_canonical])
-                    s_prime_full = int(canonical_states[s_prime_canonical])
-                    door_markers[(s_full, a_forward)] = s_prime_full
-
     # Initialize the encoder
     encoder = CoordinateEncoder(
         num_eigenvector_pairs=args.num_eigenvector_pairs,
@@ -1878,14 +1823,7 @@ def learn_eigenvectors(args):
     # Convert doors to portal markers for visualization
     door_markers = {}
 
-    # First, extract doors from random door config if available
-    if door_config is not None and 'doors' in door_config:
-        for s_canonical, a_forward, s_prime_canonical, a_reverse in door_config['doors']:
-            s_full = int(canonical_states[s_canonical])
-            s_prime_full = int(canonical_states[s_prime_canonical])
-            door_markers[(s_full, a_forward)] = s_prime_full
-
-    # Also extract doors directly from environment (for file-defined doors)
+    # Extract doors from environment (for file-defined doors)
     from src.envs.door_gridworld import DoorGridWorldEnv
     if isinstance(data_env, DoorGridWorldEnv) and data_env.has_doors:
         # Extract doors from blocked_transitions
@@ -1927,9 +1865,8 @@ def learn_eigenvectors(args):
                 if (source_full, forward_action) not in door_markers:
                     door_markers[(source_full, forward_action)] = state_full
 
-        if len(door_markers) > (len(door_config['doors']) if door_config else 0):
-            num_file_doors = len(door_markers) - (len(door_config['doors']) if door_config else 0)
-            print(f"  Added {num_file_doors} file-defined doors to visualization")
+        if len(door_markers) > 0:
+            print(f"  Found {len(door_markers)} doors in environment for visualization")
             print(f"  DEBUG: Door markers from file:")
             action_names = {0: 'Up', 1: 'Right', 2: 'Down', 3: 'Left'}
             for (src_state, action), dest_state in door_markers.items():

@@ -56,9 +56,9 @@ import matplotlib.pyplot as plt
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from src.utils.envs import create_gridworld_env, get_canonical_free_states
+from src.utils.envs import create_gridworld_env
 from src.utils.metrics import compute_hitting_times_from_eigenvectors
-from src.envs.door_gridworld import DoorGridWorldEnv
+from src.envs.door_gridworld import DoorGridWorldEnv  # kept for file-defined doors
 
 
 # ===========================================================================
@@ -121,15 +121,6 @@ def load_model(model_dir: Path, use_gt: bool = False) -> dict:
     )
 
 
-def load_door_config(model_dir: Path) -> dict | None:
-    """Return the saved door configuration, or None if no doors were used."""
-    path = Path(model_dir) / "door_config.pkl"
-    if path.exists():
-        with open(path, "rb") as f:
-            return pickle.load(f)
-    return None
-
-
 # ===========================================================================
 # Transition table
 # ===========================================================================
@@ -137,7 +128,6 @@ def load_door_config(model_dir: Path) -> dict | None:
 def build_transition_table(
     env,
     canonical_states: np.ndarray,
-    door_config: dict | None = None,
 ) -> np.ndarray:
     """
     Precompute the deterministic transition table next_state[s, a].
@@ -150,6 +140,9 @@ def build_transition_table(
     Actions: 0=up, 1=right, 2=down, 3=left
     Coordinate convention: full_idx = y * width + x
     Action effects: up=(0,-1), right=(+1,0), down=(0,+1), left=(-1,0)
+
+    Door information comes directly from env.blocked_transitions when the
+    environment is a DoorGridWorldEnv (i.e. doors defined in the .txt file).
     """
     num_canonical = len(canonical_states)
     full_to_canonical = {int(s): i for i, s in enumerate(canonical_states)}
@@ -157,21 +150,11 @@ def build_transition_table(
     # (dx, dy) for actions 0..3
     action_effects = [(0, -1), (1, 0), (0, 1), (-1, 0)]
 
-    # Collect all blocked (full_state_idx, action) pairs
+    # Collect blocked (full_state_idx, action) pairs from the environment
     blocked: set[tuple[int, int]] = set()
-
-    # Doors already embedded in the environment (e.g. from a *-Doors.txt file)
     if isinstance(env, DoorGridWorldEnv):
         for state_full, action in env.blocked_transitions:
             blocked.add((int(state_full), int(action)))
-
-    # Doors from the random door-creation process (door_config.pkl)
-    # Each door tuple: (s_canonical, a_forward, s_prime_canonical, a_reverse)
-    # The door blocks the REVERSE action from s_prime.
-    if door_config is not None and "doors" in door_config:
-        for s_can, _a_fwd, s_prime_can, a_rev in door_config["doors"]:
-            s_prime_full = int(canonical_states[s_prime_can])
-            blocked.add((s_prime_full, int(a_rev)))
 
     next_state = np.empty((num_canonical, 4), dtype=np.int32)
 
@@ -467,11 +450,7 @@ def main() -> None:
     ta.env_file = None
     env = create_gridworld_env(ta)
 
-    door_config = load_door_config(model_dir)
-    if door_config is not None:
-        print(f"  Door config loaded : {door_config['num_doors']} doors")
-
-    next_state_table = build_transition_table(env, canonical_states, door_config)
+    next_state_table = build_transition_table(env, canonical_states)
     print(f"  Transition table   : {next_state_table.shape}  (states × actions)")
 
     # ------------------------------------------------------------------
