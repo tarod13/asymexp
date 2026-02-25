@@ -420,6 +420,7 @@ def learn_eigenvectors(args, learner_module):
             'door_markers': door_markers,
             'num_eigenvectors': args.num_eigenvector_pairs,
             'gamma': args.gamma,
+            'delta': float(args.delta),
         }
         with open(results_dir / "viz_metadata.pkl", 'wb') as f:
             pickle.dump(viz_metadata, f)

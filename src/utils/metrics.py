@@ -571,8 +571,13 @@ def compute_hitting_times_from_eigenvectors(
         # λ_P = (1 + δ - λ_L) / (1 + γδ - γλ_L)
         eigenvalues = (1.0 + delta - eigenvalues) / (1.0 + gamma * delta - gamma * eigenvalues)
 
-    # Stationary distribution from first left eigenvector
-    stationary = left[:, 0]
+    # Stationary distribution from first left eigenvector.
+    # Normalize by its sum to get the true probability distribution π.
+    # This is robust to the sign convention of jnp.linalg.eig: for non-symmetric
+    # matrices the eigensolver may return the stationary eigenvector with negative
+    # sign, making left[:,0] = π/α with α < 0.  Dividing by sum(left[:,0]) = 1/α
+    # gives π regardless of the sign of α.
+    stationary = jnp.real(left[:, 0]) / jnp.sum(jnp.real(left[:, 0]))
 
     # Effective horizon weights: 1/(1-λ_P) for k >= 1
     mode_weights = 1.0 / (1.0 - eigenvalues[1:])  # [num_eigenvectors-1]

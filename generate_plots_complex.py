@@ -406,7 +406,7 @@ def plot_hitting_times(data, plots_dir, num_targets=6):
     """Generate hitting time visualizations, matching the training code exactly."""
     viz_meta = data['viz_metadata']
     gamma = viz_meta.get('gamma', viz_meta.get('geometric_gamma', 0.99))
-    delta = viz_meta.get('delta', 0.0)
+    delta = viz_meta.get('delta', 0.1)  # Default matches Args.delta in ded_clf.py
     num_states = data['gt_right_real'].shape[0]
 
     # Compute ground truth hitting times (same as shared_training.py)
