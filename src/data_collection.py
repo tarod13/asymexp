@@ -751,10 +751,7 @@ def create_door_environment_data(
         - transition_counts: Shape [num_canonical_states, num_actions, num_canonical_states]
         - metadata: Dictionary with door configuration and environment info
     """
-    from src.envs.door_gridworld import (
-        create_door_gridworld_from_base,
-        create_random_doors,
-    )
+    from src.envs.env import create_env_with_random_doors, create_random_doors
 
     num_canonical_states = len(canonical_states)
     num_states_full = base_env.width * base_env.height
@@ -766,7 +763,7 @@ def create_door_environment_data(
         seed=seed
     )
 
-    door_env = create_door_gridworld_from_base(
+    door_env = create_env_with_random_doors(
         base_env,
         door_config['doors'],
         canonical_states
