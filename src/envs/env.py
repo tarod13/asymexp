@@ -1,8 +1,5 @@
 import os
-import numpy as np
-from typing import Dict, Tuple, List
-
-import jax.numpy as jnp
+import re
 
 from src.envs.gridworld import GridWorldEnv
 
@@ -245,8 +242,6 @@ def _parse_comma_format(lines, **env_kwargs):
             # Each action character creates a separate door from this tile.
             # The optional :{prob} sets the reversal probability (default 0 = fully blocked).
             # Example: DD = hard door Down, DD:0.3 = door Down with 30% reversal chance
-            import re
-
             action_effects_map = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
             reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}
 
@@ -378,116 +373,3 @@ def get_example_environment(name, **env_kwargs):
             raise ValueError(f"Unknown environment name: {name}. Available environments: {list(EXAMPLE_ENVIRONMENTS.keys())}")
 
         return create_environment_from_text(EXAMPLE_ENVIRONMENTS[name], **env_kwargs)
-
-
-# ---------------------------------------------------------------------------
-# Programmatic door helpers (used by data_collection.py)
-# ---------------------------------------------------------------------------
-
-def _get_reverse_action(action: int) -> int:
-    return {0: 2, 1: 3, 2: 0, 3: 1}[action]
-
-
-def find_reversible_transitions(
-    base_env: GridWorldEnv,
-    canonical_states: jnp.ndarray,
-) -> List[Tuple[int, int, int, int]]:
-    """Return all (s_canonical, a, s'_canonical, a') tuples where (s,a)->s' is reversible."""
-    reversible_pairs = []
-    width = base_env.width
-
-    action_effects = np.array([[0, -1], [1, 0], [0, 1], [-1, 0]])
-    state_to_canonical = {int(state): idx for idx, state in enumerate(canonical_states)}
-
-    for s_canonical_idx, s_full in enumerate(canonical_states):
-        s_full = int(s_full)
-        s_y, s_x = divmod(s_full, width)
-
-        for a in range(base_env.action_space):
-            dx, dy = action_effects[a]
-            nx = int(np.clip(s_x + dx, 0, base_env.width - 1))
-            ny = int(np.clip(s_y + dy, 0, base_env.height - 1))
-
-            if base_env.has_obstacles:
-                if any(np.all(np.array([nx, ny]) == obs) for obs in base_env.obstacles):
-                    continue
-
-            s_prime_full = ny * width + nx
-            if s_prime_full == s_full or s_prime_full not in state_to_canonical:
-                continue
-
-            s_prime_canonical = state_to_canonical[s_prime_full]
-            a_rev = _get_reverse_action(a)
-            rdx, rdy = action_effects[a_rev]
-            rx = int(np.clip(nx + rdx, 0, base_env.width - 1))
-            ry = int(np.clip(ny + rdy, 0, base_env.height - 1))
-
-            if base_env.has_obstacles:
-                if any(np.all(np.array([rx, ry]) == obs) for obs in base_env.obstacles):
-                    continue
-
-            if ry * width + rx == s_full:
-                reversible_pairs.append((s_canonical_idx, a, s_prime_canonical, a_rev))
-
-    return reversible_pairs
-
-
-def create_random_doors(
-    base_env: GridWorldEnv,
-    canonical_states: jnp.ndarray,
-    num_doors: int,
-    seed: int = 42,
-) -> Dict:
-    """Randomly pick reversible transitions and mark them as asymmetric doors."""
-    reversible_pairs = find_reversible_transitions(base_env, canonical_states)
-
-    if len(reversible_pairs) == 0:
-        print("Warning: No reversible transitions found!")
-        return {"doors": [], "num_doors": 0, "total_reversible": 0}
-
-    rng = np.random.RandomState(seed)
-    num_doors_actual = min(num_doors, len(reversible_pairs))
-    selected = rng.choice(len(reversible_pairs), size=num_doors_actual, replace=False)
-
-    return {
-        "doors": [reversible_pairs[i] for i in selected],
-        "num_doors": num_doors_actual,
-        "total_reversible": len(reversible_pairs),
-    }
-
-
-def create_env_with_random_doors(
-    base_env: GridWorldEnv,
-    doors: List[Tuple[int, int, int, int]],
-    canonical_states: jnp.ndarray = None,
-    reversal_prob: float = 0.0,
-) -> GridWorldEnv:
-    """
-    Return a copy of base_env with the given doors added.
-
-    Args:
-        doors: List of (s_canonical, a_forward, s'_canonical, a_reverse) tuples.
-        canonical_states: Maps canonical indices to full state indices (1:1 if None).
-        reversal_prob: Reversal probability for the new doors (default 0 = fully blocked).
-    """
-    if canonical_states is None:
-        canonical_states = jnp.arange(base_env.width * base_env.height)
-
-    asymmetric_transitions = dict(base_env.asymmetric_transitions) if base_env.has_doors else {}
-    for _, _, s_prime_canonical, a_reverse in doors:
-        s_prime_full = int(canonical_states[s_prime_canonical])
-        asymmetric_transitions[(s_prime_full, a_reverse)] = reversal_prob
-
-    portals = dict(base_env.portals) if base_env.has_portals else {}
-
-    return GridWorldEnv(
-        width=base_env.width,
-        height=base_env.height,
-        obstacles=base_env.obstacles if base_env.has_obstacles else None,
-        start_pos=base_env.start_pos if base_env.fixed_start else None,
-        goal_pos=base_env.goal_pos if base_env.has_goal else None,
-        max_steps=base_env.max_steps,
-        precision=32 if base_env.dtype == jnp.int32 else 64,
-        asymmetric_transitions=asymmetric_transitions,
-        portals=portals if portals else None,
-    )
