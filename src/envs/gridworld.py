@@ -21,7 +21,7 @@ class GridWorldEnv:
         goal_pos=None,
         max_steps=100,
         precision=32,
-        blocked_transitions=None,
+        asymmetric_transitions=None,
         portals=None,
         **kwargs,
     ):
@@ -36,9 +36,11 @@ class GridWorldEnv:
             goal_pos: Goal position (x, y) or None for no goal
             max_steps: Maximum steps per episode
             precision: 32 or 64
-            blocked_transitions: Set of (state_idx, action) pairs that are
-                blocked (irreversible doors).  Agent stays in place when it
-                tries to take a blocked action.
+            asymmetric_transitions: Dict mapping (state_idx, action) -> float,
+                where the float is the probability [0, 1] that the reverse
+                transition succeeds.  0 = fully blocked (hard door), 1 = fully
+                reversible (no effect).  Agent stays in place when the sampled
+                uniform exceeds the probability.
             portals: Dict mapping (state_idx, action) -> dest_state_idx.
                 Portals override normal physics and teleport the agent.
                 Portals are checked before doors.
@@ -79,16 +81,18 @@ class GridWorldEnv:
             [-1, 0],  # left
         ], dtype=self.dtype)
 
-        # --- Doors (blocked_transitions) ---
-        self.blocked_transitions = blocked_transitions if blocked_transitions is not None else set()
-        if len(self.blocked_transitions) > 0:
-            blocked_list = list(self.blocked_transitions)
-            self.blocked_states  = jnp.array([k[0] for k in blocked_list], dtype=self.dtype)
-            self.blocked_actions = jnp.array([k[1] for k in blocked_list], dtype=self.dtype)
+        # --- Doors (asymmetric_transitions) ---
+        self.asymmetric_transitions = asymmetric_transitions if asymmetric_transitions is not None else {}
+        if len(self.asymmetric_transitions) > 0:
+            asym_list = list(self.asymmetric_transitions.items())
+            self.asym_states  = jnp.array([k[0] for k, _ in asym_list], dtype=self.dtype)
+            self.asym_actions = jnp.array([k[1] for k, _ in asym_list], dtype=self.dtype)
+            self.asym_probs   = jnp.array([v      for _, v in asym_list], dtype=jnp.float32)
             self.has_doors = True
         else:
-            self.blocked_states  = jnp.array([], dtype=self.dtype)
-            self.blocked_actions = jnp.array([], dtype=self.dtype)
+            self.asym_states  = jnp.array([], dtype=self.dtype)
+            self.asym_actions = jnp.array([], dtype=self.dtype)
+            self.asym_probs   = jnp.array([], dtype=jnp.float32)
             self.has_doors = False
 
         # --- Portals ---
@@ -178,6 +182,8 @@ class GridWorldEnv:
         steps    = state.steps
         current_state_idx = self.get_state_representation(state)
 
+        key, door_key = jax.random.split(key)
+
         def _step_impl(args):
             pos, st, csidx = args
 
@@ -204,15 +210,27 @@ class GridWorldEnv:
             # 2. Door check (only reached when no portal matched)
             # ----------------------------------------------------------
             def check_door(i):
-                return (self.blocked_states[i] == csidx) & (self.blocked_actions[i] == action)
+                return (self.asym_states[i] == csidx) & (self.asym_actions[i] == action)
 
             def after_portal_check(_):
-                is_blocked = jax.lax.cond(
+                # Find whether this (state, action) has a door and its reversal prob.
+                def find_door(_):
+                    matches   = jax.vmap(check_door)(jnp.arange(len(self.asym_states)))
+                    has_match = jnp.any(matches)
+                    door_idx  = jnp.argmax(matches)
+                    prob      = jnp.where(has_match, self.asym_probs[door_idx], jnp.array(1.0))
+                    return has_match, prob
+
+                has_door, door_prob = jax.lax.cond(
                     self.has_doors,
-                    lambda _: jnp.any(jax.vmap(check_door)(jnp.arange(len(self.blocked_states)))),
-                    lambda _: jnp.array(False),
+                    find_door,
+                    lambda _: (jnp.array(False), jnp.array(1.0)),
                     operand=None,
                 )
+
+                # Sample: transition is blocked when u >= door_prob
+                u          = jax.random.uniform(door_key)
+                is_blocked = has_door & (u >= door_prob)
 
                 # -------------------------------------------------------
                 # 3. Normal physics (only reached when not blocked)
@@ -291,6 +309,6 @@ class GridWorldEnv:
             "goal_pos": self.goal_pos if self.has_goal else None,
             "max_steps": self.max_steps,
             "fixed_start": self.fixed_start,
-            "blocked_transitions": self.blocked_transitions,
+            "asymmetric_transitions": self.asymmetric_transitions,
             "portals": self.portals,
         }

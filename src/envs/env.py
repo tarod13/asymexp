@@ -122,9 +122,11 @@ def create_environment_from_text(text_content=None, file_name=None, file_path=No
         - 'X' or '#' for obstacle
         - 'S' for starting position
         - 'G' for goal position
-        - 'D{actions}' for doors (one-way passages from this tile)
+        - 'D{actions}' or 'D{actions}:{prob}' for doors (asymmetric passages)
           - First character 'D' marks door, each following character is an action
-          - e.g., 'DD' = one door Down, 'DDL' = two doors (Down and Left)
+          - Optional ':{prob}' sets reversal probability in [0, 1] (default 0 = fully blocked)
+          - e.g., 'DD' = hard door Down, 'DD:0.3' = door Down with 30% reversal chance
+          - 'DDL:0.5' = doors Down and Left, both with 50% reversal chance
           - Actions: U (up), D (down), L (left), R (right)
         - 'P{source}>{dest}{action}' for portals (non-adjacent teleports)
         - Multiple elements can be combined in a tile: 'X', 'DD', 'DDLR', etc.
@@ -213,7 +215,7 @@ def _parse_comma_format(lines, **env_kwargs):
     obstacles = []
     start_pos = None
     goal_pos = None
-    blocked_transitions = set()  # For doors: (state_idx, action)
+    asymmetric_transitions = {}  # For doors: (state_idx, action) -> reversal_prob
     portals = {}  # For portals: (source_state_idx, action): dest_state_idx
 
     # Action mapping
@@ -231,41 +233,29 @@ def _parse_comma_format(lines, **env_kwargs):
                 goal_pos = (x, y)
 
             # Parse door specifications:
-            # Format: D followed by one or more action characters
-            # Each action character creates a separate door from this tile
-            # Example: DD = one door Down, DDL = two doors (Down and Left), DDLR = three doors
+            # Format: D{actions} or D{actions}:{prob}
+            # Each action character creates a separate door from this tile.
+            # The optional :{prob} sets the reversal probability (default 0 = fully blocked).
+            # Example: DD = hard door Down, DD:0.3 = door Down with 30% reversal chance
             import re
 
-            # Door format: D{actions} where each action is U/D/L/R
-            door_pattern = r'D([UDLR]+)'
-            for match in re.finditer(door_pattern, tile):
-                actions_str = match.group(1)
+            action_effects_map = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
+            reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}
 
-                # Each character in actions_str creates a separate door
+            door_pattern = r'D([UDLR]+)(?::([0-9]*\.?[0-9]+))?'
+            for match in re.finditer(door_pattern, tile):
+                actions_str  = match.group(1)
+                reversal_prob = float(match.group(2)) if match.group(2) is not None else 0.0
+
                 for action_char in actions_str:
                     action = action_map[action_char]
-
-                    # Calculate source and destination states
-                    source_state = y * width + x
-
-                    # Calculate destination based on action
-                    action_effects = {
-                        0: (0, -1),  # Up
-                        1: (1, 0),   # Right
-                        2: (0, 1),   # Down
-                        3: (-1, 0),  # Left
-                    }
-                    dx, dy = action_effects[action]
+                    dx, dy = action_effects_map[action]
                     dest_x, dest_y = x + dx, y + dy
 
-                    # Only add door if destination is within bounds
                     if 0 <= dest_x < width and 0 <= dest_y < height:
-                        dest_state = dest_y * width + dest_x
-
-                        # Block the reverse transition
-                        reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}  # U<->D, L<->R
+                        dest_state     = dest_y * width + dest_x
                         reverse_action = reverse_action_map[action]
-                        blocked_transitions.add((dest_state, reverse_action))
+                        asymmetric_transitions[(dest_state, reverse_action)] = reversal_prob
 
             # Portal format (for non-adjacent teleportation): P{source}>{dest}{action}
             # Example: P5>12U means portal from state 5 to state 12 via Up action
@@ -284,7 +274,7 @@ def _parse_comma_format(lines, **env_kwargs):
         obstacles=obstacles,
         start_pos=start_pos,
         goal_pos=goal_pos,
-        blocked_transitions=blocked_transitions if blocked_transitions else None,
+        asymmetric_transitions=asymmetric_transitions if asymmetric_transitions else None,
         portals=portals if portals else None,
         **env_kwargs,
     )

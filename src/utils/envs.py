@@ -49,7 +49,7 @@ def create_gridworld_env(args: Args):
     print(f"  Grid size: {env.width} x {env.height}")
     print(f"  Number of obstacles: {len(env.obstacles) if env.has_obstacles else 0}")
     if env.has_doors:
-        print(f"  Doors: {len(env.blocked_transitions)} blocked transitions")
+        print(f"  Doors: {len(env.asymmetric_transitions)} asymmetric transitions")
     if env.has_portals:
         print(f"  Portals: {len(env.portals)} portal transitions")
     if not env.has_doors and not env.has_portals:
@@ -64,7 +64,7 @@ def get_env_transition_markers(env) -> dict:
     non-standard transitions in the environment (doors and/or portals).
 
     Doors: reconstructs (source, forward_action) -> dest from the stored
-           (dest, reverse_action) blocked_transitions.
+           (dest, reverse_action) asymmetric_transitions.
     Portals: reads the portals dict directly.
 
     Both are collected into the same dict (portals take precedence over doors
@@ -75,7 +75,7 @@ def get_env_transition_markers(env) -> dict:
     if env.has_doors:
         action_reverse = {0: 2, 1: 3, 2: 0, 3: 1}
         action_delta   = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
-        for state_full, action in env.blocked_transitions:
+        for state_full, action in env.asymmetric_transitions:
             state_full = int(state_full)
             action = int(action)
             forward_action = action_reverse[action]

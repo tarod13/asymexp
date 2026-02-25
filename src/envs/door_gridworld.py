@@ -1,10 +1,10 @@
 """
-Utility functions for creating GridWorldEnv instances with irreversible doors.
+Utility functions for creating GridWorldEnv instances with asymmetric doors.
 
-Doors are one-way passages: the forward transition (s → s') via action a is
-allowed, but the reverse (s' → s) via the opposite action is blocked.
-The GridWorldEnv class handles the actual door logic; these helpers exist to
-build the blocked_transitions set from higher-level door descriptions.
+Doors parameterise how likely the reverse transition is: 0 = fully blocked,
+1 = fully reversible.  The GridWorldEnv class handles the actual door logic;
+these helpers exist to build the asymmetric_transitions dict from higher-level
+door descriptions.
 """
 
 import jax.numpy as jnp
@@ -18,32 +18,35 @@ def create_door_gridworld_from_base(
     base_env: GridWorldEnv,
     doors: List[Tuple[int, int, int, int]],
     canonical_states: jnp.ndarray = None,
+    reversal_prob: float = 0.0,
 ) -> GridWorldEnv:
     """
     Create a GridWorldEnv from a base environment and a list of door definitions.
 
-    Each door makes a transition one-way by blocking the reverse direction.
+    Each door restricts the reverse transition with a given reversal probability.
 
     Args:
         base_env: Base GridWorld environment
         doors: List of (s_canonical, a_forward, s'_canonical, a_reverse) tuples.
-               The reverse transition (s', a_reverse) will be blocked.
+               The reverse transition (s', a_reverse) gets reversal_prob.
         canonical_states: Maps canonical indices to full state indices.
                           If None, assumes 1:1 mapping.
+        reversal_prob: Probability [0, 1] that the reverse transition succeeds.
+                       0 = fully blocked (default), 1 = no effect.
 
     Returns:
-        GridWorldEnv with the combined blocked_transitions and portals.
+        GridWorldEnv with the combined asymmetric_transitions and portals.
     """
     if canonical_states is None:
         canonical_states = jnp.arange(base_env.width * base_env.height)
 
     # Preserve existing doors
-    blocked_transitions = set(base_env.blocked_transitions) if base_env.has_doors else set()
+    asymmetric_transitions = dict(base_env.asymmetric_transitions) if base_env.has_doors else {}
 
     # Add new doors
     for s_canonical, a_forward, s_prime_canonical, a_reverse in doors:
         s_prime_full = int(canonical_states[s_prime_canonical])
-        blocked_transitions.add((s_prime_full, a_reverse))
+        asymmetric_transitions[(s_prime_full, a_reverse)] = reversal_prob
 
     # Preserve existing portals
     portals = dict(base_env.portals) if base_env.has_portals else {}
@@ -56,7 +59,7 @@ def create_door_gridworld_from_base(
         goal_pos=base_env.goal_pos if base_env.has_goal else None,
         max_steps=base_env.max_steps,
         precision=32 if base_env.dtype == jnp.int32 else 64,
-        blocked_transitions=blocked_transitions,
+        asymmetric_transitions=asymmetric_transitions,
         portals=portals if portals else None,
     )
 
