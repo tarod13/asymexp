@@ -7,7 +7,7 @@ from src.envs.gridworld import GridWorldEnv, GridWorldState
 
 class PortalGridWorldEnv(GridWorldEnv):
     """
-    GridWorld environment with random portals that override normal transitions.
+    GridWorld environment with portals that override normal transitions.
 
     A portal is defined as ((s, a), s') where taking action a in state s
     teleports the agent to state s' instead of following normal physics.
@@ -172,69 +172,3 @@ class PortalGridWorldEnv(GridWorldEnv):
         return base_params
 
 
-def create_random_portal_env(
-    base_env: GridWorldEnv,
-    num_portals: int = 10,
-    seed: int = 42,
-) -> PortalGridWorldEnv:
-    """
-    Create a PortalGridWorld by adding random portals to a base environment.
-
-    Args:
-        base_env: Base GridWorld environment to add portals to
-        num_portals: Number of random portals to add
-        seed: Random seed for portal generation
-
-    Returns:
-        PortalGridWorldEnv with random portals
-    """
-    rng = np.random.RandomState(seed)
-
-    # Get valid positions (not obstacles, not goal)
-    valid_positions = base_env.valid_positions
-    num_valid_states = len(valid_positions)
-    num_actions = base_env.action_space
-
-    # Generate random portals (ensure unique (state, action) pairs)
-    portals = {}
-    max_attempts = num_portals * 10  # Prevent infinite loop
-    attempts = 0
-
-    while len(portals) < num_portals and attempts < max_attempts:
-        # Random source state (must be valid - no obstacles)
-        source_pos_idx = rng.randint(0, num_valid_states)
-        source_pos = valid_positions[source_pos_idx]
-        source_state_idx = int(source_pos[1] * base_env.width + source_pos[0])
-
-        # Random action
-        source_action = rng.randint(0, num_actions)
-
-        # Skip if this (state, action) pair already has a portal
-        if (source_state_idx, source_action) in portals:
-            attempts += 1
-            continue
-
-        # Random destination state (must be valid - no obstacles)
-        dest_pos_idx = rng.randint(0, num_valid_states)
-        dest_pos = valid_positions[dest_pos_idx]
-        dest_state_idx = int(dest_pos[1] * base_env.width + dest_pos[0])
-
-        # Add portal
-        portals[(source_state_idx, source_action)] = dest_state_idx
-        attempts += 1
-
-    # Warn if we couldn't generate all requested portals
-    if len(portals) < num_portals:
-        print(f"Warning: Could only generate {len(portals)} unique portals out of {num_portals} requested.")
-
-    # Create PortalGridWorldEnv with same parameters as base_env
-    return PortalGridWorldEnv(
-        width=base_env.width,
-        height=base_env.height,
-        obstacles=base_env.obstacles if base_env.has_obstacles else None,
-        start_pos=None,  # Allow random starts for data collection
-        goal_pos=tuple(base_env.goal_pos) if base_env.has_goal else None,
-        max_steps=base_env.max_steps,
-        precision=32 if base_env.dtype == jnp.int32 else 64,
-        portals=portals
-    )

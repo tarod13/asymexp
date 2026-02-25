@@ -407,37 +407,9 @@ def learn_eigenvectors(args, learner_module):
     start_time = time.time()
     num_states = state_coords.shape[0]
 
-    # Convert doors to portal markers for visualization
-    door_markers = {}
-
-    # Extract doors from environment (for file-defined doors)
-    from src.envs.door_gridworld import DoorGridWorldEnv
-    if isinstance(data_env, DoorGridWorldEnv) and data_env.has_doors:
-        # Extract doors from blocked_transitions
-        full_to_canonical = {int(full_idx): canon_idx for canon_idx, full_idx in enumerate(canonical_states)}
-
-        for state_full, action in data_env.blocked_transitions:
-            reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}  # U<->D, L<->R
-            forward_action = reverse_action_map[action]
-
-            action_effects = {
-                0: (0, -1),  # Up
-                1: (1, 0),   # Right
-                2: (0, 1),   # Down
-                3: (-1, 0),  # Left
-            }
-            dx, dy = action_effects[action]
-            dest_y = state_full // data_env.width
-            dest_x = state_full % data_env.width
-            source_x = dest_x + dx
-            source_y = dest_y + dy
-
-            # Check if source is valid
-            if 0 <= source_x < data_env.width and 0 <= source_y < data_env.height:
-                source_full = source_y * data_env.width + source_x
-                # Add to door_markers if not already there
-                if (source_full, forward_action) not in door_markers:
-                    door_markers[(source_full, forward_action)] = state_full
+    # Build transition markers (doors or portals) for visualization
+    from src.utils.envs import get_env_transition_markers
+    door_markers = get_env_transition_markers(data_env)
 
     # Save visualization metadata for new runs (skip if resuming)
     if checkpoint_data is None:

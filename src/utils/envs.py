@@ -49,14 +49,56 @@ def create_gridworld_env(args: Args):
     print(f"  Grid size: {env.width} x {env.height}")
     print(f"  Number of obstacles: {len(env.obstacles) if env.has_obstacles else 0}")
 
-    # Check if environment has doors from file
+    # Report environment type
     from src.envs.door_gridworld import DoorGridWorldEnv
+    from src.envs.portal_gridworld import PortalGridWorldEnv
     if isinstance(env, DoorGridWorldEnv):
-        print(f"  Environment has doors from file: {len(env.blocked_transitions)} blocked transitions")
+        print(f"  Environment has doors: {len(env.blocked_transitions)} blocked transitions")
+    elif isinstance(env, PortalGridWorldEnv):
+        print(f"  Environment has portals: {len(env.portals)} portal transitions")
     else:
-        print(f"  Environment type: {type(env).__name__} (no file-defined doors)")
+        print(f"  Environment type: {type(env).__name__}")
 
     return env
+
+
+def get_env_transition_markers(env) -> dict:
+    """
+    Return a dict {(source_state_full, action): dest_state_full} representing
+    all non-standard transitions in the environment (doors or portals).
+
+    For DoorGridWorldEnv: reconstructs (source, forward_action) -> dest from
+    the stored (dest, reverse_action) blocked_transitions.
+    For PortalGridWorldEnv: directly reads the portals dict.
+
+    Used for visualization (portal markers overlaid on grid plots).
+    """
+    from src.envs.door_gridworld import DoorGridWorldEnv
+    from src.envs.portal_gridworld import PortalGridWorldEnv
+
+    markers = {}
+
+    if isinstance(env, DoorGridWorldEnv) and env.has_doors:
+        action_reverse = {0: 2, 1: 3, 2: 0, 3: 1}
+        action_delta   = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
+        for state_full, action in env.blocked_transitions:
+            state_full = int(state_full)
+            action = int(action)
+            forward_action = action_reverse[action]
+            dx, dy = action_delta[action]
+            dest_y, dest_x = divmod(state_full, env.width)
+            source_x = dest_x + dx
+            source_y = dest_y + dy
+            if 0 <= source_x < env.width and 0 <= source_y < env.height:
+                source_full = source_y * env.width + source_x
+                if (source_full, forward_action) not in markers:
+                    markers[(source_full, forward_action)] = state_full
+
+    elif isinstance(env, PortalGridWorldEnv) and env.has_portals:
+        for (source_full, action), dest_full in env.portals.items():
+            markers[(int(source_full), int(action))] = int(dest_full)
+
+    return markers
 
 
 def get_canonical_free_states(env):

@@ -58,7 +58,8 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from src.utils.envs import create_gridworld_env
 from src.utils.metrics import compute_hitting_times_from_eigenvectors
-from src.envs.door_gridworld import DoorGridWorldEnv  # kept for file-defined doors
+from src.envs.door_gridworld import DoorGridWorldEnv
+from src.envs.portal_gridworld import PortalGridWorldEnv
 
 
 # ===========================================================================
@@ -133,16 +134,16 @@ def build_transition_table(
     Precompute the deterministic transition table next_state[s, a].
 
     next_state[s, a] = canonical index of the state reached by taking
-    action a from canonical state s.  If the move is blocked (wall,
-    obstacle, or irreversible door) the agent stays in place:
-    next_state[s, a] = s.
+    action a from canonical state s.
+
+    Priority order (highest first):
+      1. Portal: teleport to destination state (PortalGridWorldEnv)
+      2. Door: blocked reverse transition stays in place (DoorGridWorldEnv)
+      3. Normal physics: boundary/obstacle → stay, else move
 
     Actions: 0=up, 1=right, 2=down, 3=left
     Coordinate convention: full_idx = y * width + x
     Action effects: up=(0,-1), right=(+1,0), down=(0,+1), left=(-1,0)
-
-    Door information comes directly from env.blocked_transitions when the
-    environment is a DoorGridWorldEnv (i.e. doors defined in the .txt file).
     """
     num_canonical = len(canonical_states)
     full_to_canonical = {int(s): i for i, s in enumerate(canonical_states)}
@@ -150,11 +151,17 @@ def build_transition_table(
     # (dx, dy) for actions 0..3
     action_effects = [(0, -1), (1, 0), (0, 1), (-1, 0)]
 
-    # Collect blocked (full_state_idx, action) pairs from the environment
+    # Blocked transitions (doors)
     blocked: set[tuple[int, int]] = set()
     if isinstance(env, DoorGridWorldEnv):
         for state_full, action in env.blocked_transitions:
             blocked.add((int(state_full), int(action)))
+
+    # Portal overrides: (source_full, action) -> dest_full
+    portals: dict[tuple[int, int], int] = {}
+    if isinstance(env, PortalGridWorldEnv):
+        for (state_full, action), dest_full in env.portals.items():
+            portals[(int(state_full), int(action))] = int(dest_full)
 
     next_state = np.empty((num_canonical, 4), dtype=np.int32)
 
@@ -163,21 +170,24 @@ def build_transition_table(
         y, x = divmod(full_idx, env.width)
 
         for a, (dx, dy) in enumerate(action_effects):
-            # Irreversible door blocks this transition
+            # 1. Portal override
+            if (full_idx, a) in portals:
+                dest_full = portals[(full_idx, a)]
+                next_state[s_idx, a] = full_to_canonical.get(dest_full, s_idx)
+                continue
+
+            # 2. Irreversible door — stay in place
             if (full_idx, a) in blocked:
                 next_state[s_idx, a] = s_idx
                 continue
 
+            # 3. Normal physics
             nx, ny = x + dx, y + dy
-
-            # Boundary check
             if not (0 <= nx < env.width and 0 <= ny < env.height):
                 next_state[s_idx, a] = s_idx
                 continue
 
             next_full = ny * env.width + nx
-
-            # Obstacle or wall not in canonical set
             if next_full not in full_to_canonical:
                 next_state[s_idx, a] = s_idx
                 continue
