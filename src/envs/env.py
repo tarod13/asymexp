@@ -128,7 +128,10 @@ def create_environment_from_text(text_content=None, file_name=None, file_path=No
           - e.g., 'DD' = hard door Down, 'DD:0.3' = door Down with 30% reversal chance
           - 'DDL:0.5' = doors Down and Left, both with 50% reversal chance
           - Actions: U (up), D (down), L (left), R (right)
-        - 'P{source}>{dest}{action}' for portals (non-adjacent teleports)
+        - 'P{action}:{dest}' for portals (non-adjacent teleports from this tile)
+          - Source is always the tile's own position; one token per direction
+          - e.g., 'PU:12' = going Up from this tile teleports to state 12
+          - 'PU:12PD:5' = two portals from this tile (Up→12, Down→5)
         - Multiple elements can be combined in a tile: 'X', 'DD', 'DDLR', etc.
 
     Returns:
@@ -257,14 +260,16 @@ def _parse_comma_format(lines, **env_kwargs):
                         reverse_action = reverse_action_map[action]
                         asymmetric_transitions[(dest_state, reverse_action)] = reversal_prob
 
-            # Portal format (for non-adjacent teleportation): P{source}>{dest}{action}
-            # Example: P5>12U means portal from state 5 to state 12 via Up action
-            portal_pattern = r'P(\d+)>(\d+)([UDLR])'
+            # Portal format: P{action}:{dest}
+            # Source is this tile; one token per direction.
+            # Example: PU:12 = going Up from this tile teleports to state 12
+            #          PU:12PD:5 = two portals from this tile
+            source_state  = y * width + x
+            portal_pattern = r'P([UDLR]):(\d+)'
             for match in re.finditer(portal_pattern, tile):
-                source_state = int(match.group(1))
-                dest_state = int(match.group(2))
-                action_char = match.group(3)
-                action = action_map[action_char]
+                action_char = match.group(1)
+                dest_state  = int(match.group(2))
+                action      = action_map[action_char]
                 portals[(source_state, action)] = dest_state
 
     # Always create a single GridWorldEnv; doors and portals are optional
