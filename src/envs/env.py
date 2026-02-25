@@ -1,9 +1,6 @@
 import os
 from src.envs.gridworld import GridWorldEnv
 
-# Kept for any code that still imports these names
-DoorGridWorldEnv   = GridWorldEnv
-PortalGridWorldEnv = GridWorldEnv
 
 
 # Example environment layouts as strings
@@ -133,7 +130,7 @@ def create_environment_from_text(text_content=None, file_name=None, file_path=No
         - Multiple elements can be combined in a tile: 'X', 'DD', 'DDLR', etc.
 
     Returns:
-        env: GridWorld environment instance (may be DoorGridWorldEnv if doors are specified)
+        env: GridWorldEnv instance (with doors and/or portals if specified in the file)
     """
     # Load text with file name if provided
     if file_name is not None:

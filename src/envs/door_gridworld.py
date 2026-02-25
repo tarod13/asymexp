@@ -156,8 +156,3 @@ def create_random_doors(
         "total_reversible": len(reversible_pairs),
     }
 
-
-# ---------------------------------------------------------------------------
-# Backward-compatibility aliases
-# ---------------------------------------------------------------------------
-DoorGridWorldEnv = GridWorldEnv
