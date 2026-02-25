@@ -651,9 +651,7 @@ def visualize_hitting_time_on_grid(
 
     # Transform values if log_scale is requested
     if log_scale:
-        # Clip to 0 to prevent NaNs from small negative errors
-        safe_values = np.maximum(hitting_time_values, 0)
-        values_to_plot = np.log1p(safe_values)
+        values_to_plot = np.log1p(np.maximum(hitting_time_values, 0))
     else:
         values_to_plot = hitting_time_values
 
@@ -823,20 +821,21 @@ def visualize_source_vs_target_hitting_times(
     # Compute global color scales if shared
     # Ensure the matrix is real (conjugate enforcement should handle this,
     # but take real part as a safety net for matplotlib compatibility)
-    safe_matrix = np.real(np.maximum(hitting_time_matrix, 0))
+    real_matrix = np.real(hitting_time_matrix)
 
     vmin = None
     vmax = None
 
     if shared_colorbar:
-        vmin = 0.0
         if log_scale:
-            max_val = float(np.log1p(np.max(safe_matrix)))
+            max_val = float(np.nanmax(np.log1p(np.maximum(real_matrix, 0))))
+            vmin = 0.0
         else:
-            max_val = float(np.max(safe_matrix))
+            max_val = float(np.nanmax(real_matrix))
+            vmin = float(np.nanmin(real_matrix))
 
         if np.isnan(max_val):
-            max_val = float(np.nanmax(np.log1p(safe_matrix) if log_scale else safe_matrix))
+            max_val = 0.0
         vmax = max_val
 
     for idx, state_idx in enumerate(state_indices):
