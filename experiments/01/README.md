@@ -1,14 +1,14 @@
-# Experiment 01: Complex Eigendecomposition of Portal Environments
+# Experiment 01: Complex Eigendecomposition of Asymmetric Environments
 
 Tests whether the complex eigendecomposition of non-symmetrized transition
 matrices yields meaningful representations. Specifically, it checks if
 eigenspace distances (real and imaginary components) correlate with actual
 environment distances (Euclidean, Manhattan, shortest path) in grid
-environments with random portals (teleportations).
+environments with asymmetric transitions (doors or portals).
 
 ## What it does
 
-1. Creates multiple grid environments with random portals (asymmetric transitions)
+1. Creates multiple grid environments with asymmetric transitions (asymmetric transitions)
 2. Collects transition data via random rollouts
 3. Computes eigendecomposition of the non-symmetrized transition matrices (batched)
 4. Computes hitting times from the eigendecomposition
@@ -25,4 +25,4 @@ python experiments/01/run_analysis.py --generate-new --num-envs 10 --num-portals
 
 Complex eigenvectors of asymmetric transition matrices encode directional
 information that is lost by symmetrization. The imaginary components capture
-asymmetry introduced by portals.
+asymmetry introduced by doors or portals.

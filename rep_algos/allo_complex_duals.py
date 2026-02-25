@@ -327,12 +327,15 @@ def create_gridworld_env(args: Args):
     print(f"  Grid size: {env.width} x {env.height}")
     print(f"  Number of obstacles: {len(env.obstacles) if env.has_obstacles else 0}")
 
-    # Check if environment has doors from file
+    # Report environment type
     from src.envs.door_gridworld import DoorGridWorldEnv
+    from src.envs.portal_gridworld import PortalGridWorldEnv
     if isinstance(env, DoorGridWorldEnv):
-        print(f"  Environment has doors from file: {len(env.blocked_transitions)} blocked transitions")
+        print(f"  Environment has doors: {len(env.blocked_transitions)} blocked transitions")
+    elif isinstance(env, PortalGridWorldEnv):
+        print(f"  Environment has portals: {len(env.portals)} portal transitions")
     else:
-        print(f"  Environment type: {type(env).__name__} (no file-defined doors)")
+        print(f"  Environment type: {type(env).__name__}")
 
     return env
 
