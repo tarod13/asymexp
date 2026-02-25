@@ -188,77 +188,64 @@ class GridWorldEnv:
             pos, st, csidx = args
 
             # ----------------------------------------------------------
-            # 1. Portal check
+            # 3. Normal physics
             # ----------------------------------------------------------
-            def check_portal(i):
-                return (self.portal_states[i] == csidx) & (self.portal_actions[i] == action)
-
-            portal_match = jax.lax.cond(
-                self.has_portals,
-                lambda _: jnp.any(jax.vmap(check_portal)(jnp.arange(len(self.portal_states)))),
-                lambda _: jnp.array(False),
-                operand=None,
-            )
-
-            def apply_portal(_):
-                matches    = jax.vmap(check_portal)(jnp.arange(len(self.portal_states)))
-                portal_idx = jnp.argmax(matches)
-                dest_pos   = self._state_idx_to_position(self.portal_destinations[portal_idx])
-                return dest_pos, st + 1
-
-            # ----------------------------------------------------------
-            # 2. Door check (only reached when no portal matched)
-            # ----------------------------------------------------------
-            def check_door(i):
-                return (self.asym_states[i] == csidx) & (self.asym_actions[i] == action)
-
-            def after_portal_check(_):
-                # Find whether this (state, action) has a door and its reversal prob.
-                def find_door(_):
-                    matches   = jax.vmap(check_door)(jnp.arange(len(self.asym_states)))
-                    has_match = jnp.any(matches)
-                    door_idx  = jnp.argmax(matches)
-                    prob      = jnp.where(has_match, self.asym_probs[door_idx], jnp.array(1.0))
-                    return has_match, prob
-
-                has_door, door_prob = jax.lax.cond(
-                    self.has_doors,
-                    find_door,
-                    lambda _: (jnp.array(False), jnp.array(1.0)),
-                    operand=None,
+            def normal_physics(_):
+                new_pos_raw = pos + self.action_effects[action]
+                new_pos = jnp.clip(
+                    new_pos_raw,
+                    jnp.array([0, 0]),
+                    jnp.array([self.width - 1, self.height - 1]),
                 )
+                if self.has_obstacles:
+                    is_obstacle = jnp.any(jnp.all(new_pos == self.obstacles, axis=1))
+                    final_pos   = jnp.where(is_obstacle, pos, new_pos)
+                else:
+                    final_pos = new_pos
+                return final_pos, st + 1
 
-                # Sample: transition is blocked when u >= door_prob
-                u          = jax.random.uniform(door_key)
+            # ----------------------------------------------------------
+            # 2. Door check
+            # ----------------------------------------------------------
+            if self.has_doors:
+                def check_door(i):
+                    return (self.asym_states[i] == csidx) & (self.asym_actions[i] == action)
+
+                matches   = jax.vmap(check_door)(jnp.arange(len(self.asym_states)))
+                has_door  = jnp.any(matches)
+                door_idx  = jnp.argmax(matches)
+                door_prob = jnp.where(has_door, self.asym_probs[door_idx], jnp.array(1.0))
+                u         = jax.random.uniform(door_key)
                 is_blocked = has_door & (u >= door_prob)
-
-                # -------------------------------------------------------
-                # 3. Normal physics (only reached when not blocked)
-                # -------------------------------------------------------
-                def normal_physics(_):
-                    new_pos_raw = pos + self.action_effects[action]
-                    new_pos = jnp.clip(
-                        new_pos_raw,
-                        jnp.array([0, 0]),
-                        jnp.array([self.width - 1, self.height - 1]),
-                    )
-                    is_obstacle = jax.lax.cond(
-                        self.has_obstacles,
-                        lambda _: jnp.any(jnp.all(new_pos == self.obstacles, axis=1)),
-                        lambda _: jnp.array(False),
-                        operand=None,
-                    )
-                    final_pos = jnp.where(is_obstacle, pos, new_pos)
-                    return final_pos, st + 1
-
-                return jax.lax.cond(
+                after_door = jax.lax.cond(
                     is_blocked,
-                    lambda _: (pos, st + 1),   # door blocked → stay
+                    lambda _: (pos, st + 1),
                     normal_physics,
                     operand=None,
                 )
+            else:
+                after_door = normal_physics(None)
 
-            return jax.lax.cond(portal_match, apply_portal, after_portal_check, operand=None)
+            # ----------------------------------------------------------
+            # 1. Portal check (takes priority over doors)
+            # ----------------------------------------------------------
+            if self.has_portals:
+                def check_portal(i):
+                    return (self.portal_states[i] == csidx) & (self.portal_actions[i] == action)
+
+                matches     = jax.vmap(check_portal)(jnp.arange(len(self.portal_states)))
+                portal_match = jnp.any(matches)
+                portal_idx   = jnp.argmax(matches)
+                portal_dest  = self._state_idx_to_position(self.portal_destinations[portal_idx])
+
+                return jax.lax.cond(
+                    portal_match,
+                    lambda _: (portal_dest, st + 1),
+                    lambda _: after_door,
+                    operand=None,
+                )
+            else:
+                return after_door
 
         # Either advance (non-terminal) or keep position (terminal)
         position, steps = jax.lax.cond(
