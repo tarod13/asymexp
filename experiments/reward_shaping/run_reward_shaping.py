@@ -150,10 +150,23 @@ def build_transition_table(
     action_effects = [(0, -1), (1, 0), (0, 1), (-1, 0)]
 
     # Blocked transitions (doors)
+    # env.asymmetric_transitions stores (dest_state, reverse_action) -> prob.
+    # Reconstruct (source_state, forward_action) pairs for the blocked set.
     blocked: set[tuple[int, int]] = set()
     if env.has_doors:
-        for state_full, action in env.blocked_transitions:
-            blocked.add((int(state_full), int(action)))
+        action_reverse = {0: 2, 1: 3, 2: 0, 3: 1}
+        action_delta   = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
+        for (dest_full, rev_action) in env.asymmetric_transitions:
+            dest_full    = int(dest_full)
+            rev_action   = int(rev_action)
+            fwd_action   = action_reverse[rev_action]
+            dx, dy       = action_delta[rev_action]
+            dest_y, dest_x = divmod(dest_full, env.width)
+            source_x = dest_x + dx
+            source_y = dest_y + dy
+            if 0 <= source_x < env.width and 0 <= source_y < env.height:
+                source_full = source_y * env.width + source_x
+                blocked.add((source_full, fwd_action))
 
     # Portal overrides: (source_full, action) -> dest_full
     portals: dict[tuple[int, int], int] = {}
