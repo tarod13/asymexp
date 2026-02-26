@@ -42,6 +42,7 @@ import argparse
 import json
 import pickle
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -384,14 +385,21 @@ def run_q_learning(
 
     all_steps, all_reached = [], []
     ep_width = len(str(num_episodes))
+    t0 = time.monotonic()
     for chunk_i in range(num_chunks):
         carry, (steps, reached) = vmapped_chunk(carry, seed_chunk_keys[:, chunk_i])
         reached_np = np.array(reached)          # materialises result, blocks until ready
         all_steps.append(np.array(steps, dtype=np.int32))
         all_reached.append(reached_np)
-        ep_end = (chunk_i + 1) * chunk_ep
+        ep_end   = (chunk_i + 1) * chunk_ep
+        elapsed  = time.monotonic() - t0
+        eta      = elapsed / (chunk_i + 1) * (num_chunks - chunk_i - 1)
+        def _fmt(s):
+            m, s = divmod(int(s), 60)
+            return f"{m}m{s:02d}s" if m else f"{s}s"
         print(f"    ep {ep_end:{ep_width}d}/{num_episodes}:"
-              f"  mean success rate = {reached_np.mean():.2f}")
+              f"  sr = {reached_np.mean():.2f}"
+              f"  elapsed {_fmt(elapsed)}  eta {_fmt(eta)}")
 
     return (
         np.concatenate(all_steps,   axis=1),    # (num_seeds, num_episodes)
