@@ -249,6 +249,7 @@ def run_q_learning(
     canonical_states: np.ndarray,
     goal_idx: int,
     num_episodes: int,
+    num_seeds: int = 1,
     max_steps_per_episode: int = 500,
     potential: np.ndarray | None = None,
     shaping_coef: float = 0.0,
@@ -259,8 +260,9 @@ def run_q_learning(
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Run tabular ε-greedy Q-learning on a goal-reaching task using the real env.
-    JIT-compiled: both the episode loop and the step loop are jax.lax.scan calls,
-    so no Python overhead per step and no Python control flow inside the hot path.
+
+    All seeds are run in parallel via jax.vmap; the episode and step loops
+    within each seed are jax.lax.scan calls (JIT-compiled, no Python overhead).
 
     Task
     ----
@@ -274,8 +276,8 @@ def run_q_learning(
 
     Returns
     -------
-    steps_per_episode : [num_episodes] int   – steps taken (max_steps if failed)
-    reached_goal      : [num_episodes] bool  – whether the goal was reached
+    steps_per_episode : [num_seeds, num_episodes] int
+    reached_goal      : [num_seeds, num_episodes] bool
     """
     num_states  = len(canonical_states)
     num_actions = 4
@@ -293,10 +295,10 @@ def run_q_learning(
         jnp.array(potential, dtype=jnp.float32) if potential is not None else None
     )
 
-    def run_step(carry, _):
-        Q, key, s, done = carry
+    def run_step(carry, step_key):
+        Q, s, done = carry
 
-        key, eps_key, rand_key, env_key = jax.random.split(key, 4)
+        eps_key, rand_key, env_key = jax.random.split(step_key, 3)
 
         # ε-greedy action selection
         use_random = jax.random.uniform(eps_key) < epsilon
@@ -335,36 +337,30 @@ def run_q_learning(
 
         new_done = done | reached
         new_s    = jnp.where(done, s, s_prime)
-        return (Q, key, new_s, new_done), new_done
+        return (Q, new_s, new_done), new_done
 
-    def run_episode(carry, ep_key):
-        Q, key = carry
+    def run_episode(Q, ep_key):
+        ep_key, start_key = jax.random.split(ep_key)
+        s         = non_goal_jax[jax.random.randint(start_key, (), 0, len(non_goal_jax))]
+        step_keys = jax.random.split(ep_key, max_steps_per_episode)
 
-        # Random non-goal start state
-        s = non_goal_jax[jax.random.randint(ep_key, (), 0, len(non_goal_jax))]
-
-        (Q, key, _, _), done_flags = jax.lax.scan(
-            run_step,
-            (Q, key, s, jnp.array(False)),
-            None,
-            length=max_steps_per_episode,
+        (Q, _, _), done_flags = jax.lax.scan(
+            run_step, (Q, s, jnp.array(False)), step_keys,
         )
 
         # steps = index of first True + 1; max_steps_per_episode if never reached
         any_done = jnp.any(done_flags)
         steps    = jnp.where(any_done, jnp.argmax(done_flags) + 1, max_steps_per_episode)
-        return (Q, key), (steps, any_done)
+        return Q, (steps, any_done)
 
-    @jax.jit
     def run_all(key):
         Q       = jnp.zeros((num_states, num_actions), dtype=jnp.float32)
         ep_keys = jax.random.split(key, num_episodes)
-        (_, _), (steps_per_ep, reached) = jax.lax.scan(
-            run_episode, (Q, key), ep_keys,
-        )
+        _, (steps_per_ep, reached) = jax.lax.scan(run_episode, Q, ep_keys)
         return steps_per_ep, reached
 
-    steps_per_ep, reached = run_all(jax.random.PRNGKey(seed))
+    seed_keys                = jax.random.split(jax.random.PRNGKey(seed), num_seeds)
+    steps_per_ep, reached    = jax.jit(jax.vmap(run_all))(seed_keys)
     return np.array(steps_per_ep, dtype=np.int32), np.array(reached)
 
 
@@ -587,35 +583,34 @@ def main() -> None:
     }
 
     results = {}
+    win = min(200, args.num_episodes)
     for cond_name, cond_kwargs in conditions.items():
         print(f"\n{'='*60}")
         print(f"Q-learning: {cond_name}")
         print(f"{'='*60}")
-        all_steps, all_reached = [], []
+
+        steps, reached = run_q_learning(
+            env                  = env,
+            canonical_states     = canonical_states,
+            goal_idx             = goal_idx,
+            num_episodes         = args.num_episodes,
+            num_seeds            = args.num_seeds,
+            max_steps_per_episode= args.max_steps,
+            gamma                = args.gamma_rl,
+            lr                   = args.lr,
+            epsilon              = args.epsilon,
+            seed                 = 0,
+            **cond_kwargs,
+        )  # steps, reached: [num_seeds, num_episodes]
 
         for seed_i in range(args.num_seeds):
-            steps, reached = run_q_learning(
-                env                  = env,
-                canonical_states     = canonical_states,
-                goal_idx             = goal_idx,
-                num_episodes         = args.num_episodes,
-                max_steps_per_episode= args.max_steps,
-                gamma                = args.gamma_rl,
-                lr                   = args.lr,
-                epsilon              = args.epsilon,
-                seed                 = seed_i,
-                **cond_kwargs,
-            )
-            all_steps.append(steps)
-            all_reached.append(reached)
-            win = min(200, args.num_episodes)
-            final_sr = reached[-win:].mean()
+            final_sr = reached[seed_i, -win:].mean()
             print(f"  seed {seed_i}:  final success rate = {final_sr:.2f}"
                   f"  (last {win} episodes)")
 
         results[cond_name] = dict(
-            steps   = np.stack(all_steps),    # [num_seeds, num_episodes]
-            reached = np.stack(all_reached),
+            steps   = steps,    # [num_seeds, num_episodes]
+            reached = reached,
         )
 
     # ------------------------------------------------------------------
