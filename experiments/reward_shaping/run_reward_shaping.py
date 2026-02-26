@@ -512,6 +512,10 @@ def main() -> None:
         help="ε-greedy exploration rate (default: 0.1).",
     )
     parser.add_argument(
+        "--log_interval", type=int, default=500,
+        help="Print progress every this many episodes (default: 500).",
+    )
+    parser.add_argument(
         "--use_gt", action="store_true",
         help="Use ground-truth eigenvectors instead of the learned ones.",
     )
@@ -635,6 +639,7 @@ def main() -> None:
             lr                   = args.lr,
             epsilon              = args.epsilon,
             seed                 = 0,
+            log_interval         = args.log_interval,
             **cond_kwargs,
         )  # steps, reached: [num_seeds, num_episodes]
 
