@@ -308,7 +308,7 @@ def run_q_learning(
                 steps=jnp.array(0, dtype=env.dtype),
             )
             jax_key, step_key = jax.random.split(jax_key)
-            next_env_state = env.step(step_key, env_state, a)
+            next_env_state, _, _, _ = env.step(step_key, env_state, a)
 
             next_full = int(env.get_state_representation(next_env_state))
             s_prime   = full_to_canonical.get(next_full, s)
