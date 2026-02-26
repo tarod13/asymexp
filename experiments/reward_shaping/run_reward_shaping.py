@@ -257,6 +257,7 @@ def run_q_learning(
     lr: float = 0.1,
     epsilon: float = 0.1,
     seed: int = 0,
+    log_interval: int = 500,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Run tabular ε-greedy Q-learning on a goal-reaching task using the real env.
@@ -349,26 +350,53 @@ def run_q_learning(
         )
         return (Q, new_s, new_done, next_step_in_ep), new_done
 
-    def run_all(key):
-        Q         = jnp.zeros((num_states, num_actions), dtype=jnp.float32)
-        step_keys = jax.random.split(key, num_episodes * max_steps_per_episode)
+    # ------------------------------------------------------------------
+    # Chunked execution: each chunk is one JIT call so Python can print
+    # progress between chunks.  carry is threaded across chunks so the
+    # Q-table is continuous across the chunk boundary.
+    # ------------------------------------------------------------------
+    num_chunks  = max(1, num_episodes // log_interval)
+    chunk_ep    = num_episodes // num_chunks          # episodes per chunk
+    chunk_steps = chunk_ep * max_steps_per_episode
 
-        _, done_flags = jax.lax.scan(
-            run_step,
-            (Q, jnp.zeros((), jnp.int32), jnp.array(False), jnp.zeros((), jnp.int32)),
-            step_keys,
-        )  # done_flags: (num_episodes * max_steps_per_episode,)
-
-        done_flags   = done_flags.reshape(num_episodes, max_steps_per_episode)
+    def run_chunk(carry, chunk_key):
+        step_keys = jax.random.split(chunk_key, chunk_steps)
+        new_carry, done_flags = jax.lax.scan(run_step, carry, step_keys)
+        done_flags   = done_flags.reshape(chunk_ep, max_steps_per_episode)
         any_done     = jnp.any(done_flags, axis=1)
         steps_per_ep = jnp.where(
             any_done, jnp.argmax(done_flags, axis=1) + 1, max_steps_per_episode
         )
-        return steps_per_ep, any_done
+        return new_carry, (steps_per_ep, any_done)
 
-    seed_keys                = jax.random.split(jax.random.PRNGKey(seed), num_seeds)
-    steps_per_ep, reached    = jax.jit(jax.vmap(run_all))(seed_keys)
-    return np.array(steps_per_ep, dtype=np.int32), np.array(reached)
+    vmapped_chunk = jax.jit(jax.vmap(run_chunk))
+
+    seed_keys       = jax.random.split(jax.random.PRNGKey(seed), num_seeds)
+    # (num_seeds, num_chunks, 2): independent key per seed per chunk
+    seed_chunk_keys = jax.vmap(lambda k: jax.random.split(k, num_chunks))(seed_keys)
+
+    carry = (
+        jnp.zeros((num_seeds, num_states, num_actions), jnp.float32),  # Q
+        jnp.zeros((num_seeds,), jnp.int32),                             # s
+        jnp.zeros((num_seeds,), jnp.bool_),                             # done
+        jnp.zeros((num_seeds,), jnp.int32),                             # step_in_ep
+    )
+
+    all_steps, all_reached = [], []
+    ep_width = len(str(num_episodes))
+    for chunk_i in range(num_chunks):
+        carry, (steps, reached) = vmapped_chunk(carry, seed_chunk_keys[:, chunk_i])
+        reached_np = np.array(reached)          # materialises result, blocks until ready
+        all_steps.append(np.array(steps, dtype=np.int32))
+        all_reached.append(reached_np)
+        ep_end = (chunk_i + 1) * chunk_ep
+        print(f"    ep {ep_end:{ep_width}d}/{num_episodes}:"
+              f"  mean success rate = {reached_np.mean():.2f}")
+
+    return (
+        np.concatenate(all_steps,   axis=1),    # (num_seeds, num_episodes)
+        np.concatenate(all_reached, axis=1),
+    )
 
 
 # ===========================================================================
