@@ -259,6 +259,8 @@ def run_q_learning(
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Run tabular ε-greedy Q-learning on a goal-reaching task using the real env.
+    JIT-compiled: both the episode loop and the step loop are jax.lax.scan calls,
+    so no Python overhead per step and no Python control flow inside the hot path.
 
     Task
     ----
@@ -275,65 +277,95 @@ def run_q_learning(
     steps_per_episode : [num_episodes] int   – steps taken (max_steps if failed)
     reached_goal      : [num_episodes] bool  – whether the goal was reached
     """
-    rng = np.random.default_rng(seed)
     num_states  = len(canonical_states)
     num_actions = 4
-    Q = np.zeros((num_states, num_actions), dtype=np.float32)
 
-    full_to_canonical = {int(s): i for i, s in enumerate(canonical_states)}
-    non_goal     = np.array([s for s in range(num_states) if s != goal_idx])
-    steps_per_ep = np.zeros(num_episodes, dtype=np.int32)
-    reached      = np.zeros(num_episodes, dtype=bool)
+    # Inverse mapping: full grid index -> canonical index (-1 for non-canonical states)
+    full_to_can = np.full(env.width * env.height, -1, dtype=np.int32)
+    for i, s in enumerate(canonical_states):
+        full_to_can[int(s)] = i
+    full_to_can_jax      = jnp.array(full_to_can,      dtype=jnp.int32)
+    canonical_states_jax = jnp.array(canonical_states, dtype=jnp.int32)
+    non_goal_jax         = jnp.array(
+        [s for s in range(num_states) if s != goal_idx], dtype=jnp.int32
+    )
+    potential_jax = (
+        jnp.array(potential, dtype=jnp.float32) if potential is not None else None
+    )
 
-    jax_key = jax.random.PRNGKey(seed)
+    def run_step(carry, _):
+        Q, key, s, done = carry
 
-    for ep in range(num_episodes):
-        s = int(rng.choice(non_goal))
+        key, eps_key, rand_key, env_key = jax.random.split(key, 4)
 
-        for step in range(max_steps_per_episode):
-            # ε-greedy action selection
-            if rng.random() < epsilon:
-                a = int(rng.integers(0, num_actions))
-            else:
-                a = int(np.argmax(Q[s]))
+        # ε-greedy action selection
+        use_random = jax.random.uniform(eps_key) < epsilon
+        greedy_a   = jnp.argmax(Q[s])
+        random_a   = jax.random.randint(rand_key, (), 0, num_actions)
+        a          = jnp.where(use_random, random_a, greedy_a)
 
-            # Step through the real environment
-            full_idx = int(canonical_states[s])
-            env_state = GridWorldState(
-                position=jnp.array(
-                    [full_idx % env.width, full_idx // env.width],
-                    dtype=env.dtype,
-                ),
-                terminal=jnp.array(False),
-                steps=jnp.array(0, dtype=env.dtype),
-            )
-            jax_key, step_key = jax.random.split(jax_key)
-            next_env_state, _, _, _ = env.step(step_key, env_state, a)
+        # Step through the real environment
+        full_idx  = canonical_states_jax[s]
+        env_state = GridWorldState(
+            position=jnp.stack(
+                [full_idx % env.width, full_idx // env.width]
+            ).astype(env.dtype),
+            terminal=jnp.array(False),
+            steps=jnp.array(0, dtype=env.dtype),
+        )
+        next_env_state, _, _, _ = env.step(env_key, env_state, a)
 
-            next_full = int(env.get_state_representation(next_env_state))
-            s_prime   = full_to_canonical.get(next_full, s)
-            done      = (s_prime == goal_idx)
-            r         = 1.0 if done else 0.0
+        next_full = env.get_state_representation(next_env_state)
+        can_idx   = full_to_can_jax[next_full]
+        s_prime   = jnp.where(can_idx >= 0, can_idx, s)
 
-            # Potential-based shaping bonus
-            if potential is not None and shaping_coef != 0.0:
-                bonus    = gamma * float(potential[s_prime]) - float(potential[s])
-                r_shaped = r + shaping_coef * bonus
-            else:
-                r_shaped = r
+        reached = s_prime == goal_idx
+        r       = jnp.where(reached, 1.0, 0.0)
+        if potential_jax is not None:
+            r = r + shaping_coef * (gamma * potential_jax[s_prime] - potential_jax[s])
 
-            # Q-learning update
-            target = r_shaped if done else r_shaped + gamma * float(Q[s_prime].max())
-            Q[s, a] += lr * (target - Q[s, a])
+        # Q-learning update — skipped if episode was already done
+        target = jnp.where(reached, r, r + gamma * Q[s_prime].max())
+        Q = jax.lax.cond(
+            done,
+            lambda Q: Q,
+            lambda Q: Q.at[s, a].add(lr * (target - Q[s, a])),
+            Q,
+        )
 
-            s = s_prime
-            if done:
-                break
+        new_done = done | reached
+        new_s    = jnp.where(done, s, s_prime)
+        return (Q, key, new_s, new_done), new_done
 
-        steps_per_ep[ep] = step + 1
-        reached[ep]      = done
+    def run_episode(carry, ep_key):
+        Q, key = carry
 
-    return steps_per_ep, reached
+        # Random non-goal start state
+        s = non_goal_jax[jax.random.randint(ep_key, (), 0, len(non_goal_jax))]
+
+        (Q, key, _, _), done_flags = jax.lax.scan(
+            run_step,
+            (Q, key, s, jnp.array(False)),
+            None,
+            length=max_steps_per_episode,
+        )
+
+        # steps = index of first True + 1; max_steps_per_episode if never reached
+        any_done = jnp.any(done_flags)
+        steps    = jnp.where(any_done, jnp.argmax(done_flags) + 1, max_steps_per_episode)
+        return (Q, key), (steps, any_done)
+
+    @jax.jit
+    def run_all(key):
+        Q       = jnp.zeros((num_states, num_actions), dtype=jnp.float32)
+        ep_keys = jax.random.split(key, num_episodes)
+        (_, _), (steps_per_ep, reached) = jax.lax.scan(
+            run_episode, (Q, key), ep_keys,
+        )
+        return steps_per_ep, reached
+
+    steps_per_ep, reached = run_all(jax.random.PRNGKey(seed))
+    return np.array(steps_per_ep, dtype=np.int32), np.array(reached)
 
 
 # ===========================================================================
