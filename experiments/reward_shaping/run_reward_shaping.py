@@ -45,6 +45,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -56,6 +58,7 @@ import matplotlib.pyplot as plt
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from src.envs.gridworld import GridWorldState
 from src.utils.envs import create_gridworld_env
 from src.utils.metrics import compute_hitting_times_from_eigenvectors
 
@@ -242,7 +245,8 @@ def build_potential(hitting_times: np.ndarray, goal_idx: int) -> np.ndarray:
 # ===========================================================================
 
 def run_q_learning(
-    next_state: np.ndarray,
+    env,
+    canonical_states: np.ndarray,
     goal_idx: int,
     num_episodes: int,
     max_steps_per_episode: int = 500,
@@ -254,7 +258,7 @@ def run_q_learning(
     seed: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Run tabular ε-greedy Q-learning on a goal-reaching task.
+    Run tabular ε-greedy Q-learning on a goal-reaching task using the real env.
 
     Task
     ----
@@ -272,12 +276,16 @@ def run_q_learning(
     reached_goal      : [num_episodes] bool  – whether the goal was reached
     """
     rng = np.random.default_rng(seed)
-    num_states, num_actions = next_state.shape
+    num_states  = len(canonical_states)
+    num_actions = 4
     Q = np.zeros((num_states, num_actions), dtype=np.float32)
 
-    non_goal = np.array([s for s in range(num_states) if s != goal_idx])
+    full_to_canonical = {int(s): i for i, s in enumerate(canonical_states)}
+    non_goal     = np.array([s for s in range(num_states) if s != goal_idx])
     steps_per_ep = np.zeros(num_episodes, dtype=np.int32)
     reached      = np.zeros(num_episodes, dtype=bool)
+
+    jax_key = jax.random.PRNGKey(seed)
 
     for ep in range(num_episodes):
         s = int(rng.choice(non_goal))
@@ -289,9 +297,23 @@ def run_q_learning(
             else:
                 a = int(np.argmax(Q[s]))
 
-            s_prime = int(next_state[s, a])
-            done    = (s_prime == goal_idx)
-            r       = 1.0 if done else 0.0
+            # Step through the real environment
+            full_idx = int(canonical_states[s])
+            env_state = GridWorldState(
+                position=jnp.array(
+                    [full_idx % env.width, full_idx // env.width],
+                    dtype=env.dtype,
+                ),
+                terminal=jnp.array(False),
+                steps=jnp.array(0, dtype=env.dtype),
+            )
+            jax_key, step_key = jax.random.split(jax_key)
+            next_env_state = env.step(step_key, env_state, a)
+
+            next_full = int(env.get_state_representation(next_env_state))
+            s_prime   = full_to_canonical.get(next_full, s)
+            done      = (s_prime == goal_idx)
+            r         = 1.0 if done else 0.0
 
             # Potential-based shaping bonus
             if potential is not None and shaping_coef != 0.0:
@@ -458,10 +480,10 @@ def main() -> None:
     print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
 
     # ------------------------------------------------------------------
-    # 2. Build environment and transition table
+    # 2. Build environment
     # ------------------------------------------------------------------
     print(f"\n{'='*60}")
-    print("Building environment and transition table ...")
+    print("Building environment ...")
     print(f"{'='*60}")
 
     # Reconstruct the environment from the saved training args.
@@ -470,9 +492,6 @@ def main() -> None:
     ta = SimpleNamespace(**training_args)
     ta.env_file = None
     env = create_gridworld_env(ta)
-
-    next_state_table = build_transition_table(env, canonical_states)
-    print(f"  Transition table   : {next_state_table.shape}  (states × actions)")
 
     # ------------------------------------------------------------------
     # 3. Compute hitting times
@@ -544,7 +563,8 @@ def main() -> None:
 
         for seed_i in range(args.num_seeds):
             steps, reached = run_q_learning(
-                next_state           = next_state_table,
+                env                  = env,
+                canonical_states     = canonical_states,
                 goal_idx             = goal_idx,
                 num_episodes         = args.num_episodes,
                 max_steps_per_episode= args.max_steps,
