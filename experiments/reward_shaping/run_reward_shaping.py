@@ -296,9 +296,14 @@ def run_q_learning(
     )
 
     def run_step(carry, step_key):
-        Q, s, done = carry
+        Q, s, done, step_in_ep = carry
 
-        eps_key, rand_key, env_key = jax.random.split(step_key, 3)
+        # Episode reset at step 0 of each episode
+        reset_key, eps_key, rand_key, env_key = jax.random.split(step_key, 4)
+        at_reset  = step_in_ep == 0
+        new_start = non_goal_jax[jax.random.randint(reset_key, (), 0, len(non_goal_jax))]
+        s    = jnp.where(at_reset, new_start, s)
+        done = jnp.where(at_reset, jnp.array(False), done)
 
         # ε-greedy action selection
         use_random = jax.random.uniform(eps_key) < epsilon
@@ -335,29 +340,31 @@ def run_q_learning(
             Q,
         )
 
-        new_done = done | reached
-        new_s    = jnp.where(done, s, s_prime)
-        return (Q, new_s, new_done), new_done
-
-    def run_episode(Q, ep_key):
-        ep_key, start_key = jax.random.split(ep_key)
-        s         = non_goal_jax[jax.random.randint(start_key, (), 0, len(non_goal_jax))]
-        step_keys = jax.random.split(ep_key, max_steps_per_episode)
-
-        (Q, _, _), done_flags = jax.lax.scan(
-            run_step, (Q, s, jnp.array(False)), step_keys,
+        new_done        = done | reached
+        new_s           = jnp.where(done, s, s_prime)
+        next_step_in_ep = jnp.where(
+            step_in_ep == max_steps_per_episode - 1,
+            jnp.zeros((), jnp.int32),
+            step_in_ep + 1,
         )
-
-        # steps = index of first True + 1; max_steps_per_episode if never reached
-        any_done = jnp.any(done_flags)
-        steps    = jnp.where(any_done, jnp.argmax(done_flags) + 1, max_steps_per_episode)
-        return Q, (steps, any_done)
+        return (Q, new_s, new_done, next_step_in_ep), new_done
 
     def run_all(key):
-        Q       = jnp.zeros((num_states, num_actions), dtype=jnp.float32)
-        ep_keys = jax.random.split(key, num_episodes)
-        _, (steps_per_ep, reached) = jax.lax.scan(run_episode, Q, ep_keys)
-        return steps_per_ep, reached
+        Q         = jnp.zeros((num_states, num_actions), dtype=jnp.float32)
+        step_keys = jax.random.split(key, num_episodes * max_steps_per_episode)
+
+        _, done_flags = jax.lax.scan(
+            run_step,
+            (Q, jnp.zeros((), jnp.int32), jnp.array(False), jnp.zeros((), jnp.int32)),
+            step_keys,
+        )  # done_flags: (num_episodes * max_steps_per_episode,)
+
+        done_flags   = done_flags.reshape(num_episodes, max_steps_per_episode)
+        any_done     = jnp.any(done_flags, axis=1)
+        steps_per_ep = jnp.where(
+            any_done, jnp.argmax(done_flags, axis=1) + 1, max_steps_per_episode
+        )
+        return steps_per_ep, any_done
 
     seed_keys                = jax.random.split(jax.random.PRNGKey(seed), num_seeds)
     steps_per_ep, reached    = jax.jit(jax.vmap(run_all))(seed_keys)
