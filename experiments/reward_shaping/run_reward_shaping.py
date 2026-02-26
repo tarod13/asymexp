@@ -392,14 +392,16 @@ def run_q_learning(
         all_steps.append(np.array(steps, dtype=np.int32))
         all_reached.append(reached_np)
         ep_end   = (chunk_i + 1) * chunk_ep
-        elapsed  = time.monotonic() - t0
-        eta      = elapsed / (chunk_i + 1) * (num_chunks - chunk_i - 1)
+        elapsed   = time.monotonic() - t0
+        avg_chunk = elapsed / (chunk_i + 1)
+        eta       = avg_chunk * (num_chunks - chunk_i - 1)
         def _fmt(s):
             m, s = divmod(int(s), 60)
             return f"{m}m{s:02d}s" if m else f"{s}s"
         print(f"    ep {ep_end:{ep_width}d}/{num_episodes}:"
               f"  sr = {reached_np.mean():.2f}"
-              f"  elapsed {_fmt(elapsed)}  eta {_fmt(eta)}")
+              f"  elapsed {_fmt(elapsed)}  eta {_fmt(eta)}"
+              f"  ({avg_chunk:.1f}s/chunk)")
 
     return (
         np.concatenate(all_steps,   axis=1),    # (num_seeds, num_episodes)
