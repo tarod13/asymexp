@@ -487,7 +487,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--model_dir", required=True,
-        help="Results directory produced by train_lap_rep.py.",
+        help="Results directory for the complex representation (train_lap_rep.py).",
+    )
+    parser.add_argument(
+        "--allo_model_dir", default=None,
+        help="Results directory for the ALLO representation (train_allo_rep.py). "
+             "When provided a third condition 'shaped (allo)' is added.",
     )
     parser.add_argument(
         "--goal_state", type=int, default=None,
@@ -540,10 +545,10 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
-    # 1. Load pre-trained Laplacian model
+    # 1. Load pre-trained Laplacian model (complex representation)
     # ------------------------------------------------------------------
     print(f"\n{'='*60}")
-    print(f"Loading Laplacian model from: {model_dir}")
+    print(f"Loading complex representation model from: {model_dir}")
     print(f"{'='*60}")
     model_data     = load_model(model_dir, use_gt=args.use_gt)
     training_args  = model_data["training_args"]
@@ -555,6 +560,20 @@ def main() -> None:
     print(f"  Eigenvalue type    : {evtype}")
     print(f"  Canonical states   : {num_canonical}")
     print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
+
+    # Optionally load ALLO representation model
+    allo_model_data = None
+    if args.allo_model_dir is not None:
+        allo_model_dir = Path(args.allo_model_dir)
+        print(f"\n{'='*60}")
+        print(f"Loading ALLO representation model from: {allo_model_dir}")
+        print(f"{'='*60}")
+        allo_model_data = load_model(allo_model_dir, use_gt=args.use_gt)
+        allo_evtype = allo_model_data["eigenvalue_type"]
+        print(f"  Eigenvector source : {'ground truth' if args.use_gt else 'learned (normalized)'}")
+        print(f"  Eigenvalue type    : {allo_evtype}")
+        print(f"  Canonical states   : {len(allo_model_data['canonical_states'])}")
+        print(f"  Eigenvectors (K)   : {allo_model_data['eigenvalues_real'].shape[0]}")
 
     # ------------------------------------------------------------------
     # 2. Build environment
@@ -571,10 +590,10 @@ def main() -> None:
     env = create_gridworld_env(ta)
 
     # ------------------------------------------------------------------
-    # 3. Compute hitting times
+    # 3. Compute hitting times (complex representation)
     # ------------------------------------------------------------------
     print(f"\n{'='*60}")
-    print("Computing hitting times ...")
+    print("Computing hitting times (complex representation) ...")
     print(f"{'='*60}")
 
     hitting_times = np.array(
@@ -600,6 +619,36 @@ def main() -> None:
 
     np.save(output_dir / "hitting_times.npy", hitting_times)
 
+    # Compute hitting times for ALLO representation if provided
+    allo_hitting_times = None
+    if allo_model_data is not None:
+        print(f"\n{'='*60}")
+        print("Computing hitting times (ALLO representation) ...")
+        print(f"{'='*60}")
+        allo_ta = SimpleNamespace(**allo_model_data["training_args"])
+        allo_hitting_times = np.array(
+            compute_hitting_times_from_eigenvectors(
+                left_real        = allo_model_data["left_real"],
+                left_imag        = allo_model_data["left_imag"],
+                right_real       = allo_model_data["right_real"],
+                right_imag       = allo_model_data["right_imag"],
+                eigenvalues_real = allo_model_data["eigenvalues_real"],
+                eigenvalues_imag = allo_model_data["eigenvalues_imag"],
+                gamma            = allo_model_data["training_args"].get("gamma", 0.95),
+                delta            = allo_model_data["training_args"].get("delta", 0.1),
+                eigenvalue_type  = allo_model_data["eigenvalue_type"],
+            )
+        )
+        allo_finite = allo_hitting_times[
+            np.isfinite(allo_hitting_times) & (allo_hitting_times >= 0)
+        ]
+        print(f"  Shape              : {allo_hitting_times.shape}")
+        print(f"  Finite values      : {len(allo_finite)} / {allo_hitting_times.size}"
+              f"  ({len(allo_finite)/allo_hitting_times.size:.1%})")
+        if len(allo_finite) > 0:
+            print(f"  Range              : [{allo_finite.min():.2f}, {allo_finite.max():.2f}]")
+        np.save(output_dir / "hitting_times_allo.npy", allo_hitting_times)
+
     # ------------------------------------------------------------------
     # 4. Select goal state
     # ------------------------------------------------------------------
@@ -619,17 +668,25 @@ def main() -> None:
           f" → grid ({goal_x}, {goal_y})")
 
     potential = build_potential(hitting_times, goal_idx)
+    allo_potential = (
+        build_potential(allo_hitting_times, goal_idx)
+        if allo_hitting_times is not None else None
+    )
 
     # ------------------------------------------------------------------
-    # 5. Run Q-learning: baseline vs shaped
+    # 5. Run Q-learning: baseline vs shaped (complex) [vs shaped (allo)]
     # ------------------------------------------------------------------
     evtype_label = "GT" if args.use_gt else "learned"
     conditions = {
         "baseline":
             dict(potential=None,      shaping_coef=0.0),
-        f"shaped β={args.shaping_coef} ({evtype_label})":
+        f"shaped β={args.shaping_coef} (complex)":
             dict(potential=potential, shaping_coef=args.shaping_coef),
     }
+    if allo_potential is not None:
+        conditions[f"shaped β={args.shaping_coef} (allo)"] = dict(
+            potential=allo_potential, shaping_coef=args.shaping_coef
+        )
 
     results = {}
     win = min(200, args.num_episodes)
@@ -673,10 +730,11 @@ def main() -> None:
     with open(output_dir / "results.pkl", "wb") as f:
         pickle.dump(
             dict(
-                results   = results,
-                args      = vars(args),
-                goal_idx  = goal_idx,
-                goal_pos  = (goal_x, goal_y),
+                results        = results,
+                args           = vars(args),
+                goal_idx       = goal_idx,
+                goal_pos       = (goal_x, goal_y),
+                has_allo_model = allo_model_data is not None,
             ),
             f,
         )
