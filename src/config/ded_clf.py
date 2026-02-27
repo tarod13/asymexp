@@ -62,6 +62,18 @@ class Args:
     # Resuming training
     resume_from: str | None = None  # Path to results directory to resume from (e.g., './results/room4/room4__allo__0__42__1234567890')
 
+    # ALLO-specific (augmented Lagrangian; only used by allo_learner)
+    duals_initial_val: float = -2.0       # Initial value for dual variables
+    barrier_initial_val: float = 0.5      # Initial barrier coefficient
+    max_barrier_coefs: float = 0.5        # Maximum barrier coefficient value
+    step_size_duals: float = 1.0          # SGD step size for dual variables
+    step_size_duals_I: float = 0.0        # Integral term step size for duals
+    integral_decay: float = 0.99          # EMA decay for constraint-error integral
+    init_dual_diag: bool = False          # Use lower-triangular dual initialisation
+    graph_epsilon: float = 0.01           # Graph perturbation strength
+    graph_variance_scale: float = 0.1     # Variance scale for graph perturbation
+    perturbation_type: str = 'none'       # 'none', 'exponential', 'squared', 'squared-null-grad'
+
     # Misc
     seed: int = 42
     exp_name: str | None = None

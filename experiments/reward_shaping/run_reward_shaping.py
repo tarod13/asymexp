@@ -569,11 +569,19 @@ def main() -> None:
         print(f"Loading ALLO representation model from: {allo_model_dir}")
         print(f"{'='*60}")
         allo_model_data = load_model(allo_model_dir, use_gt=args.use_gt)
+        # ALLO learns a single real representation φ_k (symmetric Laplacian).
+        # φ_k serves as both left and right eigenvectors; imag parts are zero.
+        allo_model_data["left_real"]  = allo_model_data["right_real"]
+        allo_model_data["left_imag"]  = np.zeros_like(allo_model_data["right_real"])
+        allo_model_data["right_imag"] = np.zeros_like(allo_model_data["right_real"])
+        allo_model_data["eigenvalues_imag"] = np.zeros_like(
+            allo_model_data["eigenvalues_real"])
         allo_evtype = allo_model_data["eigenvalue_type"]
         print(f"  Eigenvector source : {'ground truth' if args.use_gt else 'learned (normalized)'}")
         print(f"  Eigenvalue type    : {allo_evtype}")
         print(f"  Canonical states   : {len(allo_model_data['canonical_states'])}")
         print(f"  Eigenvectors (K)   : {allo_model_data['eigenvalues_real'].shape[0]}")
+        print(f"  (left = right = right_real, imag = 0 for symmetric Laplacian)")
 
     # ------------------------------------------------------------------
     # 2. Build environment

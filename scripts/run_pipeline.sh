@@ -127,17 +127,15 @@ else
         --num_gradient_steps    "$STEPS" \
         --batch_size            256 \
         --num_eigenvector_pairs 8 \
-        --learning_rate         0.00001 \
-        --ema_learning_rate     0.0003 \
-        --lambda_x              10.0 \
-        --chirality_factor      0.1 \
+        --learning_rate         0.0003 \
         --gamma                 0.9 \
-        --no-use_rejection_sampling \
-        --constraint_mode       same_episodes \
-        --use_residual \
-        --use_layernorm \
+        --use_rejection_sampling \
         --num_envs              1000 \
         --num_steps             1000 \
+        --step_size_duals       1.0 \
+        --duals_initial_val     -2.0 \
+        --barrier_initial_val   0.5 \
+        --max_barrier_coefs     0.5 \
         --seed                  "$SEED" \
         --results_dir           "$RESULTS_DIR" \
         --exp_name              allo
