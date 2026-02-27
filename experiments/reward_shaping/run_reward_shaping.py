@@ -42,9 +42,12 @@ import argparse
 import json
 import pickle
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -56,6 +59,7 @@ import matplotlib.pyplot as plt
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from src.envs.gridworld import GridWorldState
 from src.utils.envs import create_gridworld_env
 from src.utils.metrics import compute_hitting_times_from_eigenvectors
 
@@ -150,10 +154,23 @@ def build_transition_table(
     action_effects = [(0, -1), (1, 0), (0, 1), (-1, 0)]
 
     # Blocked transitions (doors)
+    # env.asymmetric_transitions stores (dest_state, reverse_action) -> prob.
+    # Reconstruct (source_state, forward_action) pairs for the blocked set.
     blocked: set[tuple[int, int]] = set()
     if env.has_doors:
-        for state_full, action in env.blocked_transitions:
-            blocked.add((int(state_full), int(action)))
+        action_reverse = {0: 2, 1: 3, 2: 0, 3: 1}
+        action_delta   = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
+        for (dest_full, rev_action) in env.asymmetric_transitions:
+            dest_full    = int(dest_full)
+            rev_action   = int(rev_action)
+            fwd_action   = action_reverse[rev_action]
+            dx, dy       = action_delta[rev_action]
+            dest_y, dest_x = divmod(dest_full, env.width)
+            source_x = dest_x + dx
+            source_y = dest_y + dy
+            if 0 <= source_x < env.width and 0 <= source_y < env.height:
+                source_full = source_y * env.width + source_x
+                blocked.add((source_full, fwd_action))
 
     # Portal overrides: (source_full, action) -> dest_full
     portals: dict[tuple[int, int], int] = {}
@@ -229,9 +246,11 @@ def build_potential(hitting_times: np.ndarray, goal_idx: int) -> np.ndarray:
 # ===========================================================================
 
 def run_q_learning(
-    next_state: np.ndarray,
+    env,
+    canonical_states: np.ndarray,
     goal_idx: int,
     num_episodes: int,
+    num_seeds: int = 1,
     max_steps_per_episode: int = 500,
     potential: np.ndarray | None = None,
     shaping_coef: float = 0.0,
@@ -239,9 +258,13 @@ def run_q_learning(
     lr: float = 0.1,
     epsilon: float = 0.1,
     seed: int = 0,
+    log_interval: int = 500,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Run tabular ε-greedy Q-learning on a goal-reaching task.
+    Run tabular ε-greedy Q-learning on a goal-reaching task using the real env.
+
+    All seeds are run in parallel via jax.vmap; the episode and step loops
+    within each seed are jax.lax.scan calls (JIT-compiled, no Python overhead).
 
     Task
     ----
@@ -255,50 +278,135 @@ def run_q_learning(
 
     Returns
     -------
-    steps_per_episode : [num_episodes] int   – steps taken (max_steps if failed)
-    reached_goal      : [num_episodes] bool  – whether the goal was reached
+    steps_per_episode : [num_seeds, num_episodes] int
+    reached_goal      : [num_seeds, num_episodes] bool
     """
-    rng = np.random.default_rng(seed)
-    num_states, num_actions = next_state.shape
-    Q = np.zeros((num_states, num_actions), dtype=np.float32)
+    num_states  = len(canonical_states)
+    num_actions = 4
 
-    non_goal = np.array([s for s in range(num_states) if s != goal_idx])
-    steps_per_ep = np.zeros(num_episodes, dtype=np.int32)
-    reached      = np.zeros(num_episodes, dtype=bool)
+    # Inverse mapping: full grid index -> canonical index (-1 for non-canonical states)
+    full_to_can = np.full(env.width * env.height, -1, dtype=np.int32)
+    for i, s in enumerate(canonical_states):
+        full_to_can[int(s)] = i
+    full_to_can_jax      = jnp.array(full_to_can,      dtype=jnp.int32)
+    canonical_states_jax = jnp.array(canonical_states, dtype=jnp.int32)
+    non_goal_jax         = jnp.array(
+        [s for s in range(num_states) if s != goal_idx], dtype=jnp.int32
+    )
+    potential_jax = (
+        jnp.array(potential, dtype=jnp.float32) if potential is not None else None
+    )
 
-    for ep in range(num_episodes):
-        s = int(rng.choice(non_goal))
+    def run_step(carry, step_key):
+        Q, s, done, step_in_ep = carry
 
-        for step in range(max_steps_per_episode):
-            # ε-greedy action selection
-            if rng.random() < epsilon:
-                a = int(rng.integers(0, num_actions))
-            else:
-                a = int(np.argmax(Q[s]))
+        # Episode reset at step 0 of each episode
+        reset_key, eps_key, rand_key, env_key = jax.random.split(step_key, 4)
+        at_reset  = step_in_ep == 0
+        new_start = non_goal_jax[jax.random.randint(reset_key, (), 0, len(non_goal_jax))]
+        s    = jnp.where(at_reset, new_start, s)
+        done = jnp.where(at_reset, jnp.array(False), done)
 
-            s_prime = int(next_state[s, a])
-            done    = (s_prime == goal_idx)
-            r       = 1.0 if done else 0.0
+        # ε-greedy action selection
+        use_random = jax.random.uniform(eps_key) < epsilon
+        greedy_a   = jnp.argmax(Q[s])
+        random_a   = jax.random.randint(rand_key, (), 0, num_actions)
+        a          = jnp.where(use_random, random_a, greedy_a)
 
-            # Potential-based shaping bonus
-            if potential is not None and shaping_coef != 0.0:
-                bonus    = gamma * float(potential[s_prime]) - float(potential[s])
-                r_shaped = r + shaping_coef * bonus
-            else:
-                r_shaped = r
+        # Step through the real environment
+        full_idx  = canonical_states_jax[s]
+        env_state = GridWorldState(
+            position=jnp.stack(
+                [full_idx % env.width, full_idx // env.width]
+            ).astype(env.dtype),
+            terminal=jnp.array(False),
+            steps=jnp.array(0, dtype=env.dtype),
+        )
+        next_env_state, _, _, _ = env.step(env_key, env_state, a)
 
-            # Q-learning update
-            target = r_shaped if done else r_shaped + gamma * float(Q[s_prime].max())
-            Q[s, a] += lr * (target - Q[s, a])
+        next_full = env.get_state_representation(next_env_state)
+        can_idx   = full_to_can_jax[next_full]
+        s_prime   = jnp.where(can_idx >= 0, can_idx, s)
 
-            s = s_prime
-            if done:
-                break
+        reached = s_prime == goal_idx
+        r       = jnp.where(reached, 1.0, 0.0)
+        if potential_jax is not None:
+            r = r + shaping_coef * (gamma * potential_jax[s_prime] - potential_jax[s])
 
-        steps_per_ep[ep] = step + 1
-        reached[ep]      = done
+        # Q-learning update — skipped if episode was already done
+        target = jnp.where(reached, r, r + gamma * Q[s_prime].max())
+        Q = jax.lax.cond(
+            done,
+            lambda Q: Q,
+            lambda Q: Q.at[s, a].add(lr * (target - Q[s, a])),
+            Q,
+        )
 
-    return steps_per_ep, reached
+        new_done        = done | reached
+        new_s           = jnp.where(done, s, s_prime)
+        next_step_in_ep = jnp.where(
+            step_in_ep == max_steps_per_episode - 1,
+            jnp.zeros((), jnp.int32),
+            step_in_ep + 1,
+        )
+        return (Q, new_s, new_done, next_step_in_ep), new_done
+
+    # ------------------------------------------------------------------
+    # Chunked execution: each chunk is one JIT call so Python can print
+    # progress between chunks.  carry is threaded across chunks so the
+    # Q-table is continuous across the chunk boundary.
+    # ------------------------------------------------------------------
+    num_chunks  = max(1, num_episodes // log_interval)
+    chunk_ep    = num_episodes // num_chunks          # episodes per chunk
+    chunk_steps = chunk_ep * max_steps_per_episode
+
+    def run_chunk(carry, chunk_key):
+        step_keys = jax.random.split(chunk_key, chunk_steps)
+        new_carry, done_flags = jax.lax.scan(run_step, carry, step_keys)
+        done_flags   = done_flags.reshape(chunk_ep, max_steps_per_episode)
+        any_done     = jnp.any(done_flags, axis=1)
+        steps_per_ep = jnp.where(
+            any_done, jnp.argmax(done_flags, axis=1) + 1, max_steps_per_episode
+        )
+        return new_carry, (steps_per_ep, any_done)
+
+    vmapped_chunk = jax.jit(jax.vmap(run_chunk))
+
+    seed_keys       = jax.random.split(jax.random.PRNGKey(seed), num_seeds)
+    # (num_seeds, num_chunks, 2): independent key per seed per chunk
+    seed_chunk_keys = jax.vmap(lambda k: jax.random.split(k, num_chunks))(seed_keys)
+
+    carry = (
+        jnp.zeros((num_seeds, num_states, num_actions), jnp.float32),  # Q
+        jnp.zeros((num_seeds,), jnp.int32),                             # s
+        jnp.zeros((num_seeds,), jnp.bool_),                             # done
+        jnp.zeros((num_seeds,), jnp.int32),                             # step_in_ep
+    )
+
+    all_steps, all_reached = [], []
+    ep_width = len(str(num_episodes))
+    t0 = time.monotonic()
+    for chunk_i in range(num_chunks):
+        carry, (steps, reached) = vmapped_chunk(carry, seed_chunk_keys[:, chunk_i])
+        reached_np = np.array(reached)          # materialises result, blocks until ready
+        all_steps.append(np.array(steps, dtype=np.int32))
+        all_reached.append(reached_np)
+        ep_end   = (chunk_i + 1) * chunk_ep
+        elapsed   = time.monotonic() - t0
+        avg_chunk = elapsed / (chunk_i + 1)
+        eta       = avg_chunk * (num_chunks - chunk_i - 1)
+        def _fmt(s):
+            m, s = divmod(int(s), 60)
+            return f"{m}m{s:02d}s" if m else f"{s}s"
+        print(f"    ep {ep_end:{ep_width}d}/{num_episodes}:"
+              f"  sr = {reached_np.mean():.2f}"
+              f"  elapsed {_fmt(elapsed)}  eta {_fmt(eta)}"
+              f"  ({avg_chunk:.1f}s/chunk)")
+
+    return (
+        np.concatenate(all_steps,   axis=1),    # (num_seeds, num_episodes)
+        np.concatenate(all_reached, axis=1),
+    )
 
 
 # ===========================================================================
@@ -414,6 +522,10 @@ def main() -> None:
         help="ε-greedy exploration rate (default: 0.1).",
     )
     parser.add_argument(
+        "--log_interval", type=int, default=500,
+        help="Print progress every this many episodes (default: 500).",
+    )
+    parser.add_argument(
         "--use_gt", action="store_true",
         help="Use ground-truth eigenvectors instead of the learned ones.",
     )
@@ -445,10 +557,10 @@ def main() -> None:
     print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
 
     # ------------------------------------------------------------------
-    # 2. Build environment and transition table
+    # 2. Build environment
     # ------------------------------------------------------------------
     print(f"\n{'='*60}")
-    print("Building environment and transition table ...")
+    print("Building environment ...")
     print(f"{'='*60}")
 
     # Reconstruct the environment from the saved training args.
@@ -457,9 +569,6 @@ def main() -> None:
     ta = SimpleNamespace(**training_args)
     ta.env_file = None
     env = create_gridworld_env(ta)
-
-    next_state_table = build_transition_table(env, canonical_states)
-    print(f"  Transition table   : {next_state_table.shape}  (states × actions)")
 
     # ------------------------------------------------------------------
     # 3. Compute hitting times
@@ -523,34 +632,35 @@ def main() -> None:
     }
 
     results = {}
+    win = min(200, args.num_episodes)
     for cond_name, cond_kwargs in conditions.items():
         print(f"\n{'='*60}")
         print(f"Q-learning: {cond_name}")
         print(f"{'='*60}")
-        all_steps, all_reached = [], []
+
+        steps, reached = run_q_learning(
+            env                  = env,
+            canonical_states     = canonical_states,
+            goal_idx             = goal_idx,
+            num_episodes         = args.num_episodes,
+            num_seeds            = args.num_seeds,
+            max_steps_per_episode= args.max_steps,
+            gamma                = args.gamma_rl,
+            lr                   = args.lr,
+            epsilon              = args.epsilon,
+            seed                 = 0,
+            log_interval         = args.log_interval,
+            **cond_kwargs,
+        )  # steps, reached: [num_seeds, num_episodes]
 
         for seed_i in range(args.num_seeds):
-            steps, reached = run_q_learning(
-                next_state           = next_state_table,
-                goal_idx             = goal_idx,
-                num_episodes         = args.num_episodes,
-                max_steps_per_episode= args.max_steps,
-                gamma                = args.gamma_rl,
-                lr                   = args.lr,
-                epsilon              = args.epsilon,
-                seed                 = seed_i,
-                **cond_kwargs,
-            )
-            all_steps.append(steps)
-            all_reached.append(reached)
-            win = min(200, args.num_episodes)
-            final_sr = reached[-win:].mean()
+            final_sr = reached[seed_i, -win:].mean()
             print(f"  seed {seed_i}:  final success rate = {final_sr:.2f}"
                   f"  (last {win} episodes)")
 
         results[cond_name] = dict(
-            steps   = np.stack(all_steps),    # [num_seeds, num_episodes]
-            reached = np.stack(all_reached),
+            steps   = steps,    # [num_seeds, num_episodes]
+            reached = reached,
         )
 
     # ------------------------------------------------------------------
