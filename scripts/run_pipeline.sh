@@ -1,10 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=pipeline
 #SBATCH --account=aip-machado
-#SBATCH --time=24:00:00
-#SBATCH --cpus-per-task=2
-#SBATCH --gres=gpu:1
-#SBATCH --mem=16G
+#SBATCH --time=23:00:00
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=8G
 #SBATCH --output=logs/pipeline_%j.out
 #SBATCH --error=logs/pipeline_%j.err
 
@@ -50,6 +49,8 @@ module load StdEnv/2023 gcc/14.3 python/3.11 cuda/12.9 mujoco/3.3.0
 source ~/ENV/bin/activate
 
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=$SLURM_CPUS_PER_TASK"
 
 # ── Default parameters ────────────────────────────────────────────────────────
 SEED=42
