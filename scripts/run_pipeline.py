@@ -66,7 +66,7 @@ def main() -> None:
     parser.add_argument("--results_dir",   type=str,   default="./results")
     parser.add_argument("--env_file_name", type=str,   default="GridRoom-4-Doors")
     parser.add_argument("--shaping_coef",  type=float, default=0.1)
-    parser.add_argument("--num_episodes",  type=int,   default=3000)
+    parser.add_argument("--num_episodes",  type=int,   default=30000)
     parser.add_argument("--num_seeds",     type=int,   default=5)
     parser.add_argument("--skip_allo",     action="store_true")
     parser.add_argument("--skip_complex",  action="store_true")
@@ -173,7 +173,7 @@ def main() -> None:
             "--chirality_factor",      "0.1",
             "--gamma",                 "0.9",
             "--no-use_rejection_sampling",
-            "--constraint_mode",       "same_episodes",
+            "--constraint_mode",       "single_batch",
             "--use_residual",
             "--use_layernorm",
             "--num_envs",              "1000",
