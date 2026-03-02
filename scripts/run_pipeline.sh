@@ -1,4 +1,14 @@
 #!/bin/bash
+#SBATCH --job-name=pipeline
+#SBATCH --account=aip-machado
+#SBATCH --time=24:00:00
+#SBATCH --cpus-per-task=2
+#SBATCH --gres=gpu:1
+#SBATCH --mem=16G
+#SBATCH --output=logs/pipeline_%j.out
+#SBATCH --error=logs/pipeline_%j.err
+
+# =============================================================================
 # Full training + reward-shaping pipeline.
 #
 # Steps
@@ -11,7 +21,8 @@
 #
 # Usage
 # -----
-#   bash scripts/run_pipeline.sh [options]
+#   sbatch scripts/run_pipeline.sh [options]     # on SLURM
+#   bash   scripts/run_pipeline.sh [options]     # local
 #
 # Options (all optional, with defaults shown):
 #   --seed           SEED        Random seed for both training runs  [42]
@@ -25,25 +36,20 @@
 #   --skip_complex               Skip complex training (reuse existing)
 #   --allo_dir       DIR         Pre-existing allo model dir (sets --skip_allo)
 #   --complex_dir    DIR         Pre-existing complex model dir (sets --skip_complex)
-#
-# Examples
-# --------
-#   # Full pipeline from scratch
-#   bash scripts/run_pipeline.sh
-#
-#   # Quick smoke-test with fewer gradient steps and episodes
-#   bash scripts/run_pipeline.sh --steps 5000 --num_episodes 500 --num_seeds 2
-#
-#   # Reuse pre-trained models, just re-run reward shaping
-#   bash scripts/run_pipeline.sh \
-#       --allo_dir    ./results/file/my_allo_run \
-#       --complex_dir ./results/file/my_complex_run
+# =============================================================================
 
-set -euo pipefail
+mkdir -p logs
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
+
+# ── Environment setup ─────────────────────────────────────────────────────────
+module --force purge
+module load StdEnv/2023 gcc/14.3 python/3.11 cuda/12.9 mujoco/3.3.0
+source ~/ENV/bin/activate
+
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 # ── Default parameters ────────────────────────────────────────────────────────
 SEED=42
@@ -76,29 +82,27 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-echo "============================================================"
-echo " Pipeline configuration"
-echo "============================================================"
-echo "  seed          : $SEED"
-echo "  steps         : $STEPS"
-echo "  results_dir   : $RESULTS_DIR"
-echo "  env           : $ENV_FILE_NAME"
-echo "  shaping_coef  : $SHAPING_COEF"
-echo "  num_episodes  : $NUM_EPISODES"
-echo "  num_seeds     : $NUM_SEEDS"
-echo "  skip_allo     : $SKIP_ALLO"
-echo "  skip_complex  : $SKIP_COMPLEX"
-[[ -n "$ALLO_DIR"    ]] && echo "  allo_dir      : $ALLO_DIR"
-[[ -n "$COMPLEX_DIR" ]] && echo "  complex_dir   : $COMPLEX_DIR"
-echo "============================================================"
+echo "========================================"
+echo "Pipeline configuration"
+echo "Job ID:        ${SLURM_JOB_ID:-local}"
+echo "Node:          ${SLURM_NODELIST:-local}"
+echo "seed:          $SEED"
+echo "steps:         $STEPS"
+echo "results_dir:   $RESULTS_DIR"
+echo "env:           $ENV_FILE_NAME"
+echo "shaping_coef:  $SHAPING_COEF"
+echo "num_episodes:  $NUM_EPISODES"
+echo "num_seeds:     $NUM_SEEDS"
+echo "skip_allo:     $SKIP_ALLO"
+echo "skip_complex:  $SKIP_COMPLEX"
+[[ -n "$ALLO_DIR"    ]] && echo "allo_dir:      $ALLO_DIR"
+[[ -n "$COMPLEX_DIR" ]] && echo "complex_dir:   $COMPLEX_DIR"
+echo "========================================"
 
 # ── Helper: find most recently modified subdirectory ─────────────────────────
 latest_dir() {
-    # Usage: latest_dir <base_dir> <exp_name_fragment>
     local base="$1"
     local fragment="$2"
-    # find directories whose name contains the fragment, sort by modification
-    # time (newest first), print the first one
     find "$base" -maxdepth 1 -type d -name "*${fragment}*" \
         | xargs -I{} stat --format="%Y %n" {} 2>/dev/null \
         | sort -rn \
@@ -107,9 +111,9 @@ latest_dir() {
 
 # ── Step 1: Train ALLO representation ────────────────────────────────────────
 echo ""
-echo "============================================================"
-echo " Step 1: ALLO representation training"
-echo "============================================================"
+echo "========================================"
+echo "Step 1: ALLO representation training"
+echo "========================================"
 
 if $SKIP_ALLO; then
     if [[ -z "$ALLO_DIR" ]]; then
@@ -119,7 +123,7 @@ if $SKIP_ALLO; then
             exit 1
         fi
     fi
-    echo "  Skipping training.  Using: $ALLO_DIR"
+    echo "Skipping training.  Using: $ALLO_DIR"
 else
     python train_allo_rep.py \
         --env_type              file \
@@ -140,20 +144,19 @@ else
         --results_dir           "$RESULTS_DIR" \
         --exp_name              allo
 
-    # Locate the directory that was just created
     ALLO_DIR="$(latest_dir "${RESULTS_DIR}/file" "__allo__")"
     if [[ -z "$ALLO_DIR" ]]; then
         echo "ERROR: Could not locate allo training output under ${RESULTS_DIR}/file/" >&2
         exit 1
     fi
-    echo "  ALLO training complete.  Output: $ALLO_DIR"
+    echo "ALLO training complete.  Output: $ALLO_DIR"
 fi
 
 # ── Step 2: Train complex representation ─────────────────────────────────────
 echo ""
-echo "============================================================"
-echo " Step 2: Complex representation training"
-echo "============================================================"
+echo "========================================"
+echo "Step 2: Complex representation training"
+echo "========================================"
 
 if $SKIP_COMPLEX; then
     if [[ -z "$COMPLEX_DIR" ]]; then
@@ -163,7 +166,7 @@ if $SKIP_COMPLEX; then
             exit 1
         fi
     fi
-    echo "  Skipping training.  Using: $COMPLEX_DIR"
+    echo "Skipping training.  Using: $COMPLEX_DIR"
 else
     python train_lap_rep.py \
         --env_type              file \
@@ -191,16 +194,16 @@ else
         echo "ERROR: Could not locate complex training output under ${RESULTS_DIR}/file/" >&2
         exit 1
     fi
-    echo "  Complex training complete.  Output: $COMPLEX_DIR"
+    echo "Complex training complete.  Output: $COMPLEX_DIR"
 fi
 
 # ── Step 3: Reward shaping experiment ────────────────────────────────────────
 echo ""
-echo "============================================================"
-echo " Step 3: Reward shaping experiment"
-echo "   model_dir (complex) : $COMPLEX_DIR"
-echo "   allo_model_dir      : $ALLO_DIR"
-echo "============================================================"
+echo "========================================"
+echo "Step 3: Reward shaping experiment"
+echo "  model_dir (complex) : $COMPLEX_DIR"
+echo "  allo_model_dir      : $ALLO_DIR"
+echo "========================================"
 
 OUTPUT_DIR="${COMPLEX_DIR}/reward_shaping"
 
@@ -217,8 +220,8 @@ python experiments/reward_shaping/run_reward_shaping.py \
     --output_dir     "$OUTPUT_DIR"
 
 echo ""
-echo "============================================================"
-echo " Pipeline complete!"
+echo "========================================"
+echo "Pipeline complete!"
 echo "  Results  : $OUTPUT_DIR"
 echo "  Plot     : $OUTPUT_DIR/learning_curves.png"
-echo "============================================================"
+echo "========================================"
