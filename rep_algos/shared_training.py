@@ -671,7 +671,7 @@ def learn_eigenvectors(args, learner_module):
                 right_sim = cosine_sims['right_cosine_sim_avg']
                 left_sim = cosine_sims['left_cosine_sim_avg']
                 graph_loss = metrics_dict['graph_loss']
-                clf_loss = metrics_dict['clf_loss']
+                clf_loss = metrics_dict.get('clf_loss', 0.0)
                 chirality_loss = metrics_dict.get('chirality_loss', 0.0)
                 print(f"Step {gradient_step}: total_loss={total_loss.item():.4f}, "
                         f"graph_loss={graph_loss:.4f}, clf_loss={clf_loss:.4f}, "
