@@ -263,92 +263,89 @@ def build_all_potentials(hitting_times: np.ndarray) -> np.ndarray:
 def run_q_learning(
     env,
     canonical_states: np.ndarray,
-    goal_per_seed: np.ndarray,           # [num_seeds] int — one goal per seed
+    eval_starts: np.ndarray,                # [P] int — fixed eval start states
+    eval_goals: np.ndarray,                 # [P] int — fixed eval goal states
     num_episodes: int,
     num_seeds: int = 1,
     max_steps_per_episode: int = 500,
-    potential_per_seed: np.ndarray | None = None,  # [num_seeds, N] float32 or None
+    num_eval_episodes: int = 30,
+    potential_matrix: np.ndarray | None = None,  # [N, N] float32 or None
     shaping_coef: float = 0.0,
     gamma: float = 0.99,
     lr: float = 0.1,
     epsilon: float = 0.1,
     seed: int = 0,
     log_interval: int = 500,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Run tabular ε-greedy Q-learning on a goal-reaching task using the real env.
+    Run tabular ε-greedy Q-learning with a goal-conditioned Q-table Q[s, g, a].
 
     All seeds are run in parallel via jax.vmap; the episode and step loops
     within each seed are jax.lax.scan calls (JIT-compiled, no Python overhead).
 
-    Task
-    ----
-    Each seed has its own goal (goal_per_seed[i]).  At the start of each
-    episode the agent is placed at a uniformly random non-goal canonical state.
-    Sparse reward: +1.0 on reaching the goal, 0 otherwise.
+    Training
+    --------
+    Each episode draws a fresh random (start, goal) pair so the Q-table
+    learns to navigate to any goal from any state.
 
-    Because all conditions use seed=0 and the same goal_per_seed array,
-    both the start states and the exploration randomness are identical
-    across conditions — the only difference is the shaping bonus.
-
-    Shaping (optional)
-    ------------------
-    Potential-based bonus: β · (γ · F(s') − F(s))
-    where F is the per-seed potential (column of the hitting-time matrix).
-    For baseline runs pass potential_per_seed=None (or shaping_coef=0.0).
+    Evaluation
+    ----------
+    After every log_interval training episodes the current greedy policy
+    (epsilon=0) is tested on the fixed (eval_starts, eval_goals) pairs for
+    num_eval_episodes episodes each.  The same pairs are used for every
+    condition, giving a fair, reproducible comparison.
 
     Returns
     -------
-    steps_per_episode : [num_seeds, num_episodes] int
-    reached_goal      : [num_seeds, num_episodes] bool
+    train_steps       : [num_seeds, num_episodes]     int
+    train_reached     : [num_seeds, num_episodes]     bool
+    eval_success_rate : [num_chunks, num_seeds, P]    float
+    eval_episodes     : [num_chunks]                  int
     """
     num_states  = len(canonical_states)
     num_actions = 4
 
-    # Inverse mapping: full grid index -> canonical index (-1 for non-canonical)
     full_to_can = np.full(env.width * env.height, -1, dtype=np.int32)
     for i, s in enumerate(canonical_states):
         full_to_can[int(s)] = i
     full_to_can_jax      = jnp.array(full_to_can,      dtype=jnp.int32)
     canonical_states_jax = jnp.array(canonical_states, dtype=jnp.int32)
+    eval_starts_jax      = jnp.array(eval_starts,      dtype=jnp.int32)
+    eval_goals_jax       = jnp.array(eval_goals,       dtype=jnp.int32)
 
-    goal_per_seed_jax = jnp.array(goal_per_seed, dtype=jnp.int32)  # [num_seeds]
-
-    # Always provide a potential matrix; zeros for baseline (shaping_coef=0 → no effect)
-    if potential_per_seed is None:
-        potential_per_seed_jax = jnp.zeros((num_seeds, num_states), jnp.float32)
+    # Potential matrix: zeros for baseline (shaping_coef=0 → no effect)
+    if potential_matrix is None:
+        potential_matrix_jax = jnp.zeros((num_states, num_states), jnp.float32)
     else:
-        potential_per_seed_jax = jnp.array(potential_per_seed, jnp.float32)
+        potential_matrix_jax = jnp.array(potential_matrix, jnp.float32)  # [N, N]
 
-    def run_chunk(carry, chunk_key, goal_idx, potential):
-        """
-        Run one chunk of episodes for a single seed.
-
-        goal_idx  : scalar int   — goal canonical index for this seed
-        potential : [N] float32  — F(s) = −h(s, goal) for this seed
-        """
+    # ── Training ──────────────────────────────────────────────────────
+    def run_chunk(carry, chunk_key):
         def run_step(step_carry, step_key):
-            Q, s, done, step_in_ep = step_carry
+            Q, s, goal, done, step_in_ep = step_carry
 
-            # Episode reset at step 0: sample a random non-goal start state
-            reset_key, eps_key, rand_key, env_key = jax.random.split(step_key, 4)
+            goal_key, reset_key, eps_key, rand_key, env_key = jax.random.split(step_key, 5)
             at_reset = step_in_ep == 0
+
+            # At episode start: draw a fresh random (goal, start) pair
+            new_goal      = jax.random.randint(goal_key,  (), 0, num_states)
             new_start_raw = jax.random.randint(reset_key, (), 0, num_states)
             new_start = jnp.where(
-                new_start_raw == goal_idx,
-                (goal_idx + 1) % num_states,
+                new_start_raw == new_goal,
+                (new_goal + 1) % num_states,
                 new_start_raw,
             )
+            goal = jnp.where(at_reset, new_goal,  goal)
             s    = jnp.where(at_reset, new_start, s)
             done = jnp.where(at_reset, jnp.array(False), done)
 
-            # ε-greedy action selection
+            # ε-greedy action (goal-conditioned)
             use_random = jax.random.uniform(eps_key) < epsilon
-            greedy_a   = jnp.argmax(Q[s])
+            greedy_a   = jnp.argmax(Q[s, goal])
             random_a   = jax.random.randint(rand_key, (), 0, num_actions)
             a          = jnp.where(use_random, random_a, greedy_a)
 
-            # Step through the real environment
+            # Environment step
             full_idx  = canonical_states_jax[s]
             env_state = GridWorldState(
                 position=jnp.stack(
@@ -358,21 +355,23 @@ def run_q_learning(
                 steps=jnp.array(0, dtype=env.dtype),
             )
             next_env_state, _, _, _ = env.step(env_key, env_state, a)
-
             next_full = env.get_state_representation(next_env_state)
             can_idx   = full_to_can_jax[next_full]
             s_prime   = jnp.where(can_idx >= 0, can_idx, s)
 
-            reached = s_prime == goal_idx
+            reached = s_prime == goal
             r       = jnp.where(reached, 1.0, 0.0)
-            r       = r + shaping_coef * (gamma * potential[s_prime] - potential[s])
+            r       = r + shaping_coef * (
+                gamma * potential_matrix_jax[s_prime, goal]
+                - potential_matrix_jax[s, goal]
+            )
 
-            # Q-learning update — skipped if episode was already done
-            target = jnp.where(reached, r, r + gamma * Q[s_prime].max())
+            # Goal-conditioned Q update — skipped if episode already done
+            target = jnp.where(reached, r, r + gamma * Q[s_prime, goal].max())
             Q = jax.lax.cond(
                 done,
                 lambda Q: Q,
-                lambda Q: Q.at[s, a].add(lr * (target - Q[s, a])),
+                lambda Q: Q.at[s, goal, a].add(lr * (target - Q[s, goal, a])),
                 Q,
             )
 
@@ -383,7 +382,7 @@ def run_q_learning(
                 jnp.zeros((), jnp.int32),
                 step_in_ep + 1,
             )
-            return (Q, new_s, new_done, next_step_in_ep), new_done
+            return (Q, new_s, goal, new_done, next_step_in_ep), new_done
 
         step_keys = jax.random.split(chunk_key, chunk_steps)
         new_carry, done_flags = jax.lax.scan(run_step, carry, step_keys)
@@ -394,43 +393,90 @@ def run_q_learning(
         )
         return new_carry, (steps_per_ep, any_done)
 
-    # vmap over seeds: every argument has a leading num_seeds dimension.
     vmapped_chunk = jax.jit(jax.vmap(run_chunk))
 
-    # ------------------------------------------------------------------
-    # Chunked execution: each chunk is one JIT call so Python can print
-    # progress between chunks.  carry is threaded across chunks so the
-    # Q-table is continuous across the chunk boundary.
-    # ------------------------------------------------------------------
+    # ── Evaluation ────────────────────────────────────────────────────
+    def eval_one_pair(Q, start, goal):
+        """Greedy rollout for num_eval_episodes episodes. Q: [N, N, A]."""
+        def eval_step(carry, step_key):
+            s, done, step_in_ep = carry
+            at_reset = step_in_ep == 0
+            s    = jnp.where(at_reset, start, s)
+            done = jnp.where(at_reset, jnp.array(False), done)
+
+            a = jnp.argmax(Q[s, goal])  # greedy, ε = 0
+
+            full_idx  = canonical_states_jax[s]
+            env_state = GridWorldState(
+                position=jnp.stack(
+                    [full_idx % env.width, full_idx // env.width]
+                ).astype(env.dtype),
+                terminal=jnp.array(False),
+                steps=jnp.array(0, dtype=env.dtype),
+            )
+            next_env_state, _, _, _ = env.step(step_key, env_state, a)
+            next_full = env.get_state_representation(next_env_state)
+            can_idx   = full_to_can_jax[next_full]
+            s_prime   = jnp.where(can_idx >= 0, can_idx, s)
+
+            reached = s_prime == goal
+            new_done = done | reached
+            new_s    = jnp.where(done, s, s_prime)
+            next_step_in_ep = jnp.where(
+                step_in_ep == max_steps_per_episode - 1,
+                jnp.zeros((), jnp.int32),
+                step_in_ep + 1,
+            )
+            return (new_s, new_done, next_step_in_ep), new_done
+
+        eval_steps = num_eval_episodes * max_steps_per_episode
+        eval_keys  = jax.random.split(jax.random.PRNGKey(0), eval_steps)
+        _, done_flags = jax.lax.scan(
+            eval_step,
+            (start, jnp.array(False), jnp.zeros((), jnp.int32)),
+            eval_keys,
+        )
+        done_flags_2d = done_flags.reshape(num_eval_episodes, max_steps_per_episode)
+        return jnp.any(done_flags_2d, axis=1).mean()
+
+    def eval_all_pairs(Q):
+        """Evaluate all P pairs for one seed. Returns [P] success rates."""
+        return jax.vmap(eval_one_pair, in_axes=(None, 0, 0))(
+            Q, eval_starts_jax, eval_goals_jax
+        )
+
+    # vmap over seeds; eval pairs are the same for every seed
+    vmapped_eval = jax.jit(jax.vmap(eval_all_pairs))
+
+    # ── Main loop ─────────────────────────────────────────────────────
     num_chunks  = max(1, num_episodes // log_interval)
-    chunk_ep    = num_episodes // num_chunks          # episodes per chunk
+    chunk_ep    = num_episodes // num_chunks
     chunk_steps = chunk_ep * max_steps_per_episode
 
     seed_keys       = jax.random.split(jax.random.PRNGKey(seed), num_seeds)
-    # (num_seeds, num_chunks, 2): independent key per seed per chunk
     seed_chunk_keys = jax.vmap(lambda k: jax.random.split(k, num_chunks))(seed_keys)
 
     carry = (
-        jnp.zeros((num_seeds, num_states, num_actions), jnp.float32),  # Q
-        jnp.zeros((num_seeds,), jnp.int32),                             # s
-        jnp.zeros((num_seeds,), jnp.bool_),                             # done
-        jnp.zeros((num_seeds,), jnp.int32),                             # step_in_ep
+        jnp.zeros((num_seeds, num_states, num_states, num_actions), jnp.float32),
+        jnp.zeros((num_seeds,), jnp.int32),   # s
+        jnp.zeros((num_seeds,), jnp.int32),   # goal
+        jnp.zeros((num_seeds,), jnp.bool_),   # done
+        jnp.zeros((num_seeds,), jnp.int32),   # step_in_ep
     )
 
-    all_steps, all_reached = [], []
+    all_steps, all_reached, all_eval_sr, eval_ep_indices = [], [], [], []
     ep_width = len(str(num_episodes))
     t0 = time.monotonic()
     for chunk_i in range(num_chunks):
-        carry, (steps, reached) = vmapped_chunk(
-            carry,
-            seed_chunk_keys[:, chunk_i],
-            goal_per_seed_jax,
-            potential_per_seed_jax,
-        )
-        reached_np = np.array(reached)          # materialises result, blocks until ready
+        carry, (steps, reached) = vmapped_chunk(carry, seed_chunk_keys[:, chunk_i])
+        reached_np  = np.array(reached)
+        eval_sr_np  = np.array(vmapped_eval(carry[0]))   # [num_seeds, P]
         all_steps.append(np.array(steps, dtype=np.int32))
         all_reached.append(reached_np)
-        ep_end   = (chunk_i + 1) * chunk_ep
+        all_eval_sr.append(eval_sr_np)
+        ep_end = (chunk_i + 1) * chunk_ep
+        eval_ep_indices.append(ep_end)
+
         elapsed   = time.monotonic() - t0
         avg_chunk = elapsed / (chunk_i + 1)
         eta       = avg_chunk * (num_chunks - chunk_i - 1)
@@ -438,13 +484,16 @@ def run_q_learning(
             m, s = divmod(int(s), 60)
             return f"{m}m{s:02d}s" if m else f"{s}s"
         print(f"    ep {ep_end:{ep_width}d}/{num_episodes}:"
-              f"  sr = {reached_np.mean():.2f}"
+              f"  train_sr={reached_np.mean():.2f}"
+              f"  eval_sr={eval_sr_np.mean():.2f}"
               f"  elapsed {_fmt(elapsed)}  eta {_fmt(eta)}"
               f"  ({avg_chunk:.1f}s/chunk)")
 
     return (
-        np.concatenate(all_steps,   axis=1),    # (num_seeds, num_episodes)
-        np.concatenate(all_reached, axis=1),
+        np.concatenate(all_steps,   axis=1),        # [num_seeds, num_episodes]
+        np.concatenate(all_reached, axis=1),        # [num_seeds, num_episodes]
+        np.stack(all_eval_sr,       axis=0),        # [num_chunks, num_seeds, P]
+        np.array(eval_ep_indices,   dtype=np.int32),# [num_chunks]
     )
 
 
@@ -468,17 +517,20 @@ def plot_results(
     max_steps: int = 500,
 ) -> None:
     """
-    Save a two-panel figure:
-      Left  – steps per episode (lower = better, clipped at max_steps on failure)
-      Right – success rate       (higher = better)
+    Save a three-panel figure:
+      Left   – training steps per episode (lower = better)
+      Centre – training success rate (higher = better)
+      Right  – evaluation success rate on fixed (start, goal) pairs (higher = better)
     """
-    fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
+    fig, axes = plt.subplots(1, 3, figsize=(18, 4.5))
     colours = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
     for idx, (label, data) in enumerate(results.items()):
         c = colours[idx % len(colours)]
-        steps_arr   = data["steps"].astype(float)   # [seeds, episodes]
+        steps_arr   = data["steps"].astype(float)    # [seeds, episodes]
         reached_arr = data["reached"].astype(float)  # [seeds, episodes]
+        eval_sr     = data["eval_sr"]                # [chunks, seeds, P]
+        eval_ep     = data["eval_episodes"]          # [chunks]
 
         n_ep = steps_arr.shape[1]
         x    = np.arange(n_ep)
@@ -487,26 +539,37 @@ def plot_results(
             (steps_arr,   axes[0], f"Steps per episode (max {max_steps})"),
             (reached_arr, axes[1], "Success rate"),
         ]:
-            mean = _smooth(arr.mean(axis=0), window)
-            std  = arr.std(axis=0)
-            std_s = _smooth(std, window)
-
+            mean  = _smooth(arr.mean(axis=0), window)
+            std_s = _smooth(arr.std(axis=0),  window)
             ax.plot(x, mean, label=label, color=c, linewidth=1.5)
             ax.fill_between(x, mean - std_s, mean + std_s, color=c, alpha=0.15)
-            ax.set_xlabel("Episode", fontsize=10)
+            ax.set_xlabel("Training episode", fontsize=10)
             ax.set_ylabel(ylabel, fontsize=10)
             ax.grid(True, linewidth=0.4, alpha=0.5)
 
-    axes[0].set_title("Steps per episode  (↓ better)", fontsize=11)
-    axes[1].set_title("Success rate  (↑ better)", fontsize=11)
+        # Eval: average over P pairs; std over seeds
+        eval_mean = eval_sr.mean(axis=(1, 2))          # [chunks]
+        eval_std  = eval_sr.mean(axis=2).std(axis=1)   # [chunks]
+        axes[2].plot(eval_ep, eval_mean, label=label, color=c,
+                     linewidth=1.5, marker="o", markersize=4)
+        axes[2].fill_between(eval_ep, eval_mean - eval_std, eval_mean + eval_std,
+                             color=c, alpha=0.15)
+
+    axes[0].set_title("Training: steps per episode  (↓ better)", fontsize=11)
+    axes[1].set_title("Training: success rate  (↑ better)", fontsize=11)
+    axes[2].set_title("Evaluation: success rate on fixed pairs  (↑ better)", fontsize=11)
     axes[1].set_ylim(-0.05, 1.10)
+    axes[2].set_ylim(-0.05, 1.10)
+    axes[2].set_xlabel("Training episode", fontsize=10)
+    axes[2].set_ylabel("Success rate", fontsize=10)
+    axes[2].grid(True, linewidth=0.4, alpha=0.5)
 
     for ax in axes:
         ax.legend(fontsize=9, framealpha=0.8)
 
     fig.suptitle(
         f"Reward shaping with Laplacian hitting times\n"
-        f"(smoothing window = {window} episodes)",
+        f"(training smoothing window = {window} episodes)",
         fontsize=12,
     )
     plt.tight_layout()
@@ -534,8 +597,12 @@ def main() -> None:
              "When provided a third condition 'shaped (allo)' is added.",
     )
     parser.add_argument(
-        "--goal_state", type=int, default=None,
-        help="Canonical-state index of the goal (default: last canonical state).",
+        "--num_eval_pairs", type=int, default=10,
+        help="Number of fixed (start, goal) pairs for evaluation (default: 10).",
+    )
+    parser.add_argument(
+        "--num_eval_episodes", type=int, default=30,
+        help="Greedy episodes per eval pair at each checkpoint (default: 30).",
     )
     parser.add_argument(
         "--shaping_coef", type=float, default=0.1,
@@ -701,32 +768,32 @@ def main() -> None:
         np.save(output_dir / "hitting_times_allo.npy", allo_hitting_times)
 
     # ------------------------------------------------------------------
-    # 4. Sample goal states — one per seed, shared across all conditions
+    # 4. Sample fixed (start, goal) pairs for evaluation
+    #    These are shared across all conditions for a fair comparison.
     # ------------------------------------------------------------------
     eval_rng = np.random.default_rng(args.eval_seed)
-    if args.goal_state is not None:
-        if not (0 <= args.goal_state < num_canonical):
-            raise ValueError(
-                f"--goal_state {args.goal_state} is out of range [0, {num_canonical-1}]"
-            )
-        goal_per_seed = np.full(args.num_seeds, args.goal_state, dtype=np.int32)
-    else:
-        replace = args.num_seeds > num_canonical
-        goal_per_seed = eval_rng.choice(
-            num_canonical, size=args.num_seeds, replace=replace
-        ).astype(np.int32)
+    P = args.num_eval_pairs
+    eval_goals  = eval_rng.choice(num_canonical, size=P, replace=P > num_canonical
+                                  ).astype(np.int32)
+    eval_starts = np.array([
+        eval_rng.choice([s for s in range(num_canonical) if s != int(g)])
+        for g in eval_goals
+    ], dtype=np.int32)
 
     print(f"\n  Eval seed          : {args.eval_seed}")
-    for i, g in enumerate(goal_per_seed):
-        gf = int(canonical_states[int(g)])
-        gy, gx = divmod(gf, env.width)
-        print(f"  Seed {i} goal       : canonical {int(g)} → grid ({gx}, {gy})")
+    print(f"  Eval pairs (P={P}):")
+    for i, (st, g) in enumerate(zip(eval_starts, eval_goals)):
+        stf = int(canonical_states[int(st)])
+        gf  = int(canonical_states[int(g)])
+        sty, stx = divmod(stf, env.width)
+        gy,  gx  = divmod(gf,  env.width)
+        print(f"    {i:2d}  ({stx},{sty}) → ({gx},{gy})"
+              f"  [canonical {int(st)} → {int(g)}]")
 
-    # Build F[s, g] for all goals at once, then slice per seed.
-    # Shape: [num_seeds, N] — row i is the potential vector for seed i's goal.
-    potential_per_seed = build_all_potentials(hitting_times)[:, goal_per_seed].T
-    allo_potential_per_seed = (
-        build_all_potentials(allo_hitting_times)[:, goal_per_seed].T
+    # Build full F[s, g] potential matrices (one per model).
+    complex_potential_matrix = build_all_potentials(hitting_times)       # [N, N]
+    allo_potential_matrix    = (
+        build_all_potentials(allo_hitting_times)
         if allo_hitting_times is not None else None
     )
 
@@ -735,13 +802,13 @@ def main() -> None:
     # ------------------------------------------------------------------
     conditions = {
         "baseline":
-            dict(potential_per_seed=None,               shaping_coef=0.0),
+            dict(potential_matrix=None,                    shaping_coef=0.0),
         f"shaped β={args.shaping_coef} (complex)":
-            dict(potential_per_seed=potential_per_seed, shaping_coef=args.shaping_coef),
+            dict(potential_matrix=complex_potential_matrix, shaping_coef=args.shaping_coef),
     }
-    if allo_potential_per_seed is not None:
+    if allo_potential_matrix is not None:
         conditions[f"shaped β={args.shaping_coef} (allo)"] = dict(
-            potential_per_seed=allo_potential_per_seed, shaping_coef=args.shaping_coef
+            potential_matrix=allo_potential_matrix, shaping_coef=args.shaping_coef
         )
 
     results = {}
@@ -751,29 +818,34 @@ def main() -> None:
         print(f"Q-learning: {cond_name}")
         print(f"{'='*60}")
 
-        steps, reached = run_q_learning(
+        steps, reached, eval_sr, eval_ep = run_q_learning(
             env                  = env,
             canonical_states     = canonical_states,
-            goal_per_seed        = goal_per_seed,
+            eval_starts          = eval_starts,
+            eval_goals           = eval_goals,
             num_episodes         = args.num_episodes,
             num_seeds            = args.num_seeds,
             max_steps_per_episode= args.max_steps,
+            num_eval_episodes    = args.num_eval_episodes,
             gamma                = args.gamma_rl,
             lr                   = args.lr,
             epsilon              = args.epsilon,
             seed                 = 0,
             log_interval         = args.log_interval,
             **cond_kwargs,
-        )  # steps, reached: [num_seeds, num_episodes]
+        )
 
         for seed_i in range(args.num_seeds):
-            final_sr = reached[seed_i, -win:].mean()
-            print(f"  seed {seed_i}:  final success rate = {final_sr:.2f}"
-                  f"  (last {win} episodes)")
+            final_train_sr = reached[seed_i, -win:].mean()
+            final_eval_sr  = eval_sr[-1, seed_i, :].mean()
+            print(f"  seed {seed_i}:  train_sr={final_train_sr:.2f}"
+                  f"  eval_sr={final_eval_sr:.2f}  (last {win} train eps)")
 
         results[cond_name] = dict(
-            steps   = steps,    # [num_seeds, num_episodes]
-            reached = reached,
+            steps         = steps,    # [num_seeds, num_episodes]
+            reached       = reached,
+            eval_sr       = eval_sr,  # [num_chunks, num_seeds, P]
+            eval_episodes = eval_ep,  # [num_chunks]
         )
 
     # ------------------------------------------------------------------
@@ -788,7 +860,8 @@ def main() -> None:
             dict(
                 results        = results,
                 args           = vars(args),
-                goal_per_seed  = goal_per_seed.tolist(),
+                eval_starts    = eval_starts.tolist(),
+                eval_goals     = eval_goals.tolist(),
                 has_allo_model = allo_model_data is not None,
             ),
             f,
