@@ -754,19 +754,14 @@ def main() -> None:
                 )
 
     # Build the set of eligible goal canonical indices.
+    # When a fixed start is given, goals that are too close to it (or equal to it)
+    # are excluded here.  When there is no fixed start, the distance guarantee is
+    # enforced per-seed at eval-start sampling time (section 4).
     eligible_goals: list[int] = list(range(num_canonical))
     if fixed_start_canonical is not None:
         # Never let the goal equal the fixed starting state.
         eligible_goals = [ci for ci in eligible_goals if ci != fixed_start_canonical]
-
-    if args.min_goal_distance > 0:
-        if fixed_start_canonical is None:
-            print(
-                "WARNING: --min_goal_distance is set but no valid --start_state was "
-                "provided. Distance constraint will be ignored.",
-                file=sys.stderr,
-            )
-        else:
+        if args.min_goal_distance > 0:
             sx, sy = fixed_start_coords
             filtered = [
                 ci for ci in eligible_goals
@@ -861,10 +856,22 @@ def main() -> None:
         eval_starts_per_seed = np.full(args.num_seeds, fixed_start_canonical, dtype=np.int32)
         train_start_per_seed = np.full(args.num_seeds, fixed_start_canonical, dtype=np.int32)
     else:
-        eval_starts_per_seed = np.array([
-            eval_rng.choice([s for s in range(num_canonical) if s != int(g)])
-            for g in goal_per_seed
-        ], dtype=np.int32)
+        # When min_goal_distance > 0, enforce it on the (eval_start, goal) pair.
+        eval_starts_per_seed_list = []
+        for g in goal_per_seed:
+            g_full = int(canonical_states[int(g)])
+            gx, gy = g_full % env.width, g_full // env.width
+            candidates = [
+                s for s in range(num_canonical)
+                if s != int(g) and (
+                    args.min_goal_distance <= 0
+                    or (abs(int(canonical_states[s]) % env.width - gx)
+                        + abs(int(canonical_states[s]) // env.width - gy))
+                    >= args.min_goal_distance
+                )
+            ]
+            eval_starts_per_seed_list.append(eval_rng.choice(candidates))
+        eval_starts_per_seed = np.array(eval_starts_per_seed_list, dtype=np.int32)
         train_start_per_seed = None
 
     print(f"\n  Eval seed          : {args.eval_seed}")
