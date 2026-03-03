@@ -271,6 +271,7 @@ def run_q_learning(
     num_eval_episodes: int = 30,
     potential_per_seed: np.ndarray | None = None,  # [num_seeds, N] float32 or None
     train_start_per_seed: np.ndarray | None = None,  # [num_seeds] int or None → random
+    min_goal_distance: int = 0,
     shaping_coef: float = 0.0,
     gamma: float = 0.99,
     lr: float = 0.1,
@@ -329,6 +330,36 @@ def run_q_learning(
     else:
         train_start_jax = jnp.array(train_start_per_seed, dtype=jnp.int32)
 
+    # Valid-starts lookup table for distance-constrained random resets.
+    # valid_starts_table[g, :num_valid[g]] lists all canonical indices that are
+    # at least min_goal_distance (Manhattan) away from goal g and != g.
+    # Closed over in run_step so JAX never traces through the if-branch at runtime.
+    if min_goal_distance > 0:
+        coords = np.array(
+            [(int(canonical_states[s]) % env.width,
+              int(canonical_states[s]) // env.width)
+             for s in range(num_states)]
+        )  # [N, 2]
+        taxi = np.abs(coords[:, None, :] - coords[None, :, :]).sum(axis=2)  # [N, N]
+        valid_starts_lists = []
+        for g in range(num_states):
+            vs = [s for s in range(num_states)
+                  if s != g and taxi[s, g] >= min_goal_distance]
+            if not vs:                        # fallback: any non-goal state
+                vs = [s for s in range(num_states) if s != g]
+            valid_starts_lists.append(vs)
+        max_valid = max(len(v) for v in valid_starts_lists)
+        table  = np.zeros((num_states, max_valid), dtype=np.int32)
+        counts = np.zeros(num_states, dtype=np.int32)
+        for g, vs in enumerate(valid_starts_lists):
+            table[g, :len(vs)] = vs
+            counts[g] = len(vs)
+        valid_table_jax  = jnp.array(table)   # [N, max_valid]
+        valid_counts_jax = jnp.array(counts)  # [N]
+    else:
+        valid_table_jax  = None
+        valid_counts_jax = None
+
     # ── Training ──────────────────────────────────────────────────────
     def run_chunk(carry, chunk_key):
         def run_step(step_carry, step_key):
@@ -338,13 +369,19 @@ def run_q_learning(
             at_reset = step_in_ep == 0
 
             # At episode start: random or fixed start, fixed goal for this seed.
-            new_start_raw = jax.random.randint(reset_key, (), 0, num_states)
-            new_start_random = jnp.where(
-                new_start_raw == goal,
-                (goal + 1) % num_states,
-                new_start_raw,
-            )
-            # Use fixed_start when >= 0; otherwise fall back to random.
+            if valid_table_jax is not None:
+                # Sample uniformly from pre-filtered starts (distance constraint).
+                k = jax.random.randint(
+                    reset_key, (), 0, valid_counts_jax[goal])
+                new_start_random = valid_table_jax[goal, k]
+            else:
+                new_start_raw = jax.random.randint(reset_key, (), 0, num_states)
+                new_start_random = jnp.where(
+                    new_start_raw == goal,
+                    (goal + 1) % num_states,
+                    new_start_raw,
+                )
+            # Use fixed_start when >= 0; otherwise use the (possibly constrained) random.
             new_start = jnp.where(fixed_start >= 0, fixed_start, new_start_random)
             s    = jnp.where(at_reset, new_start, s)
             done = jnp.where(at_reset, jnp.array(False), done)
@@ -919,6 +956,7 @@ def main() -> None:
             goal_per_seed        = goal_per_seed,
             eval_starts_per_seed = eval_starts_per_seed,
             train_start_per_seed = train_start_per_seed,
+            min_goal_distance    = args.min_goal_distance,
             num_episodes         = args.num_episodes,
             num_seeds            = args.num_seeds,
             max_steps_per_episode= args.max_steps,
