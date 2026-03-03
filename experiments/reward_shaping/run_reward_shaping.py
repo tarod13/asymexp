@@ -270,6 +270,7 @@ def run_q_learning(
     max_steps_per_episode: int = 500,
     num_eval_episodes: int = 30,
     potential_per_seed: np.ndarray | None = None,  # [num_seeds, N] float32 or None
+    train_start_per_seed: np.ndarray | None = None,  # [num_seeds] int or None → random
     shaping_coef: float = 0.0,
     gamma: float = 0.99,
     lr: float = 0.1,
@@ -322,21 +323,29 @@ def run_q_learning(
     else:
         potential_jax = jnp.array(potential_per_seed, jnp.float32)  # [num_seeds, N]
 
+    # Fixed training start per seed: -1 means random, >=0 means fixed.
+    if train_start_per_seed is None:
+        train_start_jax = jnp.full((num_seeds,), -1, dtype=jnp.int32)
+    else:
+        train_start_jax = jnp.array(train_start_per_seed, dtype=jnp.int32)
+
     # ── Training ──────────────────────────────────────────────────────
     def run_chunk(carry, chunk_key):
         def run_step(step_carry, step_key):
-            Q, s, done, step_in_ep, goal, potential = step_carry
+            Q, s, done, step_in_ep, goal, potential, fixed_start = step_carry
 
             reset_key, eps_key, rand_key, env_key = jax.random.split(step_key, 4)
             at_reset = step_in_ep == 0
 
-            # At episode start: random start, fixed goal for this seed
+            # At episode start: random or fixed start, fixed goal for this seed.
             new_start_raw = jax.random.randint(reset_key, (), 0, num_states)
-            new_start = jnp.where(
+            new_start_random = jnp.where(
                 new_start_raw == goal,
                 (goal + 1) % num_states,
                 new_start_raw,
             )
+            # Use fixed_start when >= 0; otherwise fall back to random.
+            new_start = jnp.where(fixed_start >= 0, fixed_start, new_start_random)
             s    = jnp.where(at_reset, new_start, s)
             done = jnp.where(at_reset, jnp.array(False), done)
 
@@ -382,7 +391,7 @@ def run_q_learning(
                 jnp.zeros((), jnp.int32),
                 step_in_ep + 1,
             )
-            return (Q, new_s, new_done, next_step_in_ep, goal, potential), new_done
+            return (Q, new_s, new_done, next_step_in_ep, goal, potential, fixed_start), new_done
 
         step_keys = jax.random.split(chunk_key, chunk_steps)
         new_carry, done_flags = jax.lax.scan(run_step, carry, step_keys)
@@ -457,6 +466,7 @@ def run_q_learning(
         jnp.zeros((num_seeds,), jnp.int32),   # step_in_ep
         goal_jax,                              # goal (fixed per seed)
         potential_jax,                         # potential (fixed per seed)
+        train_start_jax,                       # fixed train start (-1 = random)
     )
 
     all_steps, all_reached, all_eval_sr, eval_ep_indices = [], [], [], []
@@ -641,6 +651,19 @@ def main() -> None:
         "--output_dir", default=None,
         help="Where to write outputs (default: <model_dir>/reward_shaping/).",
     )
+    parser.add_argument(
+        "--start_state", type=str, default=None,
+        help="Fixed starting state as 'x,y' grid coordinates (e.g. '3,2'). "
+             "If provided, every training and evaluation episode begins from this state. "
+             "If the cell is blocked or out of bounds a warning is printed and random "
+             "starts are used instead.",
+    )
+    parser.add_argument(
+        "--min_goal_distance", type=int, default=0,
+        help="Minimum taxi (Manhattan) distance from the fixed starting state to any "
+             "sampled goal (default: 0, no constraint). Requires a valid --start_state; "
+             "otherwise this flag is ignored with a warning.",
+    )
     args = parser.parse_args()
 
     model_dir  = Path(args.model_dir)
@@ -699,6 +722,68 @@ def main() -> None:
     ta = SimpleNamespace(**training_args)
     ta.env_file = None
     env = create_gridworld_env(ta)
+
+    # ------------------------------------------------------------------
+    # 2b. Validate optional fixed starting state; build eligible goal set.
+    # ------------------------------------------------------------------
+    fixed_start_canonical = None   # canonical index, or None → random starts
+    fixed_start_coords    = None   # (sx, sy) tuple
+
+    if args.start_state is not None:
+        try:
+            sx, sy = [int(v.strip()) for v in args.start_state.split(",")]
+        except Exception:
+            print(
+                f"WARNING: could not parse --start_state '{args.start_state}'. "
+                "Expected 'x,y' format. Falling back to random starts.",
+                file=sys.stderr,
+            )
+        else:
+            start_full = int(sy * env.width + sx)
+            can_lookup = {int(s): i for i, s in enumerate(canonical_states)}
+            if start_full in can_lookup:
+                fixed_start_canonical = can_lookup[start_full]
+                fixed_start_coords    = (sx, sy)
+                print(f"\n  Fixed start state  : ({sx},{sy})"
+                      f"  [full={start_full}, canonical={fixed_start_canonical}]")
+            else:
+                print(
+                    f"WARNING: starting state ({sx},{sy}) is blocked or out of bounds. "
+                    "Falling back to random starts.",
+                    file=sys.stderr,
+                )
+
+    # Build the set of eligible goal canonical indices.
+    eligible_goals: list[int] = list(range(num_canonical))
+    if fixed_start_canonical is not None:
+        # Never let the goal equal the fixed starting state.
+        eligible_goals = [ci for ci in eligible_goals if ci != fixed_start_canonical]
+
+    if args.min_goal_distance > 0:
+        if fixed_start_canonical is None:
+            print(
+                "WARNING: --min_goal_distance is set but no valid --start_state was "
+                "provided. Distance constraint will be ignored.",
+                file=sys.stderr,
+            )
+        else:
+            sx, sy = fixed_start_coords
+            filtered = [
+                ci for ci in eligible_goals
+                if (abs(int(canonical_states[ci]) % env.width - sx)
+                    + abs(int(canonical_states[ci]) // env.width - sy))
+                >= args.min_goal_distance
+            ]
+            if not filtered:
+                print(
+                    f"WARNING: no goals satisfy min_goal_distance="
+                    f"{args.min_goal_distance}. Using all non-start states.",
+                    file=sys.stderr,
+                )
+            else:
+                eligible_goals = filtered
+            print(f"  Min goal distance  : {args.min_goal_distance}"
+                  f"  ({len(eligible_goals)}/{num_canonical} eligible goals)")
 
     # ------------------------------------------------------------------
     # 3. Compute hitting times (complex representation)
@@ -767,13 +852,20 @@ def main() -> None:
     # ------------------------------------------------------------------
     eval_rng = np.random.default_rng(args.eval_seed)
     goal_per_seed = eval_rng.choice(
-        num_canonical, size=args.num_seeds,
-        replace=args.num_seeds > num_canonical,
+        eligible_goals, size=args.num_seeds,
+        replace=args.num_seeds > len(eligible_goals),
     ).astype(np.int32)
-    eval_starts_per_seed = np.array([
-        eval_rng.choice([s for s in range(num_canonical) if s != int(g)])
-        for g in goal_per_seed
-    ], dtype=np.int32)
+
+    if fixed_start_canonical is not None:
+        # Every seed starts from the same fixed cell.
+        eval_starts_per_seed = np.full(args.num_seeds, fixed_start_canonical, dtype=np.int32)
+        train_start_per_seed = np.full(args.num_seeds, fixed_start_canonical, dtype=np.int32)
+    else:
+        eval_starts_per_seed = np.array([
+            eval_rng.choice([s for s in range(num_canonical) if s != int(g)])
+            for g in goal_per_seed
+        ], dtype=np.int32)
+        train_start_per_seed = None
 
     print(f"\n  Eval seed          : {args.eval_seed}")
     print(f"  Tasks (num_seeds={args.num_seeds}):")
@@ -819,6 +911,7 @@ def main() -> None:
             canonical_states     = canonical_states,
             goal_per_seed        = goal_per_seed,
             eval_starts_per_seed = eval_starts_per_seed,
+            train_start_per_seed = train_start_per_seed,
             num_episodes         = args.num_episodes,
             num_seeds            = args.num_seeds,
             max_steps_per_episode= args.max_steps,

@@ -68,10 +68,18 @@ def main() -> None:
     parser.add_argument("--shaping_coef",  type=float, default=0.1)
     parser.add_argument("--num_episodes",  type=int,   default=30000)
     parser.add_argument("--num_seeds",     type=int,   default=5)
-    parser.add_argument("--skip_allo",     action="store_true")
-    parser.add_argument("--skip_complex",  action="store_true")
-    parser.add_argument("--allo_dir",      type=str,   default="")
-    parser.add_argument("--complex_dir",   type=str,   default="")
+    parser.add_argument("--skip_allo",          action="store_true")
+    parser.add_argument("--skip_complex",       action="store_true")
+    parser.add_argument("--allo_dir",           type=str,   default="")
+    parser.add_argument("--complex_dir",        type=str,   default="")
+    parser.add_argument(
+        "--start_state", type=str, default="",
+        help="Optional fixed starting state as 'x,y'. Passed to run_reward_shaping.py.",
+    )
+    parser.add_argument(
+        "--min_goal_distance", type=int, default=0,
+        help="Minimum taxi distance from start to goal. Passed to run_reward_shaping.py.",
+    )
     args = parser.parse_args()
 
     if args.allo_dir:
@@ -94,9 +102,13 @@ def main() -> None:
     print(f"  skip_allo     : {args.skip_allo}")
     print(f"  skip_complex  : {args.skip_complex}")
     if args.allo_dir:
-        print(f"  allo_dir      : {args.allo_dir}")
+        print(f"  allo_dir          : {args.allo_dir}")
     if args.complex_dir:
-        print(f"  complex_dir   : {args.complex_dir}")
+        print(f"  complex_dir       : {args.complex_dir}")
+    if args.start_state:
+        print(f"  start_state       : {args.start_state}")
+    if args.min_goal_distance > 0:
+        print(f"  min_goal_distance : {args.min_goal_distance}")
     print("=" * 60)
 
     py = sys.executable
@@ -198,7 +210,7 @@ def main() -> None:
 
     output_dir = complex_dir / "reward_shaping"
 
-    run([
+    rs_cmd = [
         py, str(repo_root / "experiments" / "reward_shaping" / "run_reward_shaping.py"),
         "--model_dir",      str(complex_dir),
         "--allo_model_dir", str(allo_dir),
@@ -210,7 +222,12 @@ def main() -> None:
         "--lr",             "0.1",
         "--epsilon",        "0.1",
         "--output_dir",     str(output_dir),
-    ])
+    ]
+    if args.start_state:
+        rs_cmd += ["--start_state", args.start_state]
+    if args.min_goal_distance > 0:
+        rs_cmd += ["--min_goal_distance", str(args.min_goal_distance)]
+    run(rs_cmd)
 
     print()
     print("=" * 60)
