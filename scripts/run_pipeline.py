@@ -40,6 +40,8 @@ Examples
 """
 
 import argparse
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -53,10 +55,19 @@ def latest_dir(base: Path, fragment: str) -> Path | None:
     return max(matches, key=lambda d: d.stat().st_mtime)
 
 
-def run(cmd: list[str]) -> None:
-    result = subprocess.run(cmd)
+def run(cmd: list[str], env: dict | None = None) -> None:
+    result = subprocess.run(cmd, env=env)
     if result.returncode != 0:
         sys.exit(result.returncode)
+
+
+def sbatch(cmd: list[str], env: dict) -> str:
+    """Submit a SLURM job and return the job ID."""
+    result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(result.stderr, file=sys.stderr)
+        sys.exit(result.returncode)
+    return result.stdout.strip().split()[-1]
 
 
 def main() -> None:
@@ -213,27 +224,63 @@ def main() -> None:
     print(f"   allo model    : {allo_dir}")
     print("=" * 60)
 
-    output_dir    = complex_dir / "reward_shaping"
-    submit_script = repo_root / "scripts" / "submit_reward_shaping.sh"
+    output_dir     = complex_dir / "reward_shaping"
+    array_script   = repo_root / "scripts" / "run_reward_shaping_array.sh"
+    analyze_script = repo_root / "scripts" / "analyze_reward_shaping.sh"
 
-    rs_cmd = [
-        "bash", str(submit_script),
-        "--model_dir",      str(complex_dir),
-        "--allo_model_dir", str(allo_dir),
-        "--output_dir",     str(output_dir),
-        "--num_episodes",   str(args.num_episodes),
-        "--num_seeds",      str(args.num_seeds),
-        "--shaping_coef",   str(args.shaping_coef),
-        "--max_steps",      str(args.max_steps),
-        "--gamma_rl",       "0.99",
-        "--lr",             "0.1",
-        "--epsilon",        "0.1",
-    ]
-    if args.start_state:
-        rs_cmd += ["--start_state", args.start_state]
-    if args.min_goal_distance > 0:
-        rs_cmd += ["--min_goal_distance", str(args.min_goal_distance)]
-    run(rs_cmd)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "partial").mkdir(exist_ok=True)
+    Path("logs").mkdir(exist_ok=True)
+
+    num_methods  = 3 if allo_dir else 2
+    num_tasks    = num_methods * args.num_seeds
+    max_task_id  = num_tasks - 1
+
+    # Build the environment inherited by the array and analysis jobs.
+    env = os.environ.copy()
+    env.update({
+        "MODEL_DIR":         str(complex_dir),
+        "ALLO_MODEL_DIR":    str(allo_dir),
+        "OUTPUT_DIR":        str(output_dir),
+        "NUM_SEEDS":         str(args.num_seeds),
+        "NUM_METHODS":       str(num_methods),
+        "NUM_EPISODES":      str(args.num_episodes),
+        "MAX_STEPS":         str(args.max_steps),
+        "SHAPING_COEF":      str(args.shaping_coef),
+        "GAMMA_RL":          "0.99",
+        "LR":                "0.1",
+        "EPSILON":           "0.1",
+        "LOG_INTERVAL":      "500",
+        "EVAL_SEED":         "0",
+        "NUM_EVAL_EPISODES": "30",
+        "MIN_GOAL_DISTANCE": str(args.min_goal_distance),
+        "START_STATE":       args.start_state or "",
+    })
+
+    if shutil.which("sbatch"):
+        # SLURM: submit array job then analysis job with dependency.
+        array_job_id = sbatch(
+            ["sbatch", f"--array=0-{max_task_id}", "--export=ALL", str(array_script)],
+            env=env,
+        )
+        print(f"  Q-learning array job : {array_job_id}  (tasks 0-{max_task_id})")
+
+        analyze_job_id = sbatch(
+            ["sbatch", f"--dependency=afterok:{array_job_id}", "--export=ALL",
+             str(analyze_script)],
+            env=env,
+        )
+        print(f"  Analysis job         : {analyze_job_id}  (runs after {array_job_id})")
+        print()
+        print(f"  Monitor: squeue -j {array_job_id},{analyze_job_id}")
+    else:
+        # Local fallback: run tasks sequentially then analysis.
+        print("  SLURM not available — running locally (sequential)...")
+        for task_id in range(num_tasks):
+            print(f"\n  --- Task {task_id}/{max_task_id} ---")
+            run(["bash", str(array_script), str(task_id)], env=env)
+        print("\n  Running analysis...")
+        run(["bash", str(analyze_script)], env=env)
 
     print()
     print("=" * 60)
