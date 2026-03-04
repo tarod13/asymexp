@@ -1,24 +1,31 @@
 #!/usr/bin/env python3
 """
-Visualize how ground-truth right eigenvectors evolve as the wind parameter
+Visualize how ground-truth left/right eigenvectors evolve as the wind parameter
 changes across the 31-run wind sweep (sweep_wind_allo.sh).
+
+Produces two figures:
+    <output_stem>_right.png   – right eigenvectors
+    <output_stem>_left.png    – left eigenvectors
 
 Each task run saves its results under
     <results_dir>/task_<id>/file/<run_name>/
         gt_right_real.npy   (num_canonical_states, num_eigvecs)
         gt_right_imag.npy
+        gt_left_real.npy
+        gt_left_imag.npy
         args.json           contains 'wind'
         viz_metadata.pkl    contains 'canonical_states', 'grid_width', 'grid_height'
 
 The figure is a grid of heatmaps:
     rows    = eigenvectors (k=0 stationary, then k=1…num_eigvecs)
     columns = all available wind values (one per run found)
+    one single colorbar shared across the whole figure
 
 Usage
 -----
     python scripts/plot_wind_sweep.py
     python scripts/plot_wind_sweep.py --results_dir ./results/wind_sweep \\
-                                      --output wind_eigvecs.png \\
+                                      --output_stem wind_eigvecs \\
                                       --num_eigvecs 4 \\
                                       --component real
 """
@@ -53,12 +60,16 @@ def load_run(run_dir: Path) -> dict | None:
             args = json.load(f)
         right_real = np.load(run_dir / "gt_right_real.npy")   # (S, K)
         right_imag = np.load(run_dir / "gt_right_imag.npy")
+        left_real  = np.load(run_dir / "gt_left_real.npy")
+        left_imag  = np.load(run_dir / "gt_left_imag.npy")
         with open(run_dir / "viz_metadata.pkl", "rb") as f:
             meta = pickle.load(f)
         return dict(
             wind             = float(args["wind"]),
             right_real       = right_real,
             right_imag       = right_imag,
+            left_real        = left_real,
+            left_imag        = left_imag,
             canonical_states = np.array(meta["canonical_states"]),
             grid_width       = int(meta["grid_width"]),
             grid_height      = int(meta["grid_height"]),
@@ -70,16 +81,16 @@ def load_run(run_dir: Path) -> dict | None:
 
 # ── Eigenvector utilities ─────────────────────────────────────────────────────
 
-def align_phase(right_real: np.ndarray, right_imag: np.ndarray) -> tuple:
+def align_phase(real: np.ndarray, imag: np.ndarray) -> tuple:
     """
     Rotate each eigenvector column so its largest-magnitude component is
     real and positive, removing the arbitrary U(1) phase from jnp.linalg.eig.
     """
-    K = right_real.shape[1]
-    out_real = right_real.copy()
-    out_imag = right_imag.copy()
+    K = real.shape[1]
+    out_real = real.copy()
+    out_imag = imag.copy()
     for k in range(K):
-        cplx    = right_real[:, k] + 1j * right_imag[:, k]
+        cplx    = real[:, k] + 1j * imag[:, k]
         max_idx = np.argmax(np.abs(cplx))
         phase   = np.angle(cplx[max_idx])
         rotated = cplx * np.exp(-1j * phase)
@@ -98,6 +109,102 @@ def eigvec_to_grid(values: np.ndarray,
     return grid
 
 
+# ── Plotting ──────────────────────────────────────────────────────────────────
+
+def make_figure(display: np.ndarray,
+                wind_values: np.ndarray,
+                canonical_states: np.ndarray,
+                grid_width: int, grid_height: int,
+                eig_indices: list,
+                title: str) -> plt.Figure:
+    """
+    Build the heatmap grid figure.
+
+    display: (n_wind, num_states, K)
+    """
+    n_wind = len(wind_values)
+    n_rows = len(eig_indices)
+
+    # Single symmetric colorscale shared across ALL rows and columns
+    vabs    = max(float(np.nanmax(np.abs(display[:, :, eig_indices]))), 1e-9)
+    hm_norm = mcolors.Normalize(vmin=-vabs, vmax=vabs)
+
+    # Figure dimensions
+    cell_w  = 0.55                          # inches per wind column
+    cell_h  = cell_w * grid_height / grid_width
+    cb_w    = 0.25                          # inches for the single colorbar
+    cb_gap  = 0.08                          # gap between heatmaps and colorbar
+    pad_l   = 0.50                          # left margin for row labels
+    pad_top = 0.35                          # top margin for wind labels
+    pad_bot = 0.25
+
+    fig_w = pad_l + n_wind * cell_w + cb_gap + cb_w + 0.10
+    fig_h = pad_top + n_rows * cell_h + pad_bot
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    fig.suptitle(title, fontsize=10, y=1.0)
+
+    # GridSpec: n_rows rows × (n_wind + 1) columns; last column = colorbar
+    hmap_right = 1.0 - (cb_gap + cb_w + 0.10) / fig_w
+    gs = gridspec.GridSpec(
+        n_rows, n_wind + 1,
+        width_ratios=[1.0] * n_wind + [cb_w / cell_w],
+        hspace=0.06,
+        wspace=0.0,
+        left=pad_l / fig_w,
+        right=hmap_right,
+        top=1.0 - pad_top / fig_h,
+        bottom=pad_bot / fig_h,
+    )
+
+    for row, k in enumerate(eig_indices):
+        eig_data  = display[:, :, k]        # (n_wind, num_states)
+        row_label = "ψ₀" if k == 0 else f"ψ{k}"
+
+        for col in range(n_wind):
+            ax = fig.add_subplot(gs[row, col])
+            grid_img = eigvec_to_grid(
+                eig_data[col], canonical_states, grid_width, grid_height
+            )
+            ax.imshow(
+                grid_img,
+                cmap="RdBu_r", norm=hm_norm,
+                origin="upper", aspect="auto",
+                interpolation="nearest",
+            )
+            # Remove all axis decorations
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+
+            # Wind value labels on top row only
+            if row == 0:
+                ax.set_title(f"{wind_values[col]:+.2f}",
+                             fontsize=4.5, pad=2)
+
+        # Row label to the left of each row
+        fig.text(
+            pad_l / fig_w - 0.005,
+            1.0 - (pad_top + (row + 0.5) * cell_h) / fig_h,
+            row_label,
+            ha="right", va="center", fontsize=8,
+            transform=fig.transFigure,
+        )
+
+    # Single colorbar spanning all rows in the dedicated last column
+    cb_left   = hmap_right + cb_gap / fig_w
+    cb_bottom = pad_bot / fig_h
+    cb_height = 1.0 - (pad_top + pad_bot) / fig_h
+    ax_cb = fig.add_axes([cb_left, cb_bottom, cb_w / fig_w, cb_height])
+    sm = plt.cm.ScalarMappable(cmap="RdBu_r", norm=hm_norm)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, cax=ax_cb)
+    cbar.ax.tick_params(labelsize=6)
+
+    return fig
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def parse_args():
@@ -106,12 +213,13 @@ def parse_args():
     )
     p.add_argument("--results_dir", default="./results/wind_sweep",
                    help="Directory containing task_0/, task_1/, …")
-    p.add_argument("--output", default="./wind_sweep_eigenvectors.png")
+    p.add_argument("--output_stem", default="./wind_sweep",
+                   help="Output path stem; produces <stem>_right.png and <stem>_left.png")
     p.add_argument("--num_eigvecs", type=int, default=4,
                    help="Number of non-trivial eigenvectors to show "
                         "(rows after k=0). Total rows = num_eigvecs + 1.")
     p.add_argument("--component", choices=["real", "imag", "abs"], default="real",
-                   help="Component of the right eigenvector to display.")
+                   help="Component of the eigenvector to display.")
     return p.parse_args()
 
 
@@ -148,103 +256,42 @@ def main():
     grid_width       = runs[0]["grid_width"]
     grid_height      = runs[0]["grid_height"]
 
-    # ── Phase-align and stack ─────────────────────────────────────────────────
-    # Shape: (n_wind, num_states, K)
-    all_real = np.stack([r["right_real"] for r in runs], axis=0)
-    all_imag = np.stack([r["right_imag"] for r in runs], axis=0)
-    for w in range(n_wind):
-        all_real[w], all_imag[w] = align_phase(all_real[w], all_imag[w])
-
-    if component == "real":
-        display, comp_label = all_real, "Re"
-    elif component == "imag":
-        display, comp_label = all_imag, "Im"
-    else:
-        display = np.sqrt(all_real ** 2 + all_imag ** 2)
-        comp_label = "|·|"
-
-    # Eigenvector rows: k=0 (stationary) then k=1…num_eigvecs
     eig_indices = list(range(num_eigvecs + 1))
-    n_rows      = len(eig_indices)
+    comp_labels = {"real": "Re", "imag": "Im", "abs": "|·|"}
+    comp_label  = comp_labels[component]
 
-    # ── Figure layout ─────────────────────────────────────────────────────────
-    # Each heatmap cell is square (grid_width × grid_height aspect).
-    cell_w  = 0.55   # inches per wind column
-    cell_h  = cell_w * grid_height / grid_width
-    cb_w    = 0.18   # inches for the per-row colorbar
-    pad_l   = 0.55   # left margin for row labels
-    pad_top = 0.35   # top margin for wind labels
-    pad_bot = 0.25
+    def apply_component(real_stack, imag_stack):
+        if component == "real":
+            return real_stack
+        elif component == "imag":
+            return imag_stack
+        else:
+            return np.sqrt(real_stack ** 2 + imag_stack ** 2)
 
-    fig_w = pad_l + n_wind * cell_w + cb_w + 0.15
-    fig_h = pad_top + n_rows * cell_h + pad_bot
+    stem = Path(args.output_stem)
+    stem.parent.mkdir(parents=True, exist_ok=True)
 
-    fig = plt.figure(figsize=(fig_w, fig_h))
-    fig.suptitle(
-        f"Ground-truth right eigenvectors  [{comp_label}(ψ_k)]  ×  wind",
-        fontsize=10, y=1.0
-    )
+    for side in ("right", "left"):
+        # ── Stack and phase-align ──────────────────────────────────────────
+        all_real = np.stack([r[f"{side}_real"] for r in runs], axis=0)  # (n_wind, S, K)
+        all_imag = np.stack([r[f"{side}_imag"] for r in runs], axis=0)
+        for w in range(n_wind):
+            all_real[w], all_imag[w] = align_phase(all_real[w], all_imag[w])
 
-    gs = gridspec.GridSpec(
-        n_rows, n_wind + 1,                          # +1 for colorbar column
-        width_ratios=[1.0] * n_wind + [cb_w / cell_w],
-        hspace=0.08,
-        wspace=0.04,
-        left=pad_l / fig_w,
-        right=1.0 - 0.08 / fig_w,
-        top=1.0 - pad_top / fig_h,
-        bottom=pad_bot / fig_h,
-    )
+        display = apply_component(all_real, all_imag)
 
-    for row, k in enumerate(eig_indices):
-        eig_data = display[:, :, k]   # (n_wind, num_states)
+        title = (f"Ground-truth {side} eigenvectors  "
+                 f"[{comp_label}(ψ_k)]  ×  wind")
 
-        # Shared symmetric color scale across all wind values for this row
-        vabs    = max(float(np.nanmax(np.abs(eig_data))), 1e-9)
-        hm_norm = mcolors.Normalize(vmin=-vabs, vmax=vabs)
-
-        row_label = "ψ₀ (stationary)" if k == 0 else f"ψ{k}"
-
-        for col, w_idx in enumerate(range(n_wind)):
-            ax = fig.add_subplot(gs[row, col])
-            grid_img = eigvec_to_grid(
-                eig_data[w_idx], canonical_states, grid_width, grid_height
-            )
-            ax.imshow(
-                grid_img,
-                cmap="RdBu_r", norm=hm_norm,
-                origin="upper", aspect="equal",
-                interpolation="nearest",
-            )
-            ax.set_xticks([])
-            ax.set_yticks([])
-
-            # Wind value labels on first row only
-            if row == 0:
-                ax.set_title(f"{wind_values[w_idx]:+.2f}",
-                             fontsize=4.5, pad=2)
-
-        # Row label on the left of each row
-        fig.text(
-            pad_l / fig_w - 0.005, 1.0 - (pad_top + (row + 0.5) * cell_h) / fig_h,
-            row_label,
-            ha="right", va="center", fontsize=8,
-            transform=fig.transFigure,
+        fig = make_figure(
+            display, wind_values, canonical_states,
+            grid_width, grid_height, eig_indices, title,
         )
 
-        # Colorbar in the dedicated last column
-        ax_cb = fig.add_subplot(gs[row, n_wind])
-        sm = plt.cm.ScalarMappable(cmap="RdBu_r", norm=hm_norm)
-        sm.set_array([])
-        cbar = fig.colorbar(sm, cax=ax_cb)
-        cbar.ax.tick_params(labelsize=5)
-
-    # ── Save ─────────────────────────────────────────────────────────────────
-    output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=150, bbox_inches="tight")
-    print(f"\nFigure saved → {output}")
-    plt.close(fig)
+        out_path = stem.parent / f"{stem.name}_{side}.png"
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        print(f"Figure saved → {out_path}")
+        plt.close(fig)
 
 
 if __name__ == "__main__":
