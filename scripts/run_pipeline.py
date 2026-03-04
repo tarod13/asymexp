@@ -67,6 +67,8 @@ def main() -> None:
     parser.add_argument("--env_file_name", type=str,   default="GridRoom-4-Doors")
     parser.add_argument("--shaping_coef",  type=float, default=0.1)
     parser.add_argument("--num_episodes",  type=int,   default=30000)
+    parser.add_argument("--max_steps",     type=int,   default=500,
+                        help="Max steps per episode in Q-learning (default: 500).")
     parser.add_argument("--num_seeds",     type=int,   default=5)
     parser.add_argument("--skip_allo",          action="store_true")
     parser.add_argument("--skip_complex",       action="store_true")
@@ -217,7 +219,7 @@ def main() -> None:
         "--num_episodes",   str(args.num_episodes),
         "--num_seeds",      str(args.num_seeds),
         "--shaping_coef",   str(args.shaping_coef),
-        "--max_steps",      "500",
+        "--max_steps",      str(args.max_steps),
         "--gamma_rl",       "0.99",
         "--lr",             "0.1",
         "--epsilon",        "0.1",
