@@ -9,13 +9,13 @@
 # --------
 #   bash scripts/submit_wind_plot.sh
 #   bash scripts/submit_wind_plot.sh --results_dir ./results/wind_sweep \
-#                                    --output_stem figures/wind_eigvecs \
-#                                    --num_eigvecs 4 \
-#                                    --component real
+#                                    --output_dir  ./figures \
+#                                    --num_eigvecs 4
 #
-# Produces:
-#   figures/wind_eigvecs_right.png
-#   figures/wind_eigvecs_left.png
+# Produces (all in --output_dir):
+#   gt_right_real.png   gt_left_real.png   allo_right_real.png
+#   gt_right_imag.png   gt_left_imag.png
+#   gt_right_abs.png    gt_left_abs.png
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
