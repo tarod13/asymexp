@@ -4,7 +4,6 @@
 #SBATCH --time=20:00:00
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
-#SBATCH --array=0-1
 #SBATCH --output=logs/lap_rep_seed_%a.out
 #SBATCH --error=logs/lap_rep_seed_%a.err
 
