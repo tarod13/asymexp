@@ -124,6 +124,21 @@ def load_model(model_dir: Path, use_gt: bool = False) -> dict:
     )
 
 
+def load_model_metadata(model_dir: Path) -> dict:
+    """
+    Load only the lightweight metadata from a results directory:
+    training_args and canonical_states.  Does NOT load eigenvectors.
+    Used in single-seed mode when the complex representation is not needed.
+    """
+    model_dir = Path(model_dir)
+    with open(model_dir / "args.json") as f:
+        training_args = json.load(f)
+    with open(model_dir / "viz_metadata.pkl", "rb") as f:
+        viz_metadata = pickle.load(f)
+    canonical_states = np.array(viz_metadata["canonical_states"])
+    return dict(training_args=training_args, canonical_states=canonical_states)
+
+
 # ===========================================================================
 # Transition table
 # ===========================================================================
@@ -735,16 +750,28 @@ def main() -> None:
     print(f"\n{'='*60}")
     print(f"Loading complex representation model from: {model_dir}")
     print(f"{'='*60}")
-    model_data     = load_model(model_dir, use_gt=args.use_gt)
-    training_args  = model_data["training_args"]
-    canonical_states = model_data["canonical_states"]
-    num_canonical  = len(canonical_states)
-    evtype         = model_data["eigenvalue_type"]
 
-    print(f"  Eigenvector source : {'ground truth' if args.use_gt else 'learned (normalized)'}")
-    print(f"  Eigenvalue type    : {evtype}")
-    print(f"  Canonical states   : {num_canonical}")
-    print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
+    # In single-seed mode skip eigenvectors when not needed (saves memory).
+    _load_complex = not single_seed_mode or args.method == "complex"
+    if _load_complex:
+        model_data       = load_model(model_dir, use_gt=args.use_gt)
+        training_args    = model_data["training_args"]
+        canonical_states = model_data["canonical_states"]
+        num_canonical    = len(canonical_states)
+        evtype           = model_data["eigenvalue_type"]
+        print(f"  Eigenvector source : {'ground truth' if args.use_gt else 'learned (normalized)'}")
+        print(f"  Eigenvalue type    : {evtype}")
+        print(f"  Canonical states   : {num_canonical}")
+        print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
+    else:
+        model_data       = None
+        _meta            = load_model_metadata(model_dir)
+        training_args    = _meta["training_args"]
+        canonical_states = _meta["canonical_states"]
+        num_canonical    = len(canonical_states)
+        evtype           = None
+        print(f"  Metadata only (eigenvectors skipped for method={args.method})")
+        print(f"  Canonical states   : {num_canonical}")
 
     # Optionally load ALLO representation model.
     # In single-seed mode skip it when not needed (saves time and memory).
@@ -846,32 +873,34 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 3. Compute hitting times (complex representation)
     # ------------------------------------------------------------------
-    print(f"\n{'='*60}")
-    print("Computing hitting times (complex representation) ...")
-    print(f"{'='*60}")
+    hitting_times = None
+    if model_data is not None:
+        print(f"\n{'='*60}")
+        print("Computing hitting times (complex representation) ...")
+        print(f"{'='*60}")
 
-    hitting_times = np.array(
-        compute_hitting_times_from_eigenvectors(
-            left_real        = model_data["left_real"],
-            left_imag        = model_data["left_imag"],
-            right_real       = model_data["right_real"],
-            right_imag       = model_data["right_imag"],
-            eigenvalues_real = model_data["eigenvalues_real"],
-            eigenvalues_imag = model_data["eigenvalues_imag"],
-            gamma            = training_args.get("gamma", 0.95),
-            delta            = training_args.get("delta", 0.1),
-            eigenvalue_type  = evtype,
+        hitting_times = np.array(
+            compute_hitting_times_from_eigenvectors(
+                left_real        = model_data["left_real"],
+                left_imag        = model_data["left_imag"],
+                right_real       = model_data["right_real"],
+                right_imag       = model_data["right_imag"],
+                eigenvalues_real = model_data["eigenvalues_real"],
+                eigenvalues_imag = model_data["eigenvalues_imag"],
+                gamma            = training_args.get("gamma", 0.95),
+                delta            = training_args.get("delta", 0.1),
+                eigenvalue_type  = evtype,
+            )
         )
-    )
 
-    finite = hitting_times[np.isfinite(hitting_times) & (hitting_times >= 0)]
-    print(f"  Shape              : {hitting_times.shape}")
-    print(f"  Finite values      : {len(finite)} / {hitting_times.size}"
-          f"  ({len(finite)/hitting_times.size:.1%})")
-    if len(finite) > 0:
-        print(f"  Range              : [{finite.min():.2f}, {finite.max():.2f}]")
+        finite = hitting_times[np.isfinite(hitting_times) & (hitting_times >= 0)]
+        print(f"  Shape              : {hitting_times.shape}")
+        print(f"  Finite values      : {len(finite)} / {hitting_times.size}"
+              f"  ({len(finite)/hitting_times.size:.1%})")
+        if len(finite) > 0:
+            print(f"  Range              : [{finite.min():.2f}, {finite.max():.2f}]")
 
-    np.save(output_dir / "hitting_times.npy", hitting_times)
+        np.save(output_dir / "hitting_times.npy", hitting_times)
 
     # Compute hitting times for ALLO representation if provided
     allo_hitting_times = None
@@ -957,8 +986,10 @@ def main() -> None:
             train_start_per_seed = train_start_per_seed[si : si + 1]
 
     # Build per-seed potential vectors by slicing the full F[s, g] matrix.
-    complex_potential_matrix   = build_all_potentials(hitting_times)           # [N, N]
-    complex_potential_per_seed = complex_potential_matrix[:, goal_per_seed].T  # [n, N]
+    complex_potential_per_seed = None
+    if hitting_times is not None:
+        complex_potential_matrix   = build_all_potentials(hitting_times)           # [N, N]
+        complex_potential_per_seed = complex_potential_matrix[:, goal_per_seed].T  # [n, N]
     allo_potential_per_seed = None
     if allo_hitting_times is not None:
         allo_potential_matrix  = build_all_potentials(allo_hitting_times)      # [N, N]
@@ -971,11 +1002,12 @@ def main() -> None:
     # 5. Run Q-learning: baseline vs shaped (complex) [vs shaped (allo)]
     # ------------------------------------------------------------------
     conditions = {
-        "baseline":
-            dict(potential_per_seed=None,                      shaping_coef=0.0),
-        f"shaped β={args.shaping_coef} (complex)":
-            dict(potential_per_seed=complex_potential_per_seed, shaping_coef=args.shaping_coef),
+        "baseline": dict(potential_per_seed=None, shaping_coef=0.0),
     }
+    if complex_potential_per_seed is not None:
+        conditions[f"shaped β={args.shaping_coef} (complex)"] = dict(
+            potential_per_seed=complex_potential_per_seed, shaping_coef=args.shaping_coef
+        )
     if allo_potential_per_seed is not None:
         conditions[f"shaped β={args.shaping_coef} (allo)"] = dict(
             potential_per_seed=allo_potential_per_seed, shaping_coef=args.shaping_coef
