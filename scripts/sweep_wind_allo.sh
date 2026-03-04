@@ -91,7 +91,7 @@ python train_allo_rep.py \
     --num_eigenvector_pairs "$NUM_EIGVECS" \
     --learning_rate         0.0003 \
     --gamma                 0.9 \
-    --use_rejection_sampling \
+    --no-use_rejection_sampling \
     --num_envs              1000 \
     --num_steps             1000 \
     --step_size_duals       1.0 \
