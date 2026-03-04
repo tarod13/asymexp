@@ -124,6 +124,21 @@ def load_model(model_dir: Path, use_gt: bool = False) -> dict:
     )
 
 
+def load_model_metadata(model_dir: Path) -> dict:
+    """
+    Load only the lightweight metadata from a results directory:
+    training_args and canonical_states.  Does NOT load eigenvectors.
+    Used in single-seed mode when the complex representation is not needed.
+    """
+    model_dir = Path(model_dir)
+    with open(model_dir / "args.json") as f:
+        training_args = json.load(f)
+    with open(model_dir / "viz_metadata.pkl", "rb") as f:
+        viz_metadata = pickle.load(f)
+    canonical_states = np.array(viz_metadata["canonical_states"])
+    return dict(training_args=training_args, canonical_states=canonical_states)
+
+
 # ===========================================================================
 # Transition table
 # ===========================================================================
@@ -701,7 +716,29 @@ def main() -> None:
              "sampled goal (default: 0, no constraint). Requires a valid --start_state; "
              "otherwise this flag is ignored with a warning.",
     )
+    parser.add_argument(
+        "--method", type=str, default=None,
+        choices=["baseline", "complex", "allo"],
+        help="Single-method mode for distributed execution: which condition to run. "
+             "Must be paired with --seed_idx.  The script saves a partial result file "
+             "and skips the combined plot; use analyze_reward_shaping.py afterwards.",
+    )
+    parser.add_argument(
+        "--seed_idx", type=int, default=None,
+        help="Which seed to run in single-method mode (0-indexed, up to --num_seeds-1). "
+             "Must be paired with --method.",
+    )
     args = parser.parse_args()
+
+    single_seed_mode = args.method is not None or args.seed_idx is not None
+    if (args.method is None) != (args.seed_idx is None):
+        parser.error("--method and --seed_idx must be provided together.")
+    if single_seed_mode and args.seed_idx >= args.num_seeds:
+        parser.error(
+            f"--seed_idx {args.seed_idx} is out of range for --num_seeds {args.num_seeds}."
+        )
+    if single_seed_mode and args.method == "allo" and args.allo_model_dir is None:
+        parser.error("--method=allo requires --allo_model_dir.")
 
     model_dir  = Path(args.model_dir)
     output_dir = Path(args.output_dir) if args.output_dir else model_dir / "reward_shaping"
@@ -713,20 +750,36 @@ def main() -> None:
     print(f"\n{'='*60}")
     print(f"Loading complex representation model from: {model_dir}")
     print(f"{'='*60}")
-    model_data     = load_model(model_dir, use_gt=args.use_gt)
-    training_args  = model_data["training_args"]
-    canonical_states = model_data["canonical_states"]
-    num_canonical  = len(canonical_states)
-    evtype         = model_data["eigenvalue_type"]
 
-    print(f"  Eigenvector source : {'ground truth' if args.use_gt else 'learned (normalized)'}")
-    print(f"  Eigenvalue type    : {evtype}")
-    print(f"  Canonical states   : {num_canonical}")
-    print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
+    # In single-seed mode skip eigenvectors when not needed (saves memory).
+    _load_complex = not single_seed_mode or args.method == "complex"
+    if _load_complex:
+        model_data       = load_model(model_dir, use_gt=args.use_gt)
+        training_args    = model_data["training_args"]
+        canonical_states = model_data["canonical_states"]
+        num_canonical    = len(canonical_states)
+        evtype           = model_data["eigenvalue_type"]
+        print(f"  Eigenvector source : {'ground truth' if args.use_gt else 'learned (normalized)'}")
+        print(f"  Eigenvalue type    : {evtype}")
+        print(f"  Canonical states   : {num_canonical}")
+        print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
+    else:
+        model_data       = None
+        _meta            = load_model_metadata(model_dir)
+        training_args    = _meta["training_args"]
+        canonical_states = _meta["canonical_states"]
+        num_canonical    = len(canonical_states)
+        evtype           = None
+        print(f"  Metadata only (eigenvectors skipped for method={args.method})")
+        print(f"  Canonical states   : {num_canonical}")
 
-    # Optionally load ALLO representation model
+    # Optionally load ALLO representation model.
+    # In single-seed mode skip it when not needed (saves time and memory).
     allo_model_data = None
-    if args.allo_model_dir is not None:
+    _load_allo = args.allo_model_dir is not None and (
+        not single_seed_mode or args.method == "allo"
+    )
+    if _load_allo:
         allo_model_dir = Path(args.allo_model_dir)
         print(f"\n{'='*60}")
         print(f"Loading ALLO representation model from: {allo_model_dir}")
@@ -820,32 +873,34 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 3. Compute hitting times (complex representation)
     # ------------------------------------------------------------------
-    print(f"\n{'='*60}")
-    print("Computing hitting times (complex representation) ...")
-    print(f"{'='*60}")
+    hitting_times = None
+    if model_data is not None:
+        print(f"\n{'='*60}")
+        print("Computing hitting times (complex representation) ...")
+        print(f"{'='*60}")
 
-    hitting_times = np.array(
-        compute_hitting_times_from_eigenvectors(
-            left_real        = model_data["left_real"],
-            left_imag        = model_data["left_imag"],
-            right_real       = model_data["right_real"],
-            right_imag       = model_data["right_imag"],
-            eigenvalues_real = model_data["eigenvalues_real"],
-            eigenvalues_imag = model_data["eigenvalues_imag"],
-            gamma            = training_args.get("gamma", 0.95),
-            delta            = training_args.get("delta", 0.1),
-            eigenvalue_type  = evtype,
+        hitting_times = np.array(
+            compute_hitting_times_from_eigenvectors(
+                left_real        = model_data["left_real"],
+                left_imag        = model_data["left_imag"],
+                right_real       = model_data["right_real"],
+                right_imag       = model_data["right_imag"],
+                eigenvalues_real = model_data["eigenvalues_real"],
+                eigenvalues_imag = model_data["eigenvalues_imag"],
+                gamma            = training_args.get("gamma", 0.95),
+                delta            = training_args.get("delta", 0.1),
+                eigenvalue_type  = evtype,
+            )
         )
-    )
 
-    finite = hitting_times[np.isfinite(hitting_times) & (hitting_times >= 0)]
-    print(f"  Shape              : {hitting_times.shape}")
-    print(f"  Finite values      : {len(finite)} / {hitting_times.size}"
-          f"  ({len(finite)/hitting_times.size:.1%})")
-    if len(finite) > 0:
-        print(f"  Range              : [{finite.min():.2f}, {finite.max():.2f}]")
+        finite = hitting_times[np.isfinite(hitting_times) & (hitting_times >= 0)]
+        print(f"  Shape              : {hitting_times.shape}")
+        print(f"  Finite values      : {len(finite)} / {hitting_times.size}"
+              f"  ({len(finite)/hitting_times.size:.1%})")
+        if len(finite) > 0:
+            print(f"  Range              : [{finite.min():.2f}, {finite.max():.2f}]")
 
-    np.save(output_dir / "hitting_times.npy", hitting_times)
+        np.save(output_dir / "hitting_times.npy", hitting_times)
 
     # Compute hitting times for ALLO representation if provided
     allo_hitting_times = None
@@ -921,27 +976,59 @@ def main() -> None:
         print(f"    seed {i:2d}  eval_start ({stx},{sty}) → goal ({gx},{gy})"
               f"  [canonical {int(st)} → {int(g)}]")
 
+    # Single-seed mode: narrow to the one requested seed BEFORE building
+    # potentials so the potential arrays are already [1, N] shaped.
+    if single_seed_mode:
+        si = args.seed_idx
+        goal_per_seed        = goal_per_seed[si : si + 1]
+        eval_starts_per_seed = eval_starts_per_seed[si : si + 1]
+        if train_start_per_seed is not None:
+            train_start_per_seed = train_start_per_seed[si : si + 1]
+
     # Build per-seed potential vectors by slicing the full F[s, g] matrix.
-    complex_potential_matrix   = build_all_potentials(hitting_times)           # [N, N]
-    complex_potential_per_seed = complex_potential_matrix[:, goal_per_seed].T  # [num_seeds, N]
+    complex_potential_per_seed = None
+    if hitting_times is not None:
+        complex_potential_matrix   = build_all_potentials(hitting_times)           # [N, N]
+        complex_potential_per_seed = complex_potential_matrix[:, goal_per_seed].T  # [n, N]
     allo_potential_per_seed = None
     if allo_hitting_times is not None:
         allo_potential_matrix  = build_all_potentials(allo_hitting_times)      # [N, N]
-        allo_potential_per_seed = allo_potential_matrix[:, goal_per_seed].T    # [num_seeds, N]
+        allo_potential_per_seed = allo_potential_matrix[:, goal_per_seed].T    # [n, N]
+
+    # Number of seeds to actually run (1 in single-seed mode).
+    num_q_seeds = len(goal_per_seed)
 
     # ------------------------------------------------------------------
     # 5. Run Q-learning: baseline vs shaped (complex) [vs shaped (allo)]
     # ------------------------------------------------------------------
     conditions = {
-        "baseline":
-            dict(potential_per_seed=None,                      shaping_coef=0.0),
-        f"shaped β={args.shaping_coef} (complex)":
-            dict(potential_per_seed=complex_potential_per_seed, shaping_coef=args.shaping_coef),
+        "baseline": dict(potential_per_seed=None, shaping_coef=0.0),
     }
+    if complex_potential_per_seed is not None:
+        conditions[f"shaped β={args.shaping_coef} (complex)"] = dict(
+            potential_per_seed=complex_potential_per_seed, shaping_coef=args.shaping_coef
+        )
     if allo_potential_per_seed is not None:
         conditions[f"shaped β={args.shaping_coef} (allo)"] = dict(
             potential_per_seed=allo_potential_per_seed, shaping_coef=args.shaping_coef
         )
+
+    # Single-seed mode: keep only the requested condition.
+    if single_seed_mode:
+        _method_to_key = {
+            "baseline": "baseline",
+            "complex":  f"shaped β={args.shaping_coef} (complex)",
+            "allo":     f"shaped β={args.shaping_coef} (allo)",
+        }
+        target_key = _method_to_key[args.method]
+        if target_key not in conditions:
+            print(
+                f"ERROR: Condition '{target_key}' is not available. "
+                "(Did you forget --allo_model_dir for method=allo?)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        conditions = {target_key: conditions[target_key]}
 
     results = {}
     win = min(200, args.num_episodes)
@@ -958,33 +1045,58 @@ def main() -> None:
             train_start_per_seed = train_start_per_seed,
             min_goal_distance    = args.min_goal_distance,
             num_episodes         = args.num_episodes,
-            num_seeds            = args.num_seeds,
+            num_seeds            = num_q_seeds,
             max_steps_per_episode= args.max_steps,
             num_eval_episodes    = args.num_eval_episodes,
             gamma                = args.gamma_rl,
             lr                   = args.lr,
             epsilon              = args.epsilon,
-            seed                 = 0,
+            seed                 = args.seed_idx if single_seed_mode else 0,
             log_interval         = args.log_interval,
             **cond_kwargs,
         )
 
-        for seed_i in range(args.num_seeds):
+        for seed_i in range(num_q_seeds):
             final_train_sr = reached[seed_i, -win:].mean()
             final_eval_sr  = float(eval_sr[-1, seed_i])
             print(f"  seed {seed_i}:  train_sr={final_train_sr:.2f}"
                   f"  eval_sr={final_eval_sr:.2f}  (last {win} train eps)")
 
         results[cond_name] = dict(
-            steps         = steps,    # [num_seeds, num_episodes]
+            steps         = steps,    # [num_q_seeds, num_episodes]
             reached       = reached,
-            eval_sr       = eval_sr,  # [num_chunks, num_seeds]
+            eval_sr       = eval_sr,  # [num_chunks, num_q_seeds]
             eval_episodes = eval_ep,  # [num_chunks]
         )
 
     # ------------------------------------------------------------------
     # 6. Save and plot
     # ------------------------------------------------------------------
+
+    if single_seed_mode:
+        # Save a partial result file; combined analysis is done later by
+        # experiments/reward_shaping/analyze_reward_shaping.py.
+        cond_name   = list(results.keys())[0]
+        partial_dir = output_dir / "partial"
+        partial_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"results_{args.method}_{args.seed_idx:04d}.pkl"
+        with open(partial_dir / fname, "wb") as f:
+            pickle.dump(
+                dict(
+                    method     = args.method,
+                    cond_name  = cond_name,
+                    seed_idx   = args.seed_idx,
+                    results    = results,
+                    goal       = int(goal_per_seed[0]),
+                    eval_start = int(eval_starts_per_seed[0]),
+                    args       = vars(args),
+                ),
+                f,
+            )
+        print(f"\nPartial result saved → {partial_dir / fname}")
+        print(f"\nDone.  Partial output written to {partial_dir / fname}")
+        return
+
     print(f"\n{'='*60}")
     print("Saving results ...")
     print(f"{'='*60}")
