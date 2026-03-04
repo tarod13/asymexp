@@ -2,6 +2,7 @@ import os
 import re
 
 from src.envs.gridworld import GridWorldEnv
+from src.envs.windy_gridworld import WindyGridWorldEnv
 
 
 
@@ -102,7 +103,7 @@ def get_env_path(file_name):
     return os.path.join(_dir, 'txt', f'{file_name}.txt')
 
 
-def create_environment_from_text(text_content=None, file_name=None, file_path=None, **env_kwargs):
+def create_environment_from_text(text_content=None, file_name=None, file_path=None, windy=False, **env_kwargs):
     """
     Create a GridWorld environment from a text representation.
 
@@ -161,12 +162,12 @@ def create_environment_from_text(text_content=None, file_name=None, file_path=No
     is_comma_format = any(',' in line for line in lines)
 
     if is_comma_format:
-        return _parse_comma_format(lines, **env_kwargs)
+        return _parse_comma_format(lines, windy=windy, **env_kwargs)
     else:
-        return _parse_legacy_format(lines, **env_kwargs)
+        return _parse_legacy_format(lines, windy=windy, **env_kwargs)
 
 
-def _parse_legacy_format(lines, **env_kwargs):
+def _parse_legacy_format(lines, windy=False, **env_kwargs):
     """Parse the legacy character-by-character format."""
     # Get grid dimensions
     height = len(lines)
@@ -187,8 +188,8 @@ def _parse_legacy_format(lines, **env_kwargs):
             elif char == 'G':  # Goal
                 goal_pos = (x, y)
 
-    # Create and return the environment
-    return GridWorldEnv(
+    env_class = WindyGridWorldEnv if windy else GridWorldEnv
+    return env_class(
         width=width,
         height=height,
         obstacles=obstacles,
@@ -198,7 +199,7 @@ def _parse_legacy_format(lines, **env_kwargs):
     )
 
 
-def _parse_comma_format(lines, **env_kwargs):
+def _parse_comma_format(lines, windy=False, **env_kwargs):
     """Parse the new comma-separated format with support for doors and multiple elements per tile."""
 
     # Parse grid
@@ -272,8 +273,8 @@ def _parse_comma_format(lines, **env_kwargs):
                 action      = action_map[action_char]
                 portals[(source_state, action)] = dest_state
 
-    # Always create a single GridWorldEnv; doors and portals are optional
-    return GridWorldEnv(
+    env_class = WindyGridWorldEnv if windy else GridWorldEnv
+    return env_class(
         width=width,
         height=height,
         obstacles=obstacles,

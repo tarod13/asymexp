@@ -8,6 +8,8 @@ class Args:
     env_file: str | None = None  # Path to environment text file (if env_type='file')
     env_file_name: str | None = "GridRoom-4-Doors"  # Name of environment file in src/envs/txt/ (e.g., 'GridRoom-4')
     max_episode_length: int = 1000
+    windy: bool = False  # If True, use WindyGridWorldEnv instead of GridWorldEnv
+    wind: float = 0.0   # Wind strength in (-1, 1); negative = leftward, positive = rightward
 
     # Data collection
     num_envs: int = 1000

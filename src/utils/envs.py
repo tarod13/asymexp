@@ -21,6 +21,9 @@ def create_gridworld_env(args: Args):
     Returns:
         env: GridWorld environment instance
     """
+    windy = getattr(args, 'windy', False)
+    wind  = getattr(args, 'wind', 0.0)
+
     if args.env_type == 'file':
         # Load from file path
         if args.env_file is None and args.env_file_name is None:
@@ -31,6 +34,8 @@ def create_gridworld_env(args: Args):
             file_name=args.env_file_name,
             max_steps=args.max_episode_length,
             precision=32,
+            windy=windy,
+            wind=wind,
         )
     else:
         # Load from example environments
@@ -43,10 +48,15 @@ def create_gridworld_env(args: Args):
             text_content=text_content,
             max_steps=args.max_episode_length,
             precision=32,
+            windy=windy,
+            wind=wind,
         )
 
-    print(f"Loaded environment: {args.env_type}")
+    env_class_name = type(env).__name__
+    print(f"Loaded environment: {args.env_type} ({env_class_name})")
     print(f"  Grid size: {env.width} x {env.height}")
+    if windy:
+        print(f"  Wind: {wind:+.3f} ({'left' if wind < 0 else 'right'}, p={abs(wind):.3f})")
     print(f"  Number of obstacles: {len(env.obstacles) if env.has_obstacles else 0}")
     if env.has_doors:
         print(f"  Doors: {len(env.asymmetric_transitions)} asymmetric transitions")
