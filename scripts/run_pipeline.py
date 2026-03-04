@@ -202,20 +202,25 @@ def main() -> None:
             sys.exit(1)
         print(f"  Complex training complete.  Output: {complex_dir}")
 
-    # ── Step 3: Reward shaping experiment ─────────────────────────────────────
+    # ── Step 3: Submit distributed reward-shaping Q-learning ──────────────────
+    # Each (method, seed) pair is a separate SLURM array task so that no single
+    # job needs to hold all trajectories in memory at once.  A dependent
+    # analysis job aggregates the partial results and produces the same plot.
     print()
     print("=" * 60)
-    print(" Step 3: Reward shaping experiment")
-    print(f"   model_dir (complex) : {complex_dir}")
-    print(f"   allo_model_dir      : {allo_dir}")
+    print(" Step 3: Submit distributed reward-shaping Q-learning")
+    print(f"   complex model : {complex_dir}")
+    print(f"   allo model    : {allo_dir}")
     print("=" * 60)
 
-    output_dir = complex_dir / "reward_shaping"
+    output_dir    = complex_dir / "reward_shaping"
+    submit_script = repo_root / "scripts" / "submit_reward_shaping.sh"
 
     rs_cmd = [
-        py, str(repo_root / "experiments" / "reward_shaping" / "run_reward_shaping.py"),
+        "bash", str(submit_script),
         "--model_dir",      str(complex_dir),
         "--allo_model_dir", str(allo_dir),
+        "--output_dir",     str(output_dir),
         "--num_episodes",   str(args.num_episodes),
         "--num_seeds",      str(args.num_seeds),
         "--shaping_coef",   str(args.shaping_coef),
@@ -223,7 +228,6 @@ def main() -> None:
         "--gamma_rl",       "0.99",
         "--lr",             "0.1",
         "--epsilon",        "0.1",
-        "--output_dir",     str(output_dir),
     ]
     if args.start_state:
         rs_cmd += ["--start_state", args.start_state]
@@ -234,8 +238,9 @@ def main() -> None:
     print()
     print("=" * 60)
     print(" Pipeline complete!")
-    print(f"  Results  : {output_dir}")
-    print(f"  Plot     : {output_dir / 'learning_curves.png'}")
+    print("  Q-learning jobs submitted (or finished, if running locally).")
+    print(f"  Results will appear in : {output_dir}")
+    print(f"  Final plot             : {output_dir / 'learning_curves.png'}")
     print("=" * 60)
 
 
