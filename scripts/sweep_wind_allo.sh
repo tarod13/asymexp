@@ -36,10 +36,6 @@ mkdir -p logs
 # Support local execution: bash sweep_wind_allo.sh <task_id>
 JOB_ID="${1:-$SLURM_ARRAY_TASK_ID}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-cd "$REPO_ROOT"
-
 # ── Environment setup ────────────────────────────────────────────────────────
 module --force purge
 module load StdEnv/2023 gcc/14.3 python/3.11 cuda/12.9 mujoco/3.3.0
