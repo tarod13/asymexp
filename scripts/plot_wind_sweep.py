@@ -236,7 +236,7 @@ def parse_args():
     )
     p.add_argument("--results_dir", default="./results/wind_sweep",
                    help="Directory containing task_0/, task_1/, …")
-    p.add_argument("--output_dir", default=".",
+    p.add_argument("--output_dir", default="./results/wind_sweep",
                    help="Directory where all output figures are saved.")
     p.add_argument("--num_eigvecs", type=int, default=4,
                    help="Number of non-trivial eigenvectors to show "
