@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=lap_rep_training
+#SBATCH --job-name=submit_wind_plot
 #SBATCH --account=aip-machado
 #SBATCH --time=20:00:00
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
-#SBATCH --output=logs/lap_rep_seed_%a.out
-#SBATCH --error=logs/lap_rep_seed_%a.err
+#SBATCH --output=logs/submit_wind_plot_%a.out
+#SBATCH --error=logs/submit_wind_plot_%a.err
 
 # =============================================================================
 # Run the wind-sweep eigenvector visualisation.
