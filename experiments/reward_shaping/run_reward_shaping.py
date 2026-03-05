@@ -427,32 +427,28 @@ def run_q_learning(
                 gamma * potential[s_prime] - potential[s]
             )
 
-            # Q update — skipped if episode already done
+            # Q update — always learn, including on the terminal transition
             target = jnp.where(reached, r, r + gamma * Q[s_prime].max())
-            Q = jax.lax.cond(
-                done,
-                lambda Q: Q,
-                lambda Q: Q.at[s, a].add(lr * (target - Q[s, a])),
-                Q,
-            )
+            Q = Q.at[s, a].add(lr * (target - Q[s, a]))
 
             new_done        = done | reached
-            new_s           = jnp.where(done, s, s_prime)
+            new_s           = jnp.where(new_done, s, s_prime)
+            # Reset episode counter immediately on done so the next step
+            # triggers at_reset and starts a fresh episode.
             next_step_in_ep = jnp.where(
-                step_in_ep == max_steps_per_episode - 1,
+                new_done | (step_in_ep == max_steps_per_episode - 1),
                 jnp.zeros((), jnp.int32),
                 step_in_ep + 1,
             )
-            return (Q, new_s, new_done, next_step_in_ep, goal, potential, fixed_start), new_done
+            episode_end = new_done | (step_in_ep == max_steps_per_episode - 1)
+            return (Q, new_s, new_done, next_step_in_ep, goal, potential, fixed_start), (new_done, episode_end)
 
         step_keys = jax.random.split(chunk_key, chunk_steps)
-        new_carry, done_flags = jax.lax.scan(run_step, carry, step_keys)
-        done_flags   = done_flags.reshape(chunk_ep, max_steps_per_episode)
-        any_done     = jnp.any(done_flags, axis=1)
-        steps_per_ep = jnp.where(
-            any_done, jnp.argmax(done_flags, axis=1) + 1, max_steps_per_episode
-        )
-        return new_carry, (steps_per_ep, any_done)
+        new_carry, (reached_flat, ep_end_flat) = jax.lax.scan(run_step, carry, step_keys)
+        # Return flat per-step flags; the main loop converts them to per-episode
+        # stats in numpy.  Episodes now have variable lengths (they restart
+        # immediately on done), so a fixed reshape is no longer valid.
+        return new_carry, (reached_flat, ep_end_flat)
 
     vmapped_chunk = jax.jit(jax.vmap(run_chunk))
 
@@ -482,9 +478,10 @@ def run_q_learning(
 
             reached = s_prime == goal
             new_done = done | reached
-            new_s    = jnp.where(done, s, s_prime)
+            new_s    = jnp.where(new_done, s, s_prime)
+            # Restart immediately on done so the next step triggers at_reset.
             next_step_in_ep = jnp.where(
-                step_in_ep == max_steps_per_episode - 1,
+                new_done | (step_in_ep == max_steps_per_episode - 1),
                 jnp.zeros((), jnp.int32),
                 step_in_ep + 1,
             )
@@ -521,36 +518,73 @@ def run_q_learning(
         train_start_jax,                       # fixed train start (-1 = random)
     )
 
-    all_steps, all_reached, all_eval_sr, eval_ep_indices = [], [], [], []
+    # Per-seed accumulators: lists of 1-D arrays, one entry per chunk.
+    seed_steps_acc   = [[] for _ in range(num_seeds)]
+    seed_reached_acc = [[] for _ in range(num_seeds)]
+    all_eval_sr, eval_ep_indices = [], []
+    cumulative_eps = np.zeros(num_seeds, dtype=np.int64)
+
+    def _fmt(s):
+        m, s = divmod(int(s), 60)
+        return f"{m}m{s:02d}s" if m else f"{s}s"
+
     ep_width = len(str(num_episodes))
     t0 = time.monotonic()
     for chunk_i in range(num_chunks):
-        carry, (steps, reached) = vmapped_chunk(carry, seed_chunk_keys[:, chunk_i])
-        reached_np  = np.array(reached)
-        eval_sr_np  = np.array(
+        carry, (reached_flat, ep_end_flat) = vmapped_chunk(carry, seed_chunk_keys[:, chunk_i])
+        reached_np = np.array(reached_flat)  # [num_seeds, chunk_steps]
+        ep_end_np  = np.array(ep_end_flat)   # [num_seeds, chunk_steps]
+
+        # Convert flat per-step flags to per-episode stats for each seed.
+        chunk_reached_rates = np.zeros(num_seeds, dtype=float)
+        for si in range(num_seeds):
+            ep_ends = np.where(ep_end_np[si])[0]
+            if len(ep_ends) == 0:
+                continue
+            ep_starts       = np.concatenate([[0], ep_ends[:-1] + 1])
+            steps_s         = (ep_ends - ep_starts + 1).astype(np.int32)
+            reached_s       = reached_np[si, ep_ends]
+            seed_steps_acc[si].append(steps_s)
+            seed_reached_acc[si].append(reached_s)
+            cumulative_eps[si] += len(ep_ends)
+            chunk_reached_rates[si] = reached_s.mean()
+
+        eval_sr_np = np.array(
             vmapped_eval(carry[0], eval_starts_jax, goal_jax)
         )  # [num_seeds]
-        all_steps.append(np.array(steps, dtype=np.int32))
-        all_reached.append(reached_np)
         all_eval_sr.append(eval_sr_np)
-        ep_end = (chunk_i + 1) * chunk_ep
-        eval_ep_indices.append(ep_end)
+        eval_ep_indices.append(int(cumulative_eps.mean()))
 
         elapsed   = time.monotonic() - t0
         avg_chunk = elapsed / (chunk_i + 1)
         eta       = avg_chunk * (num_chunks - chunk_i - 1)
-        def _fmt(s):
-            m, s = divmod(int(s), 60)
-            return f"{m}m{s:02d}s" if m else f"{s}s"
-        print(f"    ep {ep_end:{ep_width}d}/{num_episodes}:"
-              f"  train_sr={reached_np.mean():.2f}"
+        ep_disp   = int(cumulative_eps.mean())
+        print(f"    ep ~{ep_disp:{ep_width}d}/{num_episodes}:"
+              f"  train_sr={chunk_reached_rates.mean():.2f}"
               f"  eval_sr={eval_sr_np.mean():.2f}"
               f"  elapsed {_fmt(elapsed)}  eta {_fmt(eta)}"
               f"  ({avg_chunk:.1f}s/chunk)")
 
+    # Concatenate per-seed episode lists and pad seeds to equal length.
+    all_steps_final   = [
+        np.concatenate(seed_steps_acc[si])   if seed_steps_acc[si]   else np.zeros(0, dtype=np.int32)
+        for si in range(num_seeds)
+    ]
+    all_reached_final = [
+        np.concatenate(seed_reached_acc[si]) if seed_reached_acc[si] else np.zeros(0, dtype=bool)
+        for si in range(num_seeds)
+    ]
+    max_eps = max((len(s) for s in all_steps_final), default=0)
+    train_steps   = np.full((num_seeds, max_eps), max_steps_per_episode, dtype=np.int32)
+    train_reached = np.zeros((num_seeds, max_eps), dtype=bool)
+    for si in range(num_seeds):
+        n = len(all_steps_final[si])
+        train_steps[si, :n]   = all_steps_final[si]
+        train_reached[si, :n] = all_reached_final[si]
+
     return (
-        np.concatenate(all_steps,   axis=1),         # [num_seeds, num_episodes]
-        np.concatenate(all_reached, axis=1),          # [num_seeds, num_episodes]
+        train_steps,                                  # [num_seeds, total_episodes]
+        train_reached,                                # [num_seeds, total_episodes]
         np.stack(all_eval_sr,       axis=0),          # [num_chunks, num_seeds]
         np.array(eval_ep_indices,   dtype=np.int32),  # [num_chunks]
     )
