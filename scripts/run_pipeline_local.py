@@ -219,6 +219,7 @@ def main() -> None:
 
     rs_cmd = [
         py, str(repo_root / "experiments" / "reward_shaping" / "run_reward_shaping.py"),
+        "--env",            args.env_file_name,
         "--model_dir",      str(complex_dir),
         "--allo_model_dir", str(allo_dir),
         "--output_dir",     str(output_dir),

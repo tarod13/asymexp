@@ -60,7 +60,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.envs.gridworld import GridWorldState
-from src.utils.envs import create_gridworld_env
+from src.utils.envs import create_gridworld_env, get_canonical_free_states
 from src.utils.metrics import compute_hitting_times_from_eigenvectors
 
 
@@ -124,19 +124,6 @@ def load_model(model_dir: Path, use_gt: bool = False) -> dict:
     )
 
 
-def load_model_metadata(model_dir: Path) -> dict:
-    """
-    Load only the lightweight metadata from a results directory:
-    training_args and canonical_states.  Does NOT load eigenvectors.
-    Used in single-seed mode when the complex representation is not needed.
-    """
-    model_dir = Path(model_dir)
-    with open(model_dir / "args.json") as f:
-        training_args = json.load(f)
-    with open(model_dir / "viz_metadata.pkl", "rb") as f:
-        viz_metadata = pickle.load(f)
-    canonical_states = np.array(viz_metadata["canonical_states"])
-    return dict(training_args=training_args, canonical_states=canonical_states)
 
 
 # ===========================================================================
@@ -681,8 +668,14 @@ def main() -> None:
         description="Reward shaping with Laplacian hitting times."
     )
     parser.add_argument(
-        "--model_dir", required=True,
-        help="Results directory for the complex representation (train_lap_rep.py).",
+        "--env", required=True,
+        help="Environment name (e.g. 'GridRoom-4-Doors') passed as env_file_name "
+             "to create_gridworld_env with env_type='file'.",
+    )
+    parser.add_argument(
+        "--model_dir", default=None,
+        help="Results directory for the complex representation (train_lap_rep.py). "
+             "Required to run the 'shaped (complex)' condition; omit for baseline only.",
     )
     parser.add_argument(
         "--allo_model_dir", default=None,
@@ -774,38 +767,32 @@ def main() -> None:
     if single_seed_mode and args.method == "allo" and args.allo_model_dir is None:
         parser.error("--method=allo requires --allo_model_dir.")
 
-    model_dir  = Path(args.model_dir)
-    output_dir = Path(args.output_dir) if args.output_dir else model_dir / "reward_shaping"
+    model_dir  = Path(args.model_dir) if args.model_dir else None
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    elif model_dir is not None:
+        output_dir = model_dir / "reward_shaping"
+    else:
+        output_dir = Path("reward_shaping")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # 1. Load pre-trained Laplacian model (complex representation)
     # ------------------------------------------------------------------
-    print(f"\n{'='*60}")
-    print(f"Loading complex representation model from: {model_dir}")
-    print(f"{'='*60}")
-
     # In single-seed mode skip eigenvectors when not needed (saves memory).
-    _load_complex = not single_seed_mode or args.method == "complex"
+    _load_complex = (model_dir is not None) and (not single_seed_mode or args.method == "complex")
     if _load_complex:
-        model_data       = load_model(model_dir, use_gt=args.use_gt)
-        training_args    = model_data["training_args"]
-        canonical_states = model_data["canonical_states"]
-        num_canonical    = len(canonical_states)
-        evtype           = model_data["eigenvalue_type"]
+        print(f"\n{'='*60}")
+        print(f"Loading complex representation model from: {model_dir}")
+        print(f"{'='*60}")
+        model_data = load_model(model_dir, use_gt=args.use_gt)
+        evtype     = model_data["eigenvalue_type"]
         print(f"  Eigenvector source : {'ground truth' if args.use_gt else 'learned (normalized)'}")
         print(f"  Eigenvalue type    : {evtype}")
-        print(f"  Canonical states   : {num_canonical}")
         print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
     else:
-        model_data       = None
-        _meta            = load_model_metadata(model_dir)
-        training_args    = _meta["training_args"]
-        canonical_states = _meta["canonical_states"]
-        num_canonical    = len(canonical_states)
-        evtype           = None
-        print(f"  Metadata only (eigenvectors skipped for method={args.method})")
-        print(f"  Canonical states   : {num_canonical}")
+        model_data = None
+        evtype     = None
 
     # Optionally load ALLO representation model.
     # In single-seed mode skip it when not needed (saves time and memory).
@@ -829,7 +816,6 @@ def main() -> None:
         allo_evtype = allo_model_data["eigenvalue_type"]
         print(f"  Eigenvector source : {'ground truth' if args.use_gt else 'learned (normalized)'}")
         print(f"  Eigenvalue type    : {allo_evtype}")
-        print(f"  Canonical states   : {len(allo_model_data['canonical_states'])}")
         print(f"  Eigenvectors (K)   : {allo_model_data['eigenvalues_real'].shape[0]}")
         print(f"  (left = right = right_real, imag = 0 for symmetric Laplacian)")
 
@@ -837,15 +823,21 @@ def main() -> None:
     # 2. Build environment
     # ------------------------------------------------------------------
     print(f"\n{'='*60}")
-    print("Building environment ...")
+    print(f"Building environment: {args.env}")
     print(f"{'='*60}")
 
-    # Reconstruct the environment from the saved training args.
-    # We nullify env_file (an absolute path from the training machine) so
-    # create_gridworld_env falls back to env_file_name which is portable.
-    ta = SimpleNamespace(**training_args)
-    ta.env_file = None
+    ta = SimpleNamespace(
+        env_type="file",
+        env_file=None,
+        env_file_name=args.env,
+        max_episode_length=args.max_steps,
+        windy=False,
+        wind=0.0,
+    )
     env = create_gridworld_env(ta)
+    canonical_states = get_canonical_free_states(env)
+    num_canonical    = len(canonical_states)
+    print(f"  Canonical states   : {num_canonical}")
 
     # ------------------------------------------------------------------
     # 2b. Validate optional fixed starting state; build eligible goal set.
@@ -921,8 +913,8 @@ def main() -> None:
                 right_imag       = model_data["right_imag"],
                 eigenvalues_real = model_data["eigenvalues_real"],
                 eigenvalues_imag = model_data["eigenvalues_imag"],
-                gamma            = training_args.get("gamma", 0.95),
-                delta            = training_args.get("delta", 0.1),
+                gamma            = model_data["training_args"].get("gamma", 0.95),
+                delta            = model_data["training_args"].get("delta", 0.1),
                 eigenvalue_type  = evtype,
             )
         )
@@ -942,7 +934,6 @@ def main() -> None:
         print(f"\n{'='*60}")
         print("Computing hitting times (ALLO representation) ...")
         print(f"{'='*60}")
-        allo_ta = SimpleNamespace(**allo_model_data["training_args"])
         allo_hitting_times = np.array(
             compute_hitting_times_from_eigenvectors(
                 left_real        = allo_model_data["left_real"],
