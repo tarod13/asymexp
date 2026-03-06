@@ -757,9 +757,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    single_seed_mode = args.method is not None or args.seed_idx is not None
-    if (args.method is None) != (args.seed_idx is None):
-        parser.error("--method and --seed_idx must be provided together.")
+    single_seed_mode = args.seed_idx is not None
+    if single_seed_mode and args.method is None:
+        parser.error("--seed_idx requires --method.")
     if single_seed_mode and args.seed_idx >= args.num_seeds:
         parser.error(
             f"--seed_idx {args.seed_idx} is out of range for --num_seeds {args.num_seeds}."
@@ -780,7 +780,7 @@ def main() -> None:
     # 1. Load pre-trained Laplacian model (complex representation)
     # ------------------------------------------------------------------
     # In single-seed mode skip eigenvectors when not needed (saves memory).
-    _load_complex = (model_dir is not None) and (not single_seed_mode or args.method == "complex")
+    _load_complex = (model_dir is not None) and (args.method is None or args.method == "complex")
     if _load_complex:
         print(f"\n{'='*60}")
         print(f"Loading complex representation model from: {model_dir}")
@@ -798,7 +798,7 @@ def main() -> None:
     # In single-seed mode skip it when not needed (saves time and memory).
     allo_model_data = None
     _load_allo = args.allo_model_dir is not None and (
-        not single_seed_mode or args.method == "allo"
+        args.method is None or args.method == "allo"
     )
     if _load_allo:
         allo_model_dir = Path(args.allo_model_dir)
@@ -1038,8 +1038,8 @@ def main() -> None:
             potential_per_seed=allo_potential_per_seed, shaping_coef=args.shaping_coef
         )
 
-    # Single-seed mode: keep only the requested condition.
-    if single_seed_mode:
+    # Filter to the requested condition when --method is given.
+    if args.method is not None:
         _method_to_key = {
             "baseline": "baseline",
             "complex":  f"shaped β={args.shaping_coef} (complex)",
