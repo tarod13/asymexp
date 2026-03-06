@@ -587,6 +587,7 @@ def run_q_learning(
                             if not np.all(np.isnan(eval_steps_np)) else "—")
         print(f"    ep ~{ep_disp:{ep_width}d}/{num_episodes}:"
               f"  train_sr={chunk_reached_rates[chunk_active].mean():.2f}"
+              f"  train_seeds={chunk_active.sum()}/{num_seeds}"
               f"  train_n={chunk_n_reached}"
               f"  train_steps_goal={train_steps_disp}"
               f"  eval_sr={eval_sr_np.mean():.2f}"
