@@ -279,7 +279,7 @@ def run_q_learning(
     lr: float = 0.1,
     epsilon: float = 0.1,
     seed: int = 0,
-    log_interval: int = 500,
+    log_interval_steps: int = 250_000,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Run tabular ε-greedy Q-learning with one independent Q-table per seed.
@@ -297,10 +297,10 @@ def run_q_learning(
 
     Evaluation
     ----------
-    After every log_interval training episodes the current greedy policy
-    (epsilon=0) is tested from eval_starts_per_seed toward each seed's goal
-    for num_eval_episodes episodes.  The same starts and goals are used for
-    every condition, giving a fair, reproducible comparison.
+    After every log_interval_steps environment steps the current greedy
+    policy (epsilon=0) is tested from eval_starts_per_seed toward each
+    seed's goal for num_eval_episodes episodes.  The same starts and goals
+    are used for every condition, giving a fair, reproducible comparison.
 
     Returns
     -------
@@ -493,9 +493,8 @@ def run_q_learning(
     vmapped_eval = jax.jit(jax.vmap(eval_one_seed))
 
     # ── Main loop ─────────────────────────────────────────────────────
-    num_chunks  = max(1, num_episodes // log_interval)
-    chunk_ep    = num_episodes // num_chunks
-    chunk_steps = chunk_ep * max_steps_per_episode
+    chunk_steps = log_interval_steps
+    num_chunks  = max(1, (num_episodes * max_steps_per_episode) // chunk_steps)
 
     seed_keys       = jax.random.split(jax.random.PRNGKey(seed), num_seeds)
     seed_chunk_keys = jax.vmap(lambda k: jax.random.split(k, num_chunks))(seed_keys)
@@ -760,8 +759,8 @@ def main() -> None:
         help="ε-greedy exploration rate (default: 0.1).",
     )
     parser.add_argument(
-        "--log_interval", type=int, default=500,
-        help="Print progress every this many episodes (default: 500).",
+        "--log_interval", type=int, default=250_000,
+        help="Print progress and run eval every this many environment steps (default: 250000).",
     )
     parser.add_argument(
         "--eval_seed", type=int, default=0,
@@ -1122,7 +1121,7 @@ def main() -> None:
             lr                   = args.lr,
             epsilon              = args.epsilon,
             seed                 = args.seed_idx if single_seed_mode else 0,
-            log_interval         = args.log_interval,
+            log_interval_steps   = args.log_interval,
             **cond_kwargs,
         )
 
