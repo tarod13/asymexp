@@ -528,19 +528,28 @@ def run_q_learning(
         ep_end_np  = np.array(ep_end_flat)   # [num_seeds, chunk_steps]
 
         # Convert flat per-step flags to per-episode stats for each seed.
+        # Cap each seed at num_episodes to keep the step budget from inflating
+        # the episode count when episodes terminate early.
         chunk_reached_rates = np.zeros(num_seeds, dtype=float)
         chunk_suc_steps = []
         chunk_n_reached = 0
         for si in range(num_seeds):
+            remaining = num_episodes - cumulative_eps[si]
+            if remaining <= 0:
+                continue
             ep_ends = np.where(ep_end_np[si])[0]
             if len(ep_ends) == 0:
                 continue
-            ep_starts       = np.concatenate([[0], ep_ends[:-1] + 1])
-            steps_s         = (ep_ends - ep_starts + 1).astype(np.int32)
-            reached_s       = reached_np[si, ep_ends]
+            ep_starts = np.concatenate([[0], ep_ends[:-1] + 1])
+            steps_s   = (ep_ends - ep_starts + 1).astype(np.int32)
+            reached_s = reached_np[si, ep_ends]
+            # Discard episodes beyond the budget for this seed.
+            n_add     = min(len(ep_ends), remaining)
+            steps_s   = steps_s[:n_add]
+            reached_s = reached_s[:n_add]
             seed_steps_acc[si].append(steps_s)
             seed_reached_acc[si].append(reached_s)
-            cumulative_eps[si] += len(ep_ends)
+            cumulative_eps[si] += n_add
             chunk_reached_rates[si] = reached_s.mean()
             chunk_n_reached += int(reached_s.sum())
             chunk_suc_steps.extend(steps_s[reached_s.astype(bool)])
@@ -584,6 +593,9 @@ def run_q_learning(
               f"  avg_Q={avg_q:.4f}"
               f"  elapsed {_fmt(elapsed)}  eta {_fmt(eta)}"
               f"  ({avg_chunk:.1f}s/chunk)")
+
+        if cumulative_eps.min() >= num_episodes:
+            break
 
     # Concatenate per-seed episode lists and pad seeds to equal length.
     all_steps_final   = [
