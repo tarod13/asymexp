@@ -530,6 +530,7 @@ def run_q_learning(
         # Cap each seed at num_episodes to keep the step budget from inflating
         # the episode count when episodes terminate early.
         chunk_reached_rates = np.zeros(num_seeds, dtype=float)
+        chunk_active        = np.zeros(num_seeds, dtype=bool)
         chunk_suc_steps = []
         chunk_n_reached = 0
         for si in range(num_seeds):
@@ -550,6 +551,7 @@ def run_q_learning(
             seed_reached_acc[si].append(reached_s)
             cumulative_eps[si] += n_add
             chunk_reached_rates[si] = reached_s.mean()
+            chunk_active[si]        = True
             chunk_n_reached += int(reached_s.sum())
             chunk_suc_steps.extend(steps_s[reached_s.astype(bool)])
         train_avg_steps = np.mean(chunk_suc_steps) if chunk_suc_steps else float("nan")
@@ -584,7 +586,7 @@ def run_q_learning(
         eval_steps_disp  = (f"{np.nanmean(eval_steps_np):.0f}"
                             if not np.all(np.isnan(eval_steps_np)) else "—")
         print(f"    ep ~{ep_disp:{ep_width}d}/{num_episodes}:"
-              f"  train_sr={chunk_reached_rates.mean():.2f}"
+              f"  train_sr={chunk_reached_rates[chunk_active].mean():.2f}"
               f"  train_n={chunk_n_reached}"
               f"  train_steps_goal={train_steps_disp}"
               f"  eval_sr={eval_sr_np.mean():.2f}"
