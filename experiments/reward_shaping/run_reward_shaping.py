@@ -367,7 +367,7 @@ def run_q_learning(
         def run_step(step_carry, step_key):
             Q, s, done, step_in_ep, goal, potential, fixed_start = step_carry
 
-            reset_key, eps_key, rand_key, env_key = jax.random.split(step_key, 4)
+            reset_key, eps_key, rand_key, env_key, tie_key = jax.random.split(step_key, 5)
             at_reset = step_in_ep == 0
 
             # At episode start: random or fixed start, fixed goal for this seed.
@@ -388,9 +388,11 @@ def run_q_learning(
             s    = jnp.where(at_reset, new_start, s)
             done = jnp.where(at_reset, jnp.array(False), done)
 
-            # ε-greedy action
+            # ε-greedy action with random tie-breaking
             use_random = jax.random.uniform(eps_key) < epsilon
-            greedy_a   = jnp.argmax(Q[s])
+            q_s    = Q[s]
+            is_max = (q_s == q_s.max()).astype(jnp.float32)
+            greedy_a   = jax.random.choice(tie_key, num_actions, p=is_max / is_max.sum())
             random_a   = jax.random.randint(rand_key, (), 0, num_actions)
             a          = jnp.where(use_random, random_a, greedy_a)
 
@@ -448,7 +450,10 @@ def run_q_learning(
             s    = jnp.where(at_reset, eval_start, s)
             done = jnp.where(at_reset, jnp.array(False), done)
 
-            a = jnp.argmax(Q[s])  # greedy, ε = 0
+            env_key, tie_key = jax.random.split(step_key)
+            q_s    = Q[s]
+            is_max = (q_s == q_s.max()).astype(jnp.float32)
+            a      = jax.random.choice(tie_key, num_actions, p=is_max / is_max.sum())
 
             full_idx  = canonical_states_jax[s]
             env_state = GridWorldState(
@@ -458,7 +463,7 @@ def run_q_learning(
                 terminal=jnp.array(False),
                 steps=jnp.array(0, dtype=env.dtype),
             )
-            next_env_state, _, _, _ = env.step(step_key, env_state, a)
+            next_env_state, _, _, _ = env.step(env_key, env_state, a)
             next_full = env.get_state_representation(next_env_state)
             can_idx   = full_to_can_jax[next_full]
             s_prime   = jnp.where(can_idx >= 0, can_idx, s)
@@ -472,17 +477,17 @@ def run_q_learning(
                 jnp.zeros((), jnp.int32),
                 step_in_ep + 1,
             )
-            return (new_s, new_done, next_step_in_ep), new_done
+            episode_end = new_done | (step_in_ep == max_steps_per_episode - 1)
+            return (new_s, new_done, next_step_in_ep), (new_done, episode_end)
 
         eval_steps = num_eval_episodes * max_steps_per_episode
         eval_keys  = jax.random.split(jax.random.PRNGKey(0), eval_steps)
-        _, done_flags = jax.lax.scan(
+        _, (done_flat, ep_end_flat) = jax.lax.scan(
             eval_step,
             (eval_start, jnp.array(False), jnp.zeros((), jnp.int32)),
             eval_keys,
         )
-        done_flags_2d = done_flags.reshape(num_eval_episodes, max_steps_per_episode)
-        return jnp.any(done_flags_2d, axis=1).mean()
+        return done_flat, ep_end_flat
 
     # vmap over seeds; each seed has its own Q-table, eval start, and goal
     vmapped_eval = jax.jit(jax.vmap(eval_one_seed))
@@ -524,6 +529,8 @@ def run_q_learning(
 
         # Convert flat per-step flags to per-episode stats for each seed.
         chunk_reached_rates = np.zeros(num_seeds, dtype=float)
+        chunk_suc_steps = []
+        chunk_n_reached = 0
         for si in range(num_seeds):
             ep_ends = np.where(ep_end_np[si])[0]
             if len(ep_ends) == 0:
@@ -535,20 +542,46 @@ def run_q_learning(
             seed_reached_acc[si].append(reached_s)
             cumulative_eps[si] += len(ep_ends)
             chunk_reached_rates[si] = reached_s.mean()
+            chunk_n_reached += int(reached_s.sum())
+            chunk_suc_steps.extend(steps_s[reached_s.astype(bool)])
+        train_avg_steps = np.mean(chunk_suc_steps) if chunk_suc_steps else float("nan")
 
-        eval_sr_np = np.array(
-            vmapped_eval(carry[0], eval_starts_jax, goal_jax)
-        )  # [num_seeds]
+        done_all_np, ep_end_all_np = (
+            np.array(x) for x in vmapped_eval(carry[0], eval_starts_jax, goal_jax)
+        )  # each [num_seeds, eval_steps]
+        eval_sr_np     = np.zeros(num_seeds)
+        eval_steps_np  = np.full(num_seeds, np.nan)
+        for si in range(num_seeds):
+            ep_ends_e = np.where(ep_end_all_np[si])[0]
+            if len(ep_ends_e) == 0:
+                continue
+            ep_starts_e = np.concatenate([[0], ep_ends_e[:-1] + 1])
+            lengths_e   = ep_ends_e - ep_starts_e + 1
+            reached_e   = done_all_np[si, ep_ends_e]
+            n = min(len(ep_ends_e), num_eval_episodes)
+            reached_e, lengths_e = reached_e[:n], lengths_e[:n]
+            eval_sr_np[si]    = reached_e.mean()
+            suc_len = lengths_e[reached_e.astype(bool)]
+            if len(suc_len):
+                eval_steps_np[si] = suc_len.mean()
         all_eval_sr.append(eval_sr_np)
         eval_ep_indices.append(int(cumulative_eps.mean()))
 
+        avg_q   = float(np.array(carry[0]).mean())
         elapsed   = time.monotonic() - t0
         avg_chunk = elapsed / (chunk_i + 1)
         eta       = avg_chunk * (num_chunks - chunk_i - 1)
         ep_disp   = int(cumulative_eps.mean())
+        train_steps_disp = f"{train_avg_steps:.0f}" if not np.isnan(train_avg_steps) else "—"
+        eval_steps_disp  = (f"{np.nanmean(eval_steps_np):.0f}"
+                            if not np.all(np.isnan(eval_steps_np)) else "—")
         print(f"    ep ~{ep_disp:{ep_width}d}/{num_episodes}:"
               f"  train_sr={chunk_reached_rates.mean():.2f}"
+              f"  train_n={chunk_n_reached}"
+              f"  train_steps_goal={train_steps_disp}"
               f"  eval_sr={eval_sr_np.mean():.2f}"
+              f"  eval_steps_goal={eval_steps_disp}"
+              f"  avg_Q={avg_q:.4f}"
               f"  elapsed {_fmt(elapsed)}  eta {_fmt(eta)}"
               f"  ({avg_chunk:.1f}s/chunk)")
 
