@@ -11,12 +11,11 @@
 
 # =============================================================================
 # GT eigenvector sweep array job.
-# Each task handles one (num_eigenvectors=k, seed) pair.
+# Each task handles one value of num_eigenvectors=k and runs all seeds
+# sequentially within that job.
 #
 # Task-ID encoding:
-#   k_idx    = task_id / NUM_SEEDS          (0-indexed into K_MIN..K_MAX)
-#   seed_idx = task_id % NUM_SEEDS
-#   k        = K_MIN + k_idx
+#   k = K_MIN + SLURM_ARRAY_TASK_ID
 #
 # Required env vars (pass via --export=ALL or --export=...):
 #   OUTPUT_DIR, ENV, K_MIN, K_MAX, NUM_SEEDS, GT_GAMMA, GT_DELTA,
@@ -27,7 +26,7 @@
 #
 # Usage
 # -----
-#   sbatch --array=0-<NUM_K*NUM_SEEDS-1> --export=ALL \
+#   sbatch --array=0-<K_MAX-K_MIN> --export=ALL \
 #       scripts/reward_shaping_gt_sweep.sh
 # =============================================================================
 
@@ -61,27 +60,24 @@ NUM_EVAL_EPISODES="${NUM_EVAL_EPISODES:-30}"
 MIN_GOAL_DISTANCE="${MIN_GOAL_DISTANCE:-0}"
 START_STATE="${START_STATE:-}"
 
-# ── Decode (k, seed) from task ID ────────────────────────────────────────────
-k_idx=$(( SLURM_ARRAY_TASK_ID / NUM_SEEDS ))
-seed_idx=$(( SLURM_ARRAY_TASK_ID % NUM_SEEDS ))
-K=$(( K_MIN + k_idx ))
+# ── Decode k from task ID ─────────────────────────────────────────────────────
+K=$(( K_MIN + SLURM_ARRAY_TASK_ID ))
 
 K_OUTPUT_DIR="${OUTPUT_DIR}/k_${K}"
-mkdir -p "${K_OUTPUT_DIR}/partial"
+mkdir -p "${K_OUTPUT_DIR}"
 
 echo "========================================"
 echo "GT eigenvector sweep"
 echo "  Array job        : ${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
-echo "  num_eigenvectors : $K  (k_idx=$k_idx, range $K_MIN..$K_MAX)"
-echo "  Seed idx         : $seed_idx"
+echo "  num_eigenvectors : $K  (range $K_MIN..$K_MAX)"
+echo "  Seeds            : 0..$((NUM_SEEDS - 1))"
 echo "  Output dir       : $K_OUTPUT_DIR"
 echo "========================================"
 
-CMD=(
+BASE_CMD=(
     python experiments/reward_shaping/run_reward_shaping.py
     --env                "$ENV"
     --method             "complex"
-    --seed_idx           "$seed_idx"
     --num_seeds          "$NUM_SEEDS"
     --num_episodes       "$NUM_EPISODES"
     --max_steps          "$MAX_STEPS"
@@ -100,14 +96,17 @@ CMD=(
 )
 
 if [ "${MIN_GOAL_DISTANCE:-0}" -gt 0 ]; then
-    CMD+=(--min_goal_distance "$MIN_GOAL_DISTANCE")
+    BASE_CMD+=(--min_goal_distance "$MIN_GOAL_DISTANCE")
 fi
 if [ -n "${START_STATE:-}" ]; then
-    CMD+=(--start_state "$START_STATE")
+    BASE_CMD+=(--start_state "$START_STATE")
 fi
 
-"${CMD[@]}"
+for seed_idx in $(seq 0 $(( NUM_SEEDS - 1 ))); do
+    echo "--- seed $seed_idx ---"
+    "${BASE_CMD[@]}" --seed_idx "$seed_idx"
+done
 
 echo "========================================"
-echo "Task ${SLURM_ARRAY_TASK_ID} (k=$K, seed=$seed_idx) complete."
+echo "Task ${SLURM_ARRAY_TASK_ID} (k=$K, all $NUM_SEEDS seeds) complete."
 echo "========================================"
