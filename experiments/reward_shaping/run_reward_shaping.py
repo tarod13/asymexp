@@ -62,6 +62,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from src.envs.gridworld import GridWorldState
 from src.utils.envs import create_gridworld_env, get_canonical_free_states
 from src.utils.metrics import compute_hitting_times_from_eigenvectors
+from src.utils.laplacian import compute_laplacian, compute_eigendecomposition
 
 
 # ===========================================================================
@@ -122,8 +123,6 @@ def load_model(model_dir: Path, use_gt: bool = False) -> dict:
         eigenvalues_imag=eig_imag,
         eigenvalue_type=eigenvalue_type,
     )
-
-
 
 
 # ===========================================================================
@@ -771,7 +770,24 @@ def main() -> None:
     )
     parser.add_argument(
         "--use_gt", action="store_true",
-        help="Use ground-truth eigenvectors instead of the learned ones.",
+        help="Use ground-truth Laplacian eigenvectors. When set, eigenvectors are "
+             "computed directly from the environment transition matrix (no --model_dir "
+             "needed). Requires --num_eigenvectors.",
+    )
+    parser.add_argument(
+        "--num_eigenvectors", type=int, default=None,
+        help="Number of eigenvectors to use for the ground-truth Laplacian "
+             "(required when --use_gt is set).",
+    )
+    parser.add_argument(
+        "--gt_gamma", type=float, default=0.95,
+        help="Discount factor γ used in the GT Laplacian L = (1+δ)I - (1-γ)P·SR_γ "
+             "(default: 0.95). Only used when --use_gt is set.",
+    )
+    parser.add_argument(
+        "--gt_delta", type=float, default=0.1,
+        help="Eigenvalue-shift δ used in the GT Laplacian (default: 0.1). "
+             "Only used when --use_gt is set.",
     )
     parser.add_argument(
         "--output_dir", default=None,
@@ -804,6 +820,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.use_gt and args.num_eigenvectors is None:
+        parser.error("--use_gt requires --num_eigenvectors.")
+
     single_seed_mode = args.seed_idx is not None
     if single_seed_mode and args.method is None:
         parser.error("--seed_idx requires --method.")
@@ -826,15 +845,19 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 1. Load pre-trained Laplacian model (complex representation)
     # ------------------------------------------------------------------
+    # When --use_gt, eigenvectors are computed from the environment after it is
+    # built (section 2b), so we skip disk loading here entirely.
     # In single-seed mode skip eigenvectors when not needed (saves memory).
-    _load_complex = (model_dir is not None) and (args.method is None or args.method == "complex")
+    _load_complex = (not args.use_gt) and (model_dir is not None) and (
+        args.method is None or args.method == "complex"
+    )
     if _load_complex:
         print(f"\n{'='*60}")
         print(f"Loading complex representation model from: {model_dir}")
         print(f"{'='*60}")
-        model_data = load_model(model_dir, use_gt=args.use_gt)
+        model_data = load_model(model_dir)
         evtype     = model_data["eigenvalue_type"]
-        print(f"  Eigenvector source : {'ground truth' if args.use_gt else 'learned (normalized)'}")
+        print(f"  Eigenvector source : learned (normalized)")
         print(f"  Eigenvalue type    : {evtype}")
         print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
     else:
@@ -844,7 +867,7 @@ def main() -> None:
     # Optionally load ALLO representation model.
     # In single-seed mode skip it when not needed (saves time and memory).
     allo_model_data = None
-    _load_allo = args.allo_model_dir is not None and (
+    _load_allo = (not args.use_gt) and args.allo_model_dir is not None and (
         args.method is None or args.method == "allo"
     )
     if _load_allo:
@@ -852,7 +875,7 @@ def main() -> None:
         print(f"\n{'='*60}")
         print(f"Loading ALLO representation model from: {allo_model_dir}")
         print(f"{'='*60}")
-        allo_model_data = load_model(allo_model_dir, use_gt=args.use_gt)
+        allo_model_data = load_model(allo_model_dir)
         # ALLO learns a single real representation φ_k (symmetric Laplacian).
         # φ_k serves as both left and right eigenvectors; imag parts are zero.
         allo_model_data["left_real"]  = allo_model_data["right_real"]
@@ -861,7 +884,7 @@ def main() -> None:
         allo_model_data["eigenvalues_imag"] = np.zeros_like(
             allo_model_data["eigenvalues_real"])
         allo_evtype = allo_model_data["eigenvalue_type"]
-        print(f"  Eigenvector source : {'ground truth' if args.use_gt else 'learned (normalized)'}")
+        print(f"  Eigenvector source : learned (normalized)")
         print(f"  Eigenvalue type    : {allo_evtype}")
         print(f"  Eigenvectors (K)   : {allo_model_data['eigenvalues_real'].shape[0]}")
         print(f"  (left = right = right_real, imag = 0 for symmetric Laplacian)")
@@ -942,6 +965,40 @@ def main() -> None:
                 eligible_goals = filtered
             print(f"  Min goal distance  : {args.min_goal_distance}"
                   f"  ({len(eligible_goals)}/{num_canonical} eligible goals)")
+
+    # ------------------------------------------------------------------
+    # 2c. Compute ground-truth eigenvectors from the environment (--use_gt)
+    # ------------------------------------------------------------------
+    _need_gt = args.use_gt and (args.method is None or args.method == "complex")
+    if _need_gt:
+        print(f"\n{'='*60}")
+        print("Computing ground-truth eigenvectors from environment ...")
+        print(f"{'='*60}")
+        next_state = build_transition_table(env, canonical_states)
+        N = len(canonical_states)
+        # Uniform random-walk: each of the 4 actions equally likely.
+        P = np.zeros((N, N), dtype=np.float64)
+        for a in range(4):
+            for s in range(N):
+                P[s, next_state[s, a]] += 0.25
+        laplacian = compute_laplacian(jnp.array(P), gamma=args.gt_gamma, delta=args.gt_delta)
+        eig = compute_eigendecomposition(laplacian, k=args.num_eigenvectors, ascending=True)
+        model_data = dict(
+            training_args={"gamma": args.gt_gamma, "delta": args.gt_delta},
+            left_real=np.array(eig["left_eigenvectors_real"]),
+            left_imag=np.array(eig["left_eigenvectors_imag"]),
+            right_real=np.array(eig["right_eigenvectors_real"]),
+            right_imag=np.array(eig["right_eigenvectors_imag"]),
+            eigenvalues_real=np.array(eig["eigenvalues_real"]),
+            eigenvalues_imag=np.array(eig["eigenvalues_imag"]),
+            eigenvalue_type="laplacian",
+        )
+        evtype = "laplacian"
+        print(f"  Eigenvector source : ground truth (from environment)")
+        print(f"  Eigenvalue type    : laplacian")
+        print(f"  Eigenvectors (K)   : {args.num_eigenvectors}")
+        print(f"  gt_gamma           : {args.gt_gamma}")
+        print(f"  gt_delta           : {args.gt_delta}")
 
     # ------------------------------------------------------------------
     # 3. Compute hitting times (complex representation)
