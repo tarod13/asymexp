@@ -705,6 +705,34 @@ def plot_results(
     print(f"  Plot saved → {output_path}")
 
 
+def plot_hitting_times(
+    hitting_times: np.ndarray,
+    output_path: Path,
+    title: str = "Hitting times",
+) -> None:
+    """
+    Save a heatmap of the hitting times matrix h[i, j] = expected steps from i to j.
+
+    Infinite / negative values are masked out (shown in grey).
+    """
+    ht = hitting_times.astype(float).copy()
+    masked = np.ma.masked_where(~np.isfinite(ht) | (ht < 0), ht)
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    cmap = plt.cm.viridis.copy()
+    cmap.set_bad(color="lightgrey")
+    im = ax.imshow(masked, aspect="auto", cmap=cmap, origin="upper")
+    fig.colorbar(im, ax=ax, label="Expected steps")
+    ax.set_xlabel("Destination state j")
+    ax.set_ylabel("Source state i")
+    ax.set_title(title)
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Hitting-times plot → {output_path}")
+
+
 # ===========================================================================
 # Main
 # ===========================================================================
@@ -1031,6 +1059,13 @@ def main() -> None:
             print(f"  Range              : [{finite.min():.2f}, {finite.max():.2f}]")
 
         np.save(output_dir / "hitting_times.npy", hitting_times)
+
+        if args.use_gt:
+            plot_hitting_times(
+                hitting_times,
+                output_dir / "hitting_times.png",
+                title=f"GT hitting times  (K={args.num_eigenvectors}, γ={args.gt_gamma}, δ={args.gt_delta})",
+            )
 
     # Compute hitting times for ALLO representation if provided
     allo_hitting_times = None
