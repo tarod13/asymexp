@@ -29,7 +29,7 @@ from tqdm import tqdm
 from flax.training.train_state import TrainState
 import matplotlib.pyplot as plt
 
-from src.config.ded_clf import Args
+from src.config.shared import SharedArgs as Args
 from src.envs.gridworld import GridWorldEnv
 from src.utils.envs import create_gridworld_env
 from src.utils.interaction import (

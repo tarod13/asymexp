@@ -7,7 +7,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 import jax.numpy as jnp
 
-from src.config.ded_clf import Args
+from src.config.shared import SharedArgs as Args
 from src.envs.env import create_environment_from_text, EXAMPLE_ENVIRONMENTS
 
 
