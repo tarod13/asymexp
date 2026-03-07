@@ -186,9 +186,28 @@ def learn_eigenvectors(args, learner_module):
             sampling_probs, data_env, replay_buffer, transition_matrix = \
                 collect_data_and_compute_eigenvectors(env, args)
 
+        # Check if learner provides an alternative ground truth matrix
+        # (e.g., ALLO uses L + D^{-1}L^T D instead of L)
+        compute_gt_matrix_fn = getattr(learner_module, 'compute_ground_truth_matrix', None)
+
         # Compute eigendecomposition for ground truth
         # Number of GT eigenvectors may differ from learning (e.g., for conjugate skipping)
-        if num_gt_eigenvectors != args.num_eigenvector_pairs:
+        if compute_gt_matrix_fn is not None:
+            gt_matrix = compute_gt_matrix_fn(laplacian_matrix, sampling_probs)
+            print(f"\nUsing learner-specific ground truth matrix.")
+            print(f"Computing {num_gt_eigenvectors} ground truth eigenvectors from L + D^{{-1}}L^T D...")
+            gt_eigendecomp = compute_eigendecomposition(
+                gt_matrix,
+                k=num_gt_eigenvectors,
+                ascending=True
+            )
+            gt_eigenvalues_real = gt_eigendecomp['eigenvalues_real']
+            gt_eigenvalues_imag = gt_eigendecomp['eigenvalues_imag']
+            gt_left_real = gt_eigendecomp['left_eigenvectors_real']
+            gt_left_imag = gt_eigendecomp['left_eigenvectors_imag']
+            gt_right_real = gt_eigendecomp['right_eigenvectors_real']
+            gt_right_imag = gt_eigendecomp['right_eigenvectors_imag']
+        elif num_gt_eigenvectors != args.num_eigenvector_pairs:
             print(f"\nComputing {num_gt_eigenvectors} ground truth eigenvectors (learning {args.num_eigenvector_pairs})")
             gt_eigendecomp = compute_eigendecomposition(
                 laplacian_matrix,
