@@ -697,7 +697,7 @@ def plot_results(
     print(f"  Plot saved → {output_path}")
 
 
-def plot_hitting_times_gt(
+def plot_hitting_times_grid(
     hitting_times: np.ndarray,
     canonical_states: np.ndarray,
     env,
@@ -705,9 +705,9 @@ def plot_hitting_times_gt(
     ncols: int = 8,
 ) -> None:
     """
-    Save grid-overlaid hitting-time maps for every canonical state,
-    using the same visualize_source_vs_target_hitting_times used during training.
+    Save grid-overlaid hitting-time maps for every canonical state.
     Each state appears as both target (times TO it) and source (times FROM it).
+    Produces 4 PNGs: linear/log × shared/independent color scale.
     """
     door_markers = get_env_transition_markers(env)
     all_indices = list(range(len(canonical_states)))
@@ -717,7 +717,7 @@ def plot_hitting_times_gt(
         suffix = "_log" if log_scale else ""
         for shared in (True, False):
             scale_str = "shared" if shared else "independent"
-            fname = output_dir / f"hitting_times_gt{suffix}_{scale_str}_scale.png"
+            fname = output_dir / f"hitting_times{suffix}_{scale_str}_scale.png"
             visualize_source_vs_target_hitting_times(
                 state_indices=all_indices,
                 hitting_time_matrix=hitting_times,
@@ -731,7 +731,7 @@ def plot_hitting_times_gt(
                 shared_colorbar=shared,
             )
             plt.close()
-            print(f"  GT hitting-times plot → {fname}")
+            print(f"  Hitting-times plot → {fname}")
 
 
 # ===========================================================================
@@ -1068,13 +1068,12 @@ def main() -> None:
 
         np.save(output_dir / "hitting_times.npy", hitting_times)
 
-        if args.use_gt:
-            plot_hitting_times_gt(
-                hitting_times,
-                np.array(canonical_states),
-                env,
-                output_dir / "hitting_times_gt_plots",
-            )
+        plot_hitting_times_grid(
+            hitting_times,
+            np.array(canonical_states),
+            env,
+            output_dir / ("hitting_times_gt_plots" if args.use_gt else "hitting_times_complex_plots"),
+        )
 
     # Compute hitting times for ALLO representation if provided
     allo_hitting_times = None
@@ -1104,6 +1103,12 @@ def main() -> None:
         if len(allo_finite) > 0:
             print(f"  Range              : [{allo_finite.min():.2f}, {allo_finite.max():.2f}]")
         np.save(output_dir / "hitting_times_allo.npy", allo_hitting_times)
+        plot_hitting_times_grid(
+            allo_hitting_times,
+            np.array(canonical_states),
+            env,
+            output_dir / "hitting_times_allo_plots",
+        )
 
     # ------------------------------------------------------------------
     # 4. Sample one fixed (goal, eval_start) per seed for evaluation.
