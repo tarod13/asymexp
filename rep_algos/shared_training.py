@@ -416,6 +416,14 @@ def learn_eigenvectors(args, learner_module, method):
     # Get the update function from learner module
     update_encoder = learner_module.create_update_function(encoder, args)
 
+    def get_features(params):
+        """Run encoder and, for ALLO, enforce left=right and imag=0."""
+        fd = encoder.apply(params['encoder'], state_coords)[0]
+        if method == "allo":
+            zeros = jnp.zeros_like(fd['right_real'])
+            fd = {**fd, 'left_real': fd['right_real'], 'left_imag': zeros, 'right_imag': zeros}
+        return fd
+
     # Start the training process
     if checkpoint_data is None:
         print("\nStarting training...")
@@ -620,7 +628,7 @@ def learn_eigenvectors(args, learner_module, method):
         log_start = time.time()
         if is_log_step:
             # Compute learned eigenvectors on all states for cosine similarity
-            features_dict = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
+            features_dict = get_features(encoder_state.params)
 
             # Compute complex cosine similarities with proper normalization
             cosine_sims = compute_complex_cosine_similarities_with_normalization(
@@ -733,7 +741,7 @@ def learn_eigenvectors(args, learner_module, method):
                 json.dump(metrics_history, f)
 
             # Compute and save latest learned eigenvectors (overwrite each time)
-            features_dict = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
+            features_dict = get_features(encoder_state.params)
 
             # Save raw eigenvectors
             np.save(results_dir / "latest_learned_left_real.npy", np.array(features_dict['left_real']))
@@ -824,7 +832,7 @@ def learn_eigenvectors(args, learner_module, method):
         print(f"Model saved to {save_path}")
 
     # Save final learned eigenvectors
-    final_features_dict = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
+    final_features_dict = get_features(encoder_state.params)
 
     # Save raw eigenvectors
     np.save(results_dir / "final_learned_left_real.npy", np.array(final_features_dict['left_real']))
