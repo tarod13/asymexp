@@ -184,22 +184,22 @@ def plot_cosine_similarity_evolution(metrics_history: list, save_path: str):
 
 
 def plot_eigenvector_comparison(
-    learned_left_real: np.ndarray,
-    learned_left_imag: np.ndarray,
     learned_right_real: np.ndarray,
     learned_right_imag: np.ndarray,
-    gt_left_real: np.ndarray,
-    gt_left_imag: np.ndarray,
     gt_right_real: np.ndarray,
     gt_right_imag: np.ndarray,
-    normalized_left_real: np.ndarray,
-    normalized_left_imag: np.ndarray,
     normalized_right_real: np.ndarray,
     normalized_right_imag: np.ndarray,
     canonical_states: np.ndarray,
     grid_width: int,
     grid_height: int,
     save_dir: str,
+    learned_left_real: np.ndarray = None,
+    learned_left_imag: np.ndarray = None,
+    gt_left_real: np.ndarray = None,
+    gt_left_imag: np.ndarray = None,
+    normalized_left_real: np.ndarray = None,
+    normalized_left_imag: np.ndarray = None,
     door_markers: dict = None,
 ):
     """
@@ -296,17 +296,18 @@ def plot_eigenvector_comparison(
             f'Right Eigenvector {i} (φ) - Imaginary Part', f'comparison_right_imag{suffix}.png'
         )
 
-        # Left eigenvector - Real part
-        create_comparison_plot(
-            gt_left_real[:, i], learned_left_real[:, i], normalized_left_real[:, i],
-            f'Left Eigenvector {i} (ψ) - Real Part', f'comparison_left_real{suffix}.png'
-        )
+        if learned_left_real is not None:
+            # Left eigenvector - Real part
+            create_comparison_plot(
+                gt_left_real[:, i], learned_left_real[:, i], normalized_left_real[:, i],
+                f'Left Eigenvector {i} (ψ) - Real Part', f'comparison_left_real{suffix}.png'
+            )
 
-        # Left eigenvector - Imaginary part
-        create_comparison_plot(
-            gt_left_imag[:, i], learned_left_imag[:, i], normalized_left_imag[:, i],
-            f'Left Eigenvector {i} (ψ) - Imaginary Part', f'comparison_left_imag{suffix}.png'
-        )
+            # Left eigenvector - Imaginary part
+            create_comparison_plot(
+                gt_left_imag[:, i], learned_left_imag[:, i], normalized_left_imag[:, i],
+                f'Left Eigenvector {i} (ψ) - Imaginary Part', f'comparison_left_imag{suffix}.png'
+            )
 
     print("Eigenvector comparison plots complete.")
 

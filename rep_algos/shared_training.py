@@ -58,7 +58,7 @@ from src.utils.plotting import (
 from src.utils.laplacian import compute_eigendecomposition
 
 
-def learn_eigenvectors(args, learner_module):
+def learn_eigenvectors(args, learner_module, method):
     """
     Main training loop to learn eigenvectors.
 
@@ -186,9 +186,26 @@ def learn_eigenvectors(args, learner_module):
             sampling_probs, data_env, replay_buffer, transition_matrix = \
                 collect_data_and_compute_eigenvectors(env, args)
 
-        # Compute eigendecomposition for ground truth
-        # Number of GT eigenvectors may differ from learning (e.g., for conjugate skipping)
-        if num_gt_eigenvectors != args.num_eigenvector_pairs:
+        # For ALLO, the ground truth is eigenvectors of L + D^{-1}L^T D
+        # (self-adjoint w.r.t. the D-weighted inner product, real eigenvalues/eigenvectors).
+        # For all other algorithms, the ground truth uses L directly.
+        if method == "allo":
+            D = jnp.diag(sampling_probs)
+            D_inv = jnp.diag(1.0 / sampling_probs)
+            gt_matrix = laplacian_matrix + D_inv @ laplacian_matrix.T @ D
+            print(f"\nALLO: computing {num_gt_eigenvectors} ground truth eigenvectors from L + D^{{-1}}L^T D...")
+            gt_eigendecomp = compute_eigendecomposition(
+                gt_matrix,
+                k=num_gt_eigenvectors,
+                ascending=True
+            )
+            gt_eigenvalues_real = gt_eigendecomp['eigenvalues_real']
+            gt_eigenvalues_imag = gt_eigendecomp['eigenvalues_imag']
+            gt_left_real = gt_eigendecomp['left_eigenvectors_real']
+            gt_left_imag = gt_eigendecomp['left_eigenvectors_imag']
+            gt_right_real = gt_eigendecomp['right_eigenvectors_real']
+            gt_right_imag = gt_eigendecomp['right_eigenvectors_imag']
+        elif num_gt_eigenvectors != args.num_eigenvector_pairs:
             print(f"\nComputing {num_gt_eigenvectors} ground truth eigenvectors (learning {args.num_eigenvector_pairs})")
             gt_eigendecomp = compute_eigendecomposition(
                 laplacian_matrix,
@@ -298,13 +315,23 @@ def learn_eigenvectors(args, learner_module):
     encoder.apply = jax.jit(encoder.apply)
 
     # Configure sampling strategy
-    if args.use_rejection_sampling:
-        # Compute rejection sampling probabilities to flatten state distribution
+    sampling_mode = args.sampling_mode
+
+    # Determine same-episodes sampling from constraint_mode (shared across all IS modes)
+    if args.constraint_mode == "same_episodes":
+        transitions_per_episode = 2
+        use_same_episodes = True
+    else:
+        transitions_per_episode = 1
+        use_same_episodes = False
+
+    if sampling_mode == "rejection":
+        # Compute rejection sampling probabilities to flatten state distribution.
         # Accept probability: p_accept[i] = min_prob / sampling_probs[i]
-        # This makes rare states (small sampling_probs) always accepted (p ≈ 1)
-        # and common states rejected more often (p < 1)
+        # Rare states (small sampling_probs) are always accepted (p ≈ 1);
+        # common states are rejected more often (p < 1).
         min_sampling_prob = float(sampling_probs.min())
-        rejection_accept_probs = min_sampling_prob / np.array(sampling_probs)  # Shape: (num_states,)
+        rejection_accept_probs = min_sampling_prob / np.array(sampling_probs)
 
         print(f"\nRejection Sampling Configuration:")
         print(f"  Original sampling prob range: [{sampling_probs.min():.6f}, {sampling_probs.max():.6f}]")
@@ -312,28 +339,14 @@ def learn_eigenvectors(args, learner_module):
         print(f"  Expected rejection rate: {100 * (1 - rejection_accept_probs.mean()):.1f}%")
         print(f"  Oversample factor: {args.rejection_oversample_factor}x")
 
-        # After rejection sampling, all states have equal weight (no IS correction needed)
-        # Shape: (num_states, 1) - all ones since we're sampling uniformly after rejection
+        # After rejection sampling all states have equal weight — no IS correction needed.
         is_ratio = jnp.ones((len(sampling_probs), 1))
-
-        # Evaluation distribution for metrics (uniform after rejection sampling)
         eval_distribution = jnp.ones(len(sampling_probs)) / len(sampling_probs)
-
-        # Determine sampling behavior from constraint_mode
-        if args.constraint_mode == "same_episodes":
-            transitions_per_episode = 2
-            use_same_episodes = True
-        else:
-            transitions_per_episode = 1
-            use_same_episodes = False
 
         def sample_batch_with_rejection(batch_size, discount):
             """Sample a batch using rejection sampling to flatten the state distribution."""
             accepted_samples = []
-
-            # Keep sampling until we have enough accepted samples
             while len(accepted_samples) < batch_size:
-                # Sample from replay buffer (empirical distribution)
                 candidate_batch = replay_buffer.sample(
                     batch_size * args.rejection_oversample_factor,
                     discount=discount,
@@ -341,23 +354,16 @@ def learn_eigenvectors(args, learner_module):
                     use_same_episodes=use_same_episodes
                 )
                 candidate_obs = np.array(candidate_batch.obs).flatten()
-
-                # Apply rejection sampling: accept with probability p_accept[state]
                 accept_probs = rejection_accept_probs[candidate_obs]
-                random_uniform = np.random.rand(len(candidate_obs))
-                accept_mask = random_uniform < accept_probs
-
-                # Collect accepted samples
+                accept_mask = np.random.rand(len(candidate_obs)) < accept_probs
                 if np.any(accept_mask):
-                    accepted_indices = np.where(accept_mask)[0]
-                    for idx in accepted_indices:
+                    for idx in np.where(accept_mask)[0]:
                         if len(accepted_samples) < batch_size:
                             accepted_samples.append({
                                 'obs': candidate_batch.obs[idx],
                                 'next_obs': candidate_batch.next_obs[idx],
                             })
 
-            # Convert to batch format (take exactly batch_size samples)
             from collections import namedtuple
             Batch = namedtuple('Batch', ['obs', 'next_obs'])
             return Batch(
@@ -365,38 +371,58 @@ def learn_eigenvectors(args, learner_module):
                 next_obs=np.array([s['next_obs'] for s in accepted_samples[:batch_size]]),
             )
 
-        # Use rejection sampling
         sample_batch = sample_batch_with_rejection
 
-    else:
-        # Use standard importance sampling with IS ratio correction
-        print(f"\nUsing Importance Sampling (no rejection)")
+    elif sampling_mode == "weighted":
+        # Sample from buffer as-is; correct with IS ratio weights inside the loss.
+        print(f"\nWeighted IS Configuration:")
         print(f"  Sampling prob range: [{sampling_probs.min():.6f}, {sampling_probs.max():.6f}]")
 
-        # Compute IS ratio
         is_ratio = 1 / (sampling_probs[:, None].clip(min=1e-8) * len(sampling_probs))
-        print(f"  IS ratio range (unnormalized): [{is_ratio.min():.3f}, {is_ratio.max():.3f}]")
+        print(f"  IS ratio range: [{is_ratio.min():.3f}, {is_ratio.max():.3f}]")
 
-        # Evaluation distribution for metrics (sampling_probs * is_ratio = uniform)
+        # sampling_probs * is_ratio ≈ uniform
         eval_distribution = sampling_probs * is_ratio.squeeze(-1)
 
-        # Determine sampling behavior from constraint_mode
-        if args.constraint_mode == "same_episodes":
-            transitions_per_episode = 2
-            use_same_episodes = True
-        else:
-            transitions_per_episode = 1
-            use_same_episodes = False
-
-        # Use standard replay buffer sampling
         sample_batch = lambda batch_size, discount: replay_buffer.sample(
             batch_size, discount,
             transitions_per_episode=transitions_per_episode,
             use_same_episodes=use_same_episodes
         )
 
+    elif sampling_mode == "none":
+        # Sample from buffer as-is with no IS correction.
+        # Appropriate when the buffer distribution is already (approximately) uniform,
+        # or when IS correction is intentionally omitted (e.g. continuous state spaces).
+        print(f"\nNo IS Configuration (no importance-sampling correction):")
+        print(f"  Sampling prob range: [{sampling_probs.min():.6f}, {sampling_probs.max():.6f}]")
+
+        is_ratio = jnp.ones((len(sampling_probs), 1))
+        # Use the empirical buffer distribution for evaluation metrics
+        eval_distribution = sampling_probs
+
+        sample_batch = lambda batch_size, discount: replay_buffer.sample(
+            batch_size, discount,
+            transitions_per_episode=transitions_per_episode,
+            use_same_episodes=use_same_episodes
+        )
+
+    else:
+        raise ValueError(
+            f"Unknown sampling_mode {sampling_mode!r}. "
+            f"Expected one of: 'rejection', 'weighted', 'none'."
+        )
+
     # Get the update function from learner module
     update_encoder = learner_module.create_update_function(encoder, args)
+
+    def get_features(params):
+        """Run encoder and, for ALLO, enforce left=right and imag=0."""
+        fd = encoder.apply(params['encoder'], state_coords)[0]
+        if method == "allo":
+            zeros = jnp.zeros_like(fd['right_real'])
+            fd = {**fd, 'left_real': fd['right_real'], 'left_imag': zeros, 'right_imag': zeros}
+        return fd
 
     # Start the training process
     if checkpoint_data is None:
@@ -602,7 +628,7 @@ def learn_eigenvectors(args, learner_module):
         log_start = time.time()
         if is_log_step:
             # Compute learned eigenvectors on all states for cosine similarity
-            features_dict = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
+            features_dict = get_features(encoder_state.params)
 
             # Compute complex cosine similarities with proper normalization
             cosine_sims = compute_complex_cosine_similarities_with_normalization(
@@ -618,6 +644,7 @@ def learn_eigenvectors(args, learner_module):
                 gt_eigenvalues_imag=gt_eigenvalues_imag,
                 sampling_probs=eval_distribution,
                 skip_conjugates=skip_conjugates,
+                compute_left=(method != "allo"),
             )
 
             # Compute hitting times for learned eigenvectors and ground truth
@@ -669,14 +696,16 @@ def learn_eigenvectors(args, learner_module):
 
             if gradient_step % (args.log_freq * 10) == 0:
                 right_sim = cosine_sims['right_cosine_sim_avg']
-                left_sim = cosine_sims['left_cosine_sim_avg']
                 graph_loss = metrics_dict['graph_loss']
                 clf_loss = metrics_dict.get('clf_loss', 0.0)
                 chirality_loss = metrics_dict.get('chirality_loss', 0.0)
+                sim_str = f"right_sim={right_sim:.4f}"
+                if method != "allo":
+                    sim_str = f"left_sim={cosine_sims['left_cosine_sim_avg']:.4f}, " + sim_str
                 print(f"Step {gradient_step}: total_loss={total_loss.item():.4f}, "
                         f"graph_loss={graph_loss:.4f}, clf_loss={clf_loss:.4f}, "
                         f"chirality_loss={chirality_loss:.4f}, "
-                      f"left_sim={left_sim:.4f}, right_sim={right_sim:.4f}")
+                      f"{sim_str}")
                 print(f"  Batch diversity: unique={unique_states}/{total_states} ({coverage*100:.1f}%), "
                       f"entropy={normalized_entropy:.3f}, max_freq={max_state_freq:.4f}")
         log_time = time.time() - log_start
@@ -712,7 +741,7 @@ def learn_eigenvectors(args, learner_module):
                 json.dump(metrics_history, f)
 
             # Compute and save latest learned eigenvectors (overwrite each time)
-            features_dict = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
+            features_dict = get_features(encoder_state.params)
 
             # Save raw eigenvectors
             np.save(results_dir / "latest_learned_left_real.npy", np.array(features_dict['left_real']))
@@ -728,8 +757,9 @@ def learn_eigenvectors(args, learner_module):
                 right_imag=features_dict['right_imag'],
                 sampling_probs=sampling_probs * is_ratio.squeeze(-1)
             )
-            np.save(results_dir / "latest_learned_left_real_normalized.npy", np.array(normalized_features['left_real']))
-            np.save(results_dir / "latest_learned_left_imag_normalized.npy", np.array(normalized_features['left_imag']))
+            if method != "allo":
+                np.save(results_dir / "latest_learned_left_real_normalized.npy", np.array(normalized_features['left_real']))
+                np.save(results_dir / "latest_learned_left_imag_normalized.npy", np.array(normalized_features['left_imag']))
             np.save(results_dir / "latest_learned_right_real_normalized.npy", np.array(normalized_features['right_real']))
             np.save(results_dir / "latest_learned_right_imag_normalized.npy", np.array(normalized_features['right_imag']))
 
@@ -737,22 +767,22 @@ def learn_eigenvectors(args, learner_module):
             if args.plot_during_training:
                 # Generate comparison plots with latest learned eigenvectors
                 plot_eigenvector_comparison(
-                    learned_left_real=np.array(features_dict['left_real']),
-                    learned_left_imag=np.array(features_dict['left_imag']),
                     learned_right_real=np.array(features_dict['right_real']),
                     learned_right_imag=np.array(features_dict['right_imag']),
-                    gt_left_real=np.array(gt_left_real),
-                    gt_left_imag=np.array(gt_left_imag),
                     gt_right_real=np.array(gt_right_real),
                     gt_right_imag=np.array(gt_right_imag),
-                    normalized_left_real=np.array(normalized_features['left_real']),
-                    normalized_left_imag=np.array(normalized_features['left_imag']),
                     normalized_right_real=np.array(normalized_features['right_real']),
                     normalized_right_imag=np.array(normalized_features['right_imag']),
                     canonical_states=np.array(canonical_states),
                     grid_width=env.width,
                     grid_height=env.height,
                     save_dir=str(plots_dir),
+                    learned_left_real=np.array(features_dict['left_real']) if method != "allo" else None,
+                    learned_left_imag=np.array(features_dict['left_imag']) if method != "allo" else None,
+                    gt_left_real=np.array(gt_left_real) if method != "allo" else None,
+                    gt_left_imag=np.array(gt_left_imag) if method != "allo" else None,
+                    normalized_left_real=np.array(normalized_features['left_real']) if method != "allo" else None,
+                    normalized_left_imag=np.array(normalized_features['left_imag']) if method != "allo" else None,
                     door_markers=door_markers if door_markers else None,
                 )
 
@@ -802,7 +832,7 @@ def learn_eigenvectors(args, learner_module):
         print(f"Model saved to {save_path}")
 
     # Save final learned eigenvectors
-    final_features_dict = encoder.apply(encoder_state.params['encoder'], state_coords)[0]
+    final_features_dict = get_features(encoder_state.params)
 
     # Save raw eigenvectors
     np.save(results_dir / "final_learned_left_real.npy", np.array(final_features_dict['left_real']))
@@ -818,8 +848,9 @@ def learn_eigenvectors(args, learner_module):
         right_imag=final_features_dict['right_imag'],
         sampling_probs=sampling_probs * is_ratio.squeeze(-1)
     )
-    np.save(results_dir / "final_learned_left_real_normalized.npy", np.array(final_normalized_features['left_real']))
-    np.save(results_dir / "final_learned_left_imag_normalized.npy", np.array(final_normalized_features['left_imag']))
+    if method != "allo":
+        np.save(results_dir / "final_learned_left_real_normalized.npy", np.array(final_normalized_features['left_real']))
+        np.save(results_dir / "final_learned_left_imag_normalized.npy", np.array(final_normalized_features['left_imag']))
     np.save(results_dir / "final_learned_right_real_normalized.npy", np.array(final_normalized_features['right_real']))
     np.save(results_dir / "final_learned_right_imag_normalized.npy", np.array(final_normalized_features['right_imag']))
 
@@ -839,22 +870,22 @@ def learn_eigenvectors(args, learner_module):
 
     # 4. Eigenvector comparison plots (Ground Truth vs Raw Learned vs Normalized)
     plot_eigenvector_comparison(
-        learned_left_real=np.array(final_features_dict['left_real']),
-        learned_left_imag=np.array(final_features_dict['left_imag']),
         learned_right_real=np.array(final_features_dict['right_real']),
         learned_right_imag=np.array(final_features_dict['right_imag']),
-        gt_left_real=np.array(gt_left_real),
-        gt_left_imag=np.array(gt_left_imag),
         gt_right_real=np.array(gt_right_real),
         gt_right_imag=np.array(gt_right_imag),
-        normalized_left_real=np.array(final_normalized_features['left_real']),
-        normalized_left_imag=np.array(final_normalized_features['left_imag']),
         normalized_right_real=np.array(final_normalized_features['right_real']),
         normalized_right_imag=np.array(final_normalized_features['right_imag']),
         canonical_states=np.array(canonical_states),
         grid_width=env.width,
         grid_height=env.height,
         save_dir=str(plots_dir),
+        learned_left_real=np.array(final_features_dict['left_real']) if method != "allo" else None,
+        learned_left_imag=np.array(final_features_dict['left_imag']) if method != "allo" else None,
+        gt_left_real=np.array(gt_left_real) if method != "allo" else None,
+        gt_left_imag=np.array(gt_left_imag) if method != "allo" else None,
+        normalized_left_real=np.array(final_normalized_features['left_real']) if method != "allo" else None,
+        normalized_left_imag=np.array(final_normalized_features['left_imag']) if method != "allo" else None,
         door_markers=door_markers if door_markers else None,
     )
 

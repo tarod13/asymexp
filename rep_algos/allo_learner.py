@@ -60,15 +60,18 @@ def init_params(encoder_initial_params, args):
 
 def create_optimizer(args):
     """
-    Two-group optimizer:
-      • encoder      → Adam  (args.learning_rate)
-      • duals + barrier_coefs → SGD  (args.step_size_duals)
+    Two-group optimizer matching allo.py exactly:
+      • encoder             → Adam  (args.learning_rate)
+      • duals + barrier_coefs → SGD  (args.learning_rate)
       • lambda_real/imag, error_integral → zero updates (managed manually)
-    """
-    step_duals = getattr(args, 'step_size_duals', 1.0)
 
+    Note: step_size_duals is a multiplier *inside* the loss (dual_loss_P),
+    not an optimizer learning rate.  Using it as the SGD lr would produce
+    an effective dual step of step_size_duals² instead of learning_rate ×
+    step_size_duals, causing catastrophically large dual updates.
+    """
     adam = optax.adam(args.learning_rate)
-    sgd  = optax.sgd(step_duals)
+    sgd  = optax.sgd(args.learning_rate)  # matches allo.py
 
     encoder_mask = {
         'encoder': True,
@@ -107,8 +110,9 @@ def create_update_function(encoder, args):
     Create the JIT-compiled ALLO update function.
 
     The returned function matches the 6-argument signature expected by
-    shared_training.py.  `next_state_coords_batch_2` and `state_weighting`
-    are accepted but not used — ALLO's loss is unweighted by design.
+    shared_training.py.  `next_state_coords_batch_2` is accepted but not
+    used.  `state_weighting` is applied inside the inner products so that
+    all three sampling modes (rejection, weighted, none) work correctly.
     """
     k               = args.num_eigenvector_pairs
     max_barrier     = getattr(args, 'max_barrier_coefs',    0.5)
@@ -126,7 +130,7 @@ def create_update_function(encoder, args):
         next_state_coords_batch: jnp.ndarray,
         state_coords_batch_2: jnp.ndarray,
         next_state_coords_batch_2: jnp.ndarray,  # accepted, not used by ALLO
-        state_weighting: jnp.ndarray,            # accepted, not used by ALLO
+        state_weighting: jnp.ndarray,
     ):
         n = state_coords_batch.shape[0]
 
@@ -155,9 +159,11 @@ def create_update_function(encoder, args):
             diagonal_duals    = jnp.diag(dual_variables)
             eigenvalue_sum    = -0.5 * diagonal_duals.sum()
 
-            # Inner-product matrices (unweighted — ALLO's original formulation)
-            ip1 = jnp.einsum('ij,ik->jk', phi,   jax.lax.stop_gradient(phi))   / n
-            ip2 = jnp.einsum('ij,ik->jk', phi_2, jax.lax.stop_gradient(phi_2)) / n
+            # Weighted inner-product matrices.
+            # state_weighting shape: (n, 1); multiplying before einsum applies
+            # per-sample weights so the result estimates E_target[φ φᵀ].
+            ip1 = jnp.einsum('ij,ik->jk', state_weighting * phi,   jax.lax.stop_gradient(phi))   / n
+            ip2 = jnp.einsum('ij,ik->jk', state_weighting * phi_2, jax.lax.stop_gradient(phi_2)) / n
 
             error_matrix_1 = jnp.tril(ip1 - jnp.eye(d))
             error_matrix_2 = jnp.tril(ip2 - jnp.eye(d))

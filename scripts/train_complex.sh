@@ -26,7 +26,7 @@ python train_lap_rep.py \
     --lambda_x             10.0 \
     --chirality_factor     0.1 \
     --gamma                0.9 \
-    --no-use_rejection_sampling \
+    --sampling_mode weighted \
     --constraint_mode      same_episodes \
     --use_residual \
     --use_layernorm \
