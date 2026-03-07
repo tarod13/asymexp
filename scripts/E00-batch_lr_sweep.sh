@@ -68,7 +68,7 @@ python train_lap_rep.py \
     --lambda_x 10.0 \
     --chirality_factor 0.1 \
     --gamma 0.9 \
-    --no-use_rejection_sampling \
+    --sampling_mode weighted \
     --constraint_mode single_batch \
     --seed "$SEED" \
     --exp_name E00-batch_lr_sweep \

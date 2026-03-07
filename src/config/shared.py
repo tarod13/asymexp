@@ -33,9 +33,12 @@ class SharedArgs:
     # Gradient clipping
     use_global_grad_clip: bool = True  # If True, use global norm clipping (original). If False, clip encoder and lambda separately
 
-    # Rejection sampling for uniform state distribution
-    use_rejection_sampling: bool = True  # Use rejection sampling to flatten state distribution (eliminates need for IS correction)
-    rejection_oversample_factor: int = 3  # How many extra samples to draw per rejection round
+    # Sampling / importance-sampling mode
+    # "rejection" : rejection sampling to flatten state distribution (no IS weights needed)
+    # "weighted"  : sample from buffer as-is, apply IS ratio weights in the loss
+    # "none"      : sample from buffer as-is, no IS correction (correct when distribution is uniform)
+    sampling_mode: str = "rejection"
+    rejection_oversample_factor: int = 3  # How many extra samples to draw per rejection round (only used for "rejection")
 
     # Constraint error approximation method (also controls sampling strategy in shared_training)
     constraint_mode: str = "ema"  # Options: "ema", "two_batch", "single_batch", "same_episodes"
