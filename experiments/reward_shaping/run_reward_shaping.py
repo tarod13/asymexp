@@ -209,32 +209,37 @@ def build_transition_table(
 # Potential function
 # ===========================================================================
 
-def build_potential(hitting_times: np.ndarray, goal_idx: int) -> np.ndarray:
+def build_potential(hitting_times: np.ndarray, goal_idx: int, clamp_negatives: bool = False) -> np.ndarray:
     """
     Build the potential F(s) = −h(s, goal) used for reward shaping.
 
-    Hitting times are normalised by the maximum finite value so that
-    F(s) ∈ [-1, 0] for all states, making β a true upper bound on the
-    shaping bonus per step.  Non-finite values are clamped to the max.
+    Hitting times are normalised by the abs-max finite value.
+    Non-finite values are replaced with 0 (neutral potential).
+    If clamp_negatives=True, negative values are also clamped to 0 before
+    normalisation.
     """
     h = hitting_times[:, goal_idx].copy()
 
-    finite_mask = np.isfinite(h) & (h >= 0)
+    finite_mask = np.isfinite(h)
     if finite_mask.sum() == 0:
         return np.zeros(len(h), dtype=np.float32)
 
-    h_ref = float(h[finite_mask].max())
-    if h_ref < 1e-8:
-        h_ref = float(h[finite_mask].max()) + 1e-8
+    if clamp_negatives:
+        h = np.where(finite_mask & (h >= 0), h, 0.0)
+        finite_mask = h > 0
+    else:
+        h = np.where(finite_mask, h, 0.0)
 
-    # Clamp non-finite values
-    h = np.where(np.isfinite(h) & (h >= 0), h, h_ref)
-    h = h / h_ref  # normalise to ≈[0, 1]
+    h_ref = float(np.abs(h).max())
+    if h_ref < 1e-8:
+        h_ref = 1e-8
+
+    h = h / h_ref  # normalise
 
     return -h.astype(np.float32)   # higher potential = closer to goal
 
 
-def build_all_potentials(hitting_times: np.ndarray) -> np.ndarray:
+def build_all_potentials(hitting_times: np.ndarray, clamp_negatives: bool = False) -> np.ndarray:
     """
     Build the full potential matrix F[s, g] for every possible goal g.
 
@@ -245,7 +250,7 @@ def build_all_potentials(hitting_times: np.ndarray) -> np.ndarray:
     N = hitting_times.shape[0]
     F = np.empty((N, N), dtype=np.float32)
     for g in range(N):
-        F[:, g] = build_potential(hitting_times, g)
+        F[:, g] = build_potential(hitting_times, g, clamp_negatives=clamp_negatives)
     return F
 
 
