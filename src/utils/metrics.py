@@ -322,6 +322,7 @@ def compute_complex_cosine_similarities_with_normalization(
     gt_eigenvalues_imag: jnp.ndarray,
     sampling_probs: jnp.ndarray,
     skip_conjugates: bool = False,
+    compute_left: bool = True,
 ) -> Dict[str, float]:
     """
     Compute cosine similarities with proper normalization for adjoint eigenvectors.
@@ -381,14 +382,6 @@ def compute_complex_cosine_similarities_with_normalization(
     else:
         cosine_sim_fn = compute_complex_cosine_similarities
 
-    # For left eigenvectors
-    left_sims = cosine_sim_fn(
-        learned_normalized['left_real'], learned_normalized['left_imag'],
-        gt_left_real, gt_left_imag,
-        gt_eigenvalues_real, gt_eigenvalues_imag,
-        prefix="left_"
-    )
-
     # For right eigenvectors
     right_sims = cosine_sim_fn(
         learned_normalized['right_real'], learned_normalized['right_imag'],
@@ -397,10 +390,17 @@ def compute_complex_cosine_similarities_with_normalization(
         prefix="right_"
     )
 
-    # Combine results
     result = {}
-    result.update(left_sims)
     result.update(right_sims)
+
+    if compute_left:
+        left_sims = cosine_sim_fn(
+            learned_normalized['left_real'], learned_normalized['left_imag'],
+            gt_left_real, gt_left_imag,
+            gt_eigenvalues_real, gt_eigenvalues_imag,
+            prefix="left_"
+        )
+        result.update(left_sims)
 
     return result
 

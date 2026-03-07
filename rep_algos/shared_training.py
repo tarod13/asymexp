@@ -635,6 +635,7 @@ def learn_eigenvectors(args, learner_module, method):
                 gt_eigenvalues_imag=gt_eigenvalues_imag,
                 sampling_probs=eval_distribution,
                 skip_conjugates=skip_conjugates,
+                compute_left=(method != "allo"),
             )
 
             # Compute hitting times for learned eigenvectors and ground truth
@@ -686,14 +687,16 @@ def learn_eigenvectors(args, learner_module, method):
 
             if gradient_step % (args.log_freq * 10) == 0:
                 right_sim = cosine_sims['right_cosine_sim_avg']
-                left_sim = cosine_sims['left_cosine_sim_avg']
                 graph_loss = metrics_dict['graph_loss']
                 clf_loss = metrics_dict.get('clf_loss', 0.0)
                 chirality_loss = metrics_dict.get('chirality_loss', 0.0)
+                sim_str = f"right_sim={right_sim:.4f}"
+                if method != "allo":
+                    sim_str = f"left_sim={cosine_sims['left_cosine_sim_avg']:.4f}, " + sim_str
                 print(f"Step {gradient_step}: total_loss={total_loss.item():.4f}, "
                         f"graph_loss={graph_loss:.4f}, clf_loss={clf_loss:.4f}, "
                         f"chirality_loss={chirality_loss:.4f}, "
-                      f"left_sim={left_sim:.4f}, right_sim={right_sim:.4f}")
+                      f"{sim_str}")
                 print(f"  Batch diversity: unique={unique_states}/{total_states} ({coverage*100:.1f}%), "
                       f"entropy={normalized_entropy:.3f}, max_freq={max_state_freq:.4f}")
         log_time = time.time() - log_start
@@ -745,8 +748,9 @@ def learn_eigenvectors(args, learner_module, method):
                 right_imag=features_dict['right_imag'],
                 sampling_probs=sampling_probs * is_ratio.squeeze(-1)
             )
-            np.save(results_dir / "latest_learned_left_real_normalized.npy", np.array(normalized_features['left_real']))
-            np.save(results_dir / "latest_learned_left_imag_normalized.npy", np.array(normalized_features['left_imag']))
+            if method != "allo":
+                np.save(results_dir / "latest_learned_left_real_normalized.npy", np.array(normalized_features['left_real']))
+                np.save(results_dir / "latest_learned_left_imag_normalized.npy", np.array(normalized_features['left_imag']))
             np.save(results_dir / "latest_learned_right_real_normalized.npy", np.array(normalized_features['right_real']))
             np.save(results_dir / "latest_learned_right_imag_normalized.npy", np.array(normalized_features['right_imag']))
 
@@ -754,22 +758,22 @@ def learn_eigenvectors(args, learner_module, method):
             if args.plot_during_training:
                 # Generate comparison plots with latest learned eigenvectors
                 plot_eigenvector_comparison(
-                    learned_left_real=np.array(features_dict['left_real']),
-                    learned_left_imag=np.array(features_dict['left_imag']),
                     learned_right_real=np.array(features_dict['right_real']),
                     learned_right_imag=np.array(features_dict['right_imag']),
-                    gt_left_real=np.array(gt_left_real),
-                    gt_left_imag=np.array(gt_left_imag),
                     gt_right_real=np.array(gt_right_real),
                     gt_right_imag=np.array(gt_right_imag),
-                    normalized_left_real=np.array(normalized_features['left_real']),
-                    normalized_left_imag=np.array(normalized_features['left_imag']),
                     normalized_right_real=np.array(normalized_features['right_real']),
                     normalized_right_imag=np.array(normalized_features['right_imag']),
                     canonical_states=np.array(canonical_states),
                     grid_width=env.width,
                     grid_height=env.height,
                     save_dir=str(plots_dir),
+                    learned_left_real=np.array(features_dict['left_real']) if method != "allo" else None,
+                    learned_left_imag=np.array(features_dict['left_imag']) if method != "allo" else None,
+                    gt_left_real=np.array(gt_left_real) if method != "allo" else None,
+                    gt_left_imag=np.array(gt_left_imag) if method != "allo" else None,
+                    normalized_left_real=np.array(normalized_features['left_real']) if method != "allo" else None,
+                    normalized_left_imag=np.array(normalized_features['left_imag']) if method != "allo" else None,
                     door_markers=door_markers if door_markers else None,
                 )
 
@@ -835,8 +839,9 @@ def learn_eigenvectors(args, learner_module, method):
         right_imag=final_features_dict['right_imag'],
         sampling_probs=sampling_probs * is_ratio.squeeze(-1)
     )
-    np.save(results_dir / "final_learned_left_real_normalized.npy", np.array(final_normalized_features['left_real']))
-    np.save(results_dir / "final_learned_left_imag_normalized.npy", np.array(final_normalized_features['left_imag']))
+    if method != "allo":
+        np.save(results_dir / "final_learned_left_real_normalized.npy", np.array(final_normalized_features['left_real']))
+        np.save(results_dir / "final_learned_left_imag_normalized.npy", np.array(final_normalized_features['left_imag']))
     np.save(results_dir / "final_learned_right_real_normalized.npy", np.array(final_normalized_features['right_real']))
     np.save(results_dir / "final_learned_right_imag_normalized.npy", np.array(final_normalized_features['right_imag']))
 
@@ -856,22 +861,22 @@ def learn_eigenvectors(args, learner_module, method):
 
     # 4. Eigenvector comparison plots (Ground Truth vs Raw Learned vs Normalized)
     plot_eigenvector_comparison(
-        learned_left_real=np.array(final_features_dict['left_real']),
-        learned_left_imag=np.array(final_features_dict['left_imag']),
         learned_right_real=np.array(final_features_dict['right_real']),
         learned_right_imag=np.array(final_features_dict['right_imag']),
-        gt_left_real=np.array(gt_left_real),
-        gt_left_imag=np.array(gt_left_imag),
         gt_right_real=np.array(gt_right_real),
         gt_right_imag=np.array(gt_right_imag),
-        normalized_left_real=np.array(final_normalized_features['left_real']),
-        normalized_left_imag=np.array(final_normalized_features['left_imag']),
         normalized_right_real=np.array(final_normalized_features['right_real']),
         normalized_right_imag=np.array(final_normalized_features['right_imag']),
         canonical_states=np.array(canonical_states),
         grid_width=env.width,
         grid_height=env.height,
         save_dir=str(plots_dir),
+        learned_left_real=np.array(final_features_dict['left_real']) if method != "allo" else None,
+        learned_left_imag=np.array(final_features_dict['left_imag']) if method != "allo" else None,
+        gt_left_real=np.array(gt_left_real) if method != "allo" else None,
+        gt_left_imag=np.array(gt_left_imag) if method != "allo" else None,
+        normalized_left_real=np.array(final_normalized_features['left_real']) if method != "allo" else None,
+        normalized_left_imag=np.array(final_normalized_features['left_imag']) if method != "allo" else None,
         door_markers=door_markers if door_markers else None,
     )
 
