@@ -100,11 +100,11 @@ def load_model(model_dir: Path, use_gt: bool = False) -> dict:
         eig_imag   = np.load(model_dir / "gt_eigenvalues_imag.npy")
         eigenvalue_type = "laplacian"
     else:
-        # Normalized learned eigenvectors (biorthogonal, unit norm)
-        left_real  = np.load(model_dir / "final_learned_left_real_normalized.npy")
-        left_imag  = np.load(model_dir / "final_learned_left_imag_normalized.npy")
-        right_real = np.load(model_dir / "final_learned_right_real_normalized.npy")
-        right_imag = np.load(model_dir / "final_learned_right_imag_normalized.npy")
+        # Raw learned eigenvectors (adjoint left eigenvectors, as used during training)
+        left_real  = np.load(model_dir / "final_learned_left_real.npy")
+        left_imag  = np.load(model_dir / "final_learned_left_imag.npy")
+        right_real = np.load(model_dir / "final_learned_right_real.npy")
+        right_imag = np.load(model_dir / "final_learned_right_imag.npy")
         # Eigenvalue estimates stored inside the final model checkpoint
         ckpt_path = model_dir / "models" / "final_model.pkl"
         with open(ckpt_path, "rb") as f:
