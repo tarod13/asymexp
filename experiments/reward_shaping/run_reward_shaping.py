@@ -60,8 +60,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.envs.gridworld import GridWorldState
-from src.utils.envs import create_gridworld_env
+from src.utils.envs import create_gridworld_env, get_canonical_free_states, get_env_transition_markers
 from src.utils.metrics import compute_hitting_times_from_eigenvectors
+from src.utils.laplacian import compute_laplacian, compute_eigendecomposition
+from src.utils.plotting import visualize_source_vs_target_hitting_times
 
 
 # ===========================================================================
@@ -98,11 +100,11 @@ def load_model(model_dir: Path, use_gt: bool = False) -> dict:
         eig_imag   = np.load(model_dir / "gt_eigenvalues_imag.npy")
         eigenvalue_type = "laplacian"
     else:
-        # Normalized learned eigenvectors (biorthogonal, unit norm)
-        left_real  = np.load(model_dir / "final_learned_left_real_normalized.npy")
-        left_imag  = np.load(model_dir / "final_learned_left_imag_normalized.npy")
-        right_real = np.load(model_dir / "final_learned_right_real_normalized.npy")
-        right_imag = np.load(model_dir / "final_learned_right_imag_normalized.npy")
+        # Raw learned eigenvectors (adjoint left eigenvectors, as used during training)
+        left_real  = np.load(model_dir / "final_learned_left_real.npy")
+        left_imag  = np.load(model_dir / "final_learned_left_imag.npy")
+        right_real = np.load(model_dir / "final_learned_right_real.npy")
+        right_imag = np.load(model_dir / "final_learned_right_imag.npy")
         # Eigenvalue estimates stored inside the final model checkpoint
         ckpt_path = model_dir / "models" / "final_model.pkl"
         with open(ckpt_path, "rb") as f:
@@ -122,21 +124,6 @@ def load_model(model_dir: Path, use_gt: bool = False) -> dict:
         eigenvalues_imag=eig_imag,
         eigenvalue_type=eigenvalue_type,
     )
-
-
-def load_model_metadata(model_dir: Path) -> dict:
-    """
-    Load only the lightweight metadata from a results directory:
-    training_args and canonical_states.  Does NOT load eigenvectors.
-    Used in single-seed mode when the complex representation is not needed.
-    """
-    model_dir = Path(model_dir)
-    with open(model_dir / "args.json") as f:
-        training_args = json.load(f)
-    with open(model_dir / "viz_metadata.pkl", "rb") as f:
-        viz_metadata = pickle.load(f)
-    canonical_states = np.array(viz_metadata["canonical_states"])
-    return dict(training_args=training_args, canonical_states=canonical_states)
 
 
 # ===========================================================================
@@ -169,23 +156,14 @@ def build_transition_table(
     action_effects = [(0, -1), (1, 0), (0, 1), (-1, 0)]
 
     # Blocked transitions (doors)
-    # env.asymmetric_transitions stores (dest_state, reverse_action) -> prob.
-    # Reconstruct (source_state, forward_action) pairs for the blocked set.
+    # env.asymmetric_transitions stores (state_full, action) -> prob, where
+    # prob is the probability the transition SUCCEEDS (0 = fully blocked).
+    # The env step blocks exactly (state_full, action), so use the keys directly.
     blocked: set[tuple[int, int]] = set()
     if env.has_doors:
-        action_reverse = {0: 2, 1: 3, 2: 0, 3: 1}
-        action_delta   = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
-        for (dest_full, rev_action) in env.asymmetric_transitions:
-            dest_full    = int(dest_full)
-            rev_action   = int(rev_action)
-            fwd_action   = action_reverse[rev_action]
-            dx, dy       = action_delta[rev_action]
-            dest_y, dest_x = divmod(dest_full, env.width)
-            source_x = dest_x + dx
-            source_y = dest_y + dy
-            if 0 <= source_x < env.width and 0 <= source_y < env.height:
-                source_full = source_y * env.width + source_x
-                blocked.add((source_full, fwd_action))
+        for (state_full, action), prob in env.asymmetric_transitions.items():
+            if prob == 0.0:  # hard door — deterministically blocked
+                blocked.add((int(state_full), int(action)))
 
     # Portal overrides: (source_full, action) -> dest_full
     portals: dict[tuple[int, int], int] = {}
@@ -231,32 +209,37 @@ def build_transition_table(
 # Potential function
 # ===========================================================================
 
-def build_potential(hitting_times: np.ndarray, goal_idx: int) -> np.ndarray:
+def build_potential(hitting_times: np.ndarray, goal_idx: int, clamp_negatives: bool = False) -> np.ndarray:
     """
     Build the potential F(s) = −h(s, goal) used for reward shaping.
 
-    Hitting times are normalised by the maximum finite value so that
-    F(s) ∈ [-1, 0] for all states, making β a true upper bound on the
-    shaping bonus per step.  Non-finite values are clamped to the max.
+    Hitting times are normalised by the abs-max finite value.
+    Non-finite values are replaced with 0 (neutral potential).
+    If clamp_negatives=True, negative values are also clamped to 0 before
+    normalisation.
     """
     h = hitting_times[:, goal_idx].copy()
 
-    finite_mask = np.isfinite(h) & (h >= 0)
+    finite_mask = np.isfinite(h)
     if finite_mask.sum() == 0:
         return np.zeros(len(h), dtype=np.float32)
 
-    h_ref = float(h[finite_mask].max())
-    if h_ref < 1e-8:
-        h_ref = float(h[finite_mask].max()) + 1e-8
+    if clamp_negatives:
+        h = np.where(finite_mask & (h >= 0), h, 0.0)
+        finite_mask = h > 0
+    else:
+        h = np.where(finite_mask, h, 0.0)
 
-    # Clamp non-finite values
-    h = np.where(np.isfinite(h) & (h >= 0), h, h_ref)
-    h = h / h_ref  # normalise to ≈[0, 1]
+    h_ref = float(np.abs(h).max())
+    if h_ref < 1e-8:
+        h_ref = 1e-8
+
+    h = h / h_ref  # normalise
 
     return -h.astype(np.float32)   # higher potential = closer to goal
 
 
-def build_all_potentials(hitting_times: np.ndarray) -> np.ndarray:
+def build_all_potentials(hitting_times: np.ndarray, clamp_negatives: bool = False) -> np.ndarray:
     """
     Build the full potential matrix F[s, g] for every possible goal g.
 
@@ -267,7 +250,7 @@ def build_all_potentials(hitting_times: np.ndarray) -> np.ndarray:
     N = hitting_times.shape[0]
     F = np.empty((N, N), dtype=np.float32)
     for g in range(N):
-        F[:, g] = build_potential(hitting_times, g)
+        F[:, g] = build_potential(hitting_times, g, clamp_negatives=clamp_negatives)
     return F
 
 
@@ -292,7 +275,7 @@ def run_q_learning(
     lr: float = 0.1,
     epsilon: float = 0.1,
     seed: int = 0,
-    log_interval: int = 500,
+    log_interval_steps: int = 250_000,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Run tabular ε-greedy Q-learning with one independent Q-table per seed.
@@ -310,10 +293,10 @@ def run_q_learning(
 
     Evaluation
     ----------
-    After every log_interval training episodes the current greedy policy
-    (epsilon=0) is tested from eval_starts_per_seed toward each seed's goal
-    for num_eval_episodes episodes.  The same starts and goals are used for
-    every condition, giving a fair, reproducible comparison.
+    After every log_interval_steps environment steps the current greedy
+    policy (epsilon=0) is tested from eval_starts_per_seed toward each
+    seed's goal for num_eval_episodes episodes.  The same starts and goals
+    are used for every condition, giving a fair, reproducible comparison.
 
     Returns
     -------
@@ -380,7 +363,7 @@ def run_q_learning(
         def run_step(step_carry, step_key):
             Q, s, done, step_in_ep, goal, potential, fixed_start = step_carry
 
-            reset_key, eps_key, rand_key, env_key = jax.random.split(step_key, 4)
+            reset_key, eps_key, rand_key, env_key, tie_key = jax.random.split(step_key, 5)
             at_reset = step_in_ep == 0
 
             # At episode start: random or fixed start, fixed goal for this seed.
@@ -401,9 +384,11 @@ def run_q_learning(
             s    = jnp.where(at_reset, new_start, s)
             done = jnp.where(at_reset, jnp.array(False), done)
 
-            # ε-greedy action
+            # ε-greedy action with random tie-breaking
             use_random = jax.random.uniform(eps_key) < epsilon
-            greedy_a   = jnp.argmax(Q[s])
+            q_s    = Q[s]
+            is_max = (q_s == q_s.max()).astype(jnp.float32)
+            greedy_a   = jax.random.choice(tie_key, num_actions, p=is_max / is_max.sum())
             random_a   = jax.random.randint(rand_key, (), 0, num_actions)
             a          = jnp.where(use_random, random_a, greedy_a)
 
@@ -427,32 +412,28 @@ def run_q_learning(
                 gamma * potential[s_prime] - potential[s]
             )
 
-            # Q update — skipped if episode already done
+            # Q update — always learn, including on the terminal transition
             target = jnp.where(reached, r, r + gamma * Q[s_prime].max())
-            Q = jax.lax.cond(
-                done,
-                lambda Q: Q,
-                lambda Q: Q.at[s, a].add(lr * (target - Q[s, a])),
-                Q,
-            )
+            Q = Q.at[s, a].add(lr * (target - Q[s, a]))
 
             new_done        = done | reached
-            new_s           = jnp.where(done, s, s_prime)
+            new_s           = jnp.where(new_done, s, s_prime)
+            # Reset episode counter immediately on done so the next step
+            # triggers at_reset and starts a fresh episode.
             next_step_in_ep = jnp.where(
-                step_in_ep == max_steps_per_episode - 1,
+                new_done | (step_in_ep == max_steps_per_episode - 1),
                 jnp.zeros((), jnp.int32),
                 step_in_ep + 1,
             )
-            return (Q, new_s, new_done, next_step_in_ep, goal, potential, fixed_start), new_done
+            episode_end = new_done | (step_in_ep == max_steps_per_episode - 1)
+            return (Q, new_s, new_done, next_step_in_ep, goal, potential, fixed_start), (new_done, episode_end)
 
         step_keys = jax.random.split(chunk_key, chunk_steps)
-        new_carry, done_flags = jax.lax.scan(run_step, carry, step_keys)
-        done_flags   = done_flags.reshape(chunk_ep, max_steps_per_episode)
-        any_done     = jnp.any(done_flags, axis=1)
-        steps_per_ep = jnp.where(
-            any_done, jnp.argmax(done_flags, axis=1) + 1, max_steps_per_episode
-        )
-        return new_carry, (steps_per_ep, any_done)
+        new_carry, (reached_flat, ep_end_flat) = jax.lax.scan(run_step, carry, step_keys)
+        # Return flat per-step flags; the main loop converts them to per-episode
+        # stats in numpy.  Episodes now have variable lengths (they restart
+        # immediately on done), so a fixed reshape is no longer valid.
+        return new_carry, (reached_flat, ep_end_flat)
 
     vmapped_chunk = jax.jit(jax.vmap(run_chunk))
 
@@ -465,7 +446,10 @@ def run_q_learning(
             s    = jnp.where(at_reset, eval_start, s)
             done = jnp.where(at_reset, jnp.array(False), done)
 
-            a = jnp.argmax(Q[s])  # greedy, ε = 0
+            env_key, tie_key = jax.random.split(step_key)
+            q_s    = Q[s]
+            is_max = (q_s == q_s.max()).astype(jnp.float32)
+            a      = jax.random.choice(tie_key, num_actions, p=is_max / is_max.sum())
 
             full_idx  = canonical_states_jax[s]
             env_state = GridWorldState(
@@ -475,38 +459,38 @@ def run_q_learning(
                 terminal=jnp.array(False),
                 steps=jnp.array(0, dtype=env.dtype),
             )
-            next_env_state, _, _, _ = env.step(step_key, env_state, a)
+            next_env_state, _, _, _ = env.step(env_key, env_state, a)
             next_full = env.get_state_representation(next_env_state)
             can_idx   = full_to_can_jax[next_full]
             s_prime   = jnp.where(can_idx >= 0, can_idx, s)
 
             reached = s_prime == goal
             new_done = done | reached
-            new_s    = jnp.where(done, s, s_prime)
+            new_s    = jnp.where(new_done, s, s_prime)
+            # Restart immediately on done so the next step triggers at_reset.
             next_step_in_ep = jnp.where(
-                step_in_ep == max_steps_per_episode - 1,
+                new_done | (step_in_ep == max_steps_per_episode - 1),
                 jnp.zeros((), jnp.int32),
                 step_in_ep + 1,
             )
-            return (new_s, new_done, next_step_in_ep), new_done
+            episode_end = new_done | (step_in_ep == max_steps_per_episode - 1)
+            return (new_s, new_done, next_step_in_ep), (new_done, episode_end)
 
         eval_steps = num_eval_episodes * max_steps_per_episode
         eval_keys  = jax.random.split(jax.random.PRNGKey(0), eval_steps)
-        _, done_flags = jax.lax.scan(
+        _, (done_flat, ep_end_flat) = jax.lax.scan(
             eval_step,
             (eval_start, jnp.array(False), jnp.zeros((), jnp.int32)),
             eval_keys,
         )
-        done_flags_2d = done_flags.reshape(num_eval_episodes, max_steps_per_episode)
-        return jnp.any(done_flags_2d, axis=1).mean()
+        return done_flat, ep_end_flat
 
     # vmap over seeds; each seed has its own Q-table, eval start, and goal
     vmapped_eval = jax.jit(jax.vmap(eval_one_seed))
 
     # ── Main loop ─────────────────────────────────────────────────────
-    num_chunks  = max(1, num_episodes // log_interval)
-    chunk_ep    = num_episodes // num_chunks
-    chunk_steps = chunk_ep * max_steps_per_episode
+    chunk_steps = log_interval_steps
+    num_chunks  = max(1, (num_episodes * max_steps_per_episode) // chunk_steps)
 
     seed_keys       = jax.random.split(jax.random.PRNGKey(seed), num_seeds)
     seed_chunk_keys = jax.vmap(lambda k: jax.random.split(k, num_chunks))(seed_keys)
@@ -521,36 +505,116 @@ def run_q_learning(
         train_start_jax,                       # fixed train start (-1 = random)
     )
 
-    all_steps, all_reached, all_eval_sr, eval_ep_indices = [], [], [], []
+    # Per-seed accumulators: lists of 1-D arrays, one entry per chunk.
+    seed_steps_acc   = [[] for _ in range(num_seeds)]
+    seed_reached_acc = [[] for _ in range(num_seeds)]
+    all_eval_sr, eval_ep_indices = [], []
+    cumulative_eps = np.zeros(num_seeds, dtype=np.int64)
+
+    def _fmt(s):
+        m, s = divmod(int(s), 60)
+        return f"{m}m{s:02d}s" if m else f"{s}s"
+
     ep_width = len(str(num_episodes))
     t0 = time.monotonic()
     for chunk_i in range(num_chunks):
-        carry, (steps, reached) = vmapped_chunk(carry, seed_chunk_keys[:, chunk_i])
-        reached_np  = np.array(reached)
-        eval_sr_np  = np.array(
-            vmapped_eval(carry[0], eval_starts_jax, goal_jax)
-        )  # [num_seeds]
-        all_steps.append(np.array(steps, dtype=np.int32))
-        all_reached.append(reached_np)
-        all_eval_sr.append(eval_sr_np)
-        ep_end = (chunk_i + 1) * chunk_ep
-        eval_ep_indices.append(ep_end)
+        carry, (reached_flat, ep_end_flat) = vmapped_chunk(carry, seed_chunk_keys[:, chunk_i])
+        reached_np = np.array(reached_flat)  # [num_seeds, chunk_steps]
+        ep_end_np  = np.array(ep_end_flat)   # [num_seeds, chunk_steps]
 
+        # Convert flat per-step flags to per-episode stats for each seed.
+        # Cap each seed at num_episodes to keep the step budget from inflating
+        # the episode count when episodes terminate early.
+        chunk_reached_rates = np.zeros(num_seeds, dtype=float)
+        chunk_active        = np.zeros(num_seeds, dtype=bool)
+        chunk_suc_steps = []
+        chunk_n_reached = 0
+        for si in range(num_seeds):
+            remaining = num_episodes - cumulative_eps[si]
+            if remaining <= 0:
+                continue
+            ep_ends = np.where(ep_end_np[si])[0]
+            if len(ep_ends) == 0:
+                continue
+            ep_starts = np.concatenate([[0], ep_ends[:-1] + 1])
+            steps_s   = (ep_ends - ep_starts + 1).astype(np.int32)
+            reached_s = reached_np[si, ep_ends]
+            # Discard episodes beyond the budget for this seed.
+            n_add     = min(len(ep_ends), remaining)
+            steps_s   = steps_s[:n_add]
+            reached_s = reached_s[:n_add]
+            seed_steps_acc[si].append(steps_s)
+            seed_reached_acc[si].append(reached_s)
+            cumulative_eps[si] += n_add
+            chunk_reached_rates[si] = reached_s.mean()
+            chunk_active[si]        = True
+            chunk_n_reached += int(reached_s.sum())
+            chunk_suc_steps.extend(steps_s[reached_s.astype(bool)])
+        train_avg_steps = np.mean(chunk_suc_steps) if chunk_suc_steps else float("nan")
+
+        done_all_np, ep_end_all_np = (
+            np.array(x) for x in vmapped_eval(carry[0], eval_starts_jax, goal_jax)
+        )  # each [num_seeds, eval_steps]
+        eval_sr_np     = np.zeros(num_seeds)
+        eval_steps_np  = np.full(num_seeds, np.nan)
+        for si in range(num_seeds):
+            ep_ends_e = np.where(ep_end_all_np[si])[0]
+            if len(ep_ends_e) == 0:
+                continue
+            ep_starts_e = np.concatenate([[0], ep_ends_e[:-1] + 1])
+            lengths_e   = ep_ends_e - ep_starts_e + 1
+            reached_e   = done_all_np[si, ep_ends_e]
+            n = min(len(ep_ends_e), num_eval_episodes)
+            reached_e, lengths_e = reached_e[:n], lengths_e[:n]
+            eval_sr_np[si]    = reached_e.mean()
+            suc_len = lengths_e[reached_e.astype(bool)]
+            if len(suc_len):
+                eval_steps_np[si] = suc_len.mean()
+        all_eval_sr.append(eval_sr_np)
+        eval_ep_indices.append(int(cumulative_eps.mean()))
+
+        avg_q   = float(np.array(carry[0]).mean())
         elapsed   = time.monotonic() - t0
         avg_chunk = elapsed / (chunk_i + 1)
         eta       = avg_chunk * (num_chunks - chunk_i - 1)
-        def _fmt(s):
-            m, s = divmod(int(s), 60)
-            return f"{m}m{s:02d}s" if m else f"{s}s"
-        print(f"    ep {ep_end:{ep_width}d}/{num_episodes}:"
-              f"  train_sr={reached_np.mean():.2f}"
+        ep_disp   = int(cumulative_eps.mean())
+        train_steps_disp = f"{train_avg_steps:.0f}" if not np.isnan(train_avg_steps) else "—"
+        eval_steps_disp  = (f"{np.nanmean(eval_steps_np):.0f}"
+                            if not np.all(np.isnan(eval_steps_np)) else "—")
+        print(f"    ep ~{ep_disp:{ep_width}d}/{num_episodes}:"
+              f"  train_sr={chunk_reached_rates[chunk_active].mean():.2f}"
+              f"  train_seeds={chunk_active.sum()}/{num_seeds}"
+              f"  train_n={chunk_n_reached}"
+              f"  train_steps_goal={train_steps_disp}"
               f"  eval_sr={eval_sr_np.mean():.2f}"
+              f"  eval_steps_goal={eval_steps_disp}"
+              f"  avg_Q={avg_q:.4f}"
               f"  elapsed {_fmt(elapsed)}  eta {_fmt(eta)}"
               f"  ({avg_chunk:.1f}s/chunk)")
 
+        if cumulative_eps.min() >= num_episodes:
+            break
+
+    # Concatenate per-seed episode lists and pad seeds to equal length.
+    all_steps_final   = [
+        np.concatenate(seed_steps_acc[si])   if seed_steps_acc[si]   else np.zeros(0, dtype=np.int32)
+        for si in range(num_seeds)
+    ]
+    all_reached_final = [
+        np.concatenate(seed_reached_acc[si]) if seed_reached_acc[si] else np.zeros(0, dtype=bool)
+        for si in range(num_seeds)
+    ]
+    max_eps = max((len(s) for s in all_steps_final), default=0)
+    train_steps   = np.full((num_seeds, max_eps), max_steps_per_episode, dtype=np.int32)
+    train_reached = np.zeros((num_seeds, max_eps), dtype=bool)
+    for si in range(num_seeds):
+        n = len(all_steps_final[si])
+        train_steps[si, :n]   = all_steps_final[si]
+        train_reached[si, :n] = all_reached_final[si]
+
     return (
-        np.concatenate(all_steps,   axis=1),         # [num_seeds, num_episodes]
-        np.concatenate(all_reached, axis=1),          # [num_seeds, num_episodes]
+        train_steps,                                  # [num_seeds, total_episodes]
+        train_reached,                                # [num_seeds, total_episodes]
         np.stack(all_eval_sr,       axis=0),          # [num_chunks, num_seeds]
         np.array(eval_ep_indices,   dtype=np.int32),  # [num_chunks]
     )
@@ -638,6 +702,43 @@ def plot_results(
     print(f"  Plot saved → {output_path}")
 
 
+def plot_hitting_times_grid(
+    hitting_times: np.ndarray,
+    canonical_states: np.ndarray,
+    env,
+    output_dir: Path,
+    ncols: int = 8,
+) -> None:
+    """
+    Save grid-overlaid hitting-time maps for every canonical state.
+    Each state appears as both target (times TO it) and source (times FROM it).
+    Produces 4 PNGs: linear/log × shared/independent color scale.
+    """
+    door_markers = get_env_transition_markers(env)
+    all_indices = list(range(len(canonical_states)))
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for log_scale in (False, True):
+        suffix = "_log" if log_scale else ""
+        for shared in (True, False):
+            scale_str = "shared" if shared else "independent"
+            fname = output_dir / f"hitting_times{suffix}_{scale_str}_scale.png"
+            visualize_source_vs_target_hitting_times(
+                state_indices=all_indices,
+                hitting_time_matrix=hitting_times,
+                canonical_states=canonical_states,
+                grid_width=env.width,
+                grid_height=env.height,
+                portals=door_markers if door_markers else None,
+                ncols=ncols,
+                save_path=str(fname),
+                log_scale=log_scale,
+                shared_colorbar=shared,
+            )
+            plt.close()
+            print(f"  Hitting-times plot → {fname}")
+
+
 # ===========================================================================
 # Main
 # ===========================================================================
@@ -647,8 +748,14 @@ def main() -> None:
         description="Reward shaping with Laplacian hitting times."
     )
     parser.add_argument(
-        "--model_dir", required=True,
-        help="Results directory for the complex representation (train_lap_rep.py).",
+        "--env", required=True,
+        help="Environment name (e.g. 'GridRoom-4-Doors') passed as env_file_name "
+             "to create_gridworld_env with env_type='file'.",
+    )
+    parser.add_argument(
+        "--model_dir", default=None,
+        help="Results directory for the complex representation (train_lap_rep.py). "
+             "Required to run the 'shaped (complex)' condition; omit for baseline only.",
     )
     parser.add_argument(
         "--allo_model_dir", default=None,
@@ -688,8 +795,8 @@ def main() -> None:
         help="ε-greedy exploration rate (default: 0.1).",
     )
     parser.add_argument(
-        "--log_interval", type=int, default=500,
-        help="Print progress every this many episodes (default: 500).",
+        "--log_interval", type=int, default=250_000,
+        help="Print progress and run eval every this many environment steps (default: 250000).",
     )
     parser.add_argument(
         "--eval_seed", type=int, default=0,
@@ -697,7 +804,24 @@ def main() -> None:
     )
     parser.add_argument(
         "--use_gt", action="store_true",
-        help="Use ground-truth eigenvectors instead of the learned ones.",
+        help="Use ground-truth Laplacian eigenvectors. When set, eigenvectors are "
+             "computed directly from the environment transition matrix (no --model_dir "
+             "needed). Requires --num_eigenvectors.",
+    )
+    parser.add_argument(
+        "--num_eigenvectors", type=int, default=None,
+        help="Number of eigenvectors to use for the ground-truth Laplacian "
+             "(required when --use_gt is set).",
+    )
+    parser.add_argument(
+        "--gt_gamma", type=float, default=0.95,
+        help="Discount factor γ used in the GT Laplacian L = (1+δ)I - (1-γ)P·SR_γ "
+             "(default: 0.95). Only used when --use_gt is set.",
+    )
+    parser.add_argument(
+        "--gt_delta", type=float, default=0.1,
+        help="Eigenvalue-shift δ used in the GT Laplacian (default: 0.1). "
+             "Only used when --use_gt is set.",
     )
     parser.add_argument(
         "--output_dir", default=None,
@@ -730,9 +854,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    single_seed_mode = args.method is not None or args.seed_idx is not None
-    if (args.method is None) != (args.seed_idx is None):
-        parser.error("--method and --seed_idx must be provided together.")
+    if args.use_gt and args.num_eigenvectors is None:
+        parser.error("--use_gt requires --num_eigenvectors.")
+
+    single_seed_mode = args.seed_idx is not None
+    if single_seed_mode and args.method is None:
+        parser.error("--seed_idx requires --method.")
     if single_seed_mode and args.seed_idx >= args.num_seeds:
         parser.error(
             f"--seed_idx {args.seed_idx} is out of range for --num_seeds {args.num_seeds}."
@@ -740,51 +867,49 @@ def main() -> None:
     if single_seed_mode and args.method == "allo" and args.allo_model_dir is None:
         parser.error("--method=allo requires --allo_model_dir.")
 
-    model_dir  = Path(args.model_dir)
-    output_dir = Path(args.output_dir) if args.output_dir else model_dir / "reward_shaping"
+    model_dir  = Path(args.model_dir) if args.model_dir else None
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    elif model_dir is not None:
+        output_dir = model_dir / "reward_shaping"
+    else:
+        output_dir = Path("reward_shaping")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # 1. Load pre-trained Laplacian model (complex representation)
     # ------------------------------------------------------------------
-    print(f"\n{'='*60}")
-    print(f"Loading complex representation model from: {model_dir}")
-    print(f"{'='*60}")
-
+    # When --use_gt, eigenvectors are computed from the environment after it is
+    # built (section 2b), so we skip disk loading here entirely.
     # In single-seed mode skip eigenvectors when not needed (saves memory).
-    _load_complex = not single_seed_mode or args.method == "complex"
+    _load_complex = (not args.use_gt) and (model_dir is not None) and (
+        args.method is None or args.method == "complex"
+    )
     if _load_complex:
-        model_data       = load_model(model_dir, use_gt=args.use_gt)
-        training_args    = model_data["training_args"]
-        canonical_states = model_data["canonical_states"]
-        num_canonical    = len(canonical_states)
-        evtype           = model_data["eigenvalue_type"]
-        print(f"  Eigenvector source : {'ground truth' if args.use_gt else 'learned (normalized)'}")
+        print(f"\n{'='*60}")
+        print(f"Loading complex representation model from: {model_dir}")
+        print(f"{'='*60}")
+        model_data = load_model(model_dir)
+        evtype     = model_data["eigenvalue_type"]
+        print(f"  Eigenvector source : learned (normalized)")
         print(f"  Eigenvalue type    : {evtype}")
-        print(f"  Canonical states   : {num_canonical}")
         print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
     else:
-        model_data       = None
-        _meta            = load_model_metadata(model_dir)
-        training_args    = _meta["training_args"]
-        canonical_states = _meta["canonical_states"]
-        num_canonical    = len(canonical_states)
-        evtype           = None
-        print(f"  Metadata only (eigenvectors skipped for method={args.method})")
-        print(f"  Canonical states   : {num_canonical}")
+        model_data = None
+        evtype     = None
 
     # Optionally load ALLO representation model.
     # In single-seed mode skip it when not needed (saves time and memory).
     allo_model_data = None
-    _load_allo = args.allo_model_dir is not None and (
-        not single_seed_mode or args.method == "allo"
+    _load_allo = (not args.use_gt) and args.allo_model_dir is not None and (
+        args.method is None or args.method == "allo"
     )
     if _load_allo:
         allo_model_dir = Path(args.allo_model_dir)
         print(f"\n{'='*60}")
         print(f"Loading ALLO representation model from: {allo_model_dir}")
         print(f"{'='*60}")
-        allo_model_data = load_model(allo_model_dir, use_gt=args.use_gt)
+        allo_model_data = load_model(allo_model_dir)
         # ALLO learns a single real representation φ_k (symmetric Laplacian).
         # φ_k serves as both left and right eigenvectors; imag parts are zero.
         allo_model_data["left_real"]  = allo_model_data["right_real"]
@@ -793,9 +918,8 @@ def main() -> None:
         allo_model_data["eigenvalues_imag"] = np.zeros_like(
             allo_model_data["eigenvalues_real"])
         allo_evtype = allo_model_data["eigenvalue_type"]
-        print(f"  Eigenvector source : {'ground truth' if args.use_gt else 'learned (normalized)'}")
+        print(f"  Eigenvector source : learned (normalized)")
         print(f"  Eigenvalue type    : {allo_evtype}")
-        print(f"  Canonical states   : {len(allo_model_data['canonical_states'])}")
         print(f"  Eigenvectors (K)   : {allo_model_data['eigenvalues_real'].shape[0]}")
         print(f"  (left = right = right_real, imag = 0 for symmetric Laplacian)")
 
@@ -803,15 +927,21 @@ def main() -> None:
     # 2. Build environment
     # ------------------------------------------------------------------
     print(f"\n{'='*60}")
-    print("Building environment ...")
+    print(f"Building environment: {args.env}")
     print(f"{'='*60}")
 
-    # Reconstruct the environment from the saved training args.
-    # We nullify env_file (an absolute path from the training machine) so
-    # create_gridworld_env falls back to env_file_name which is portable.
-    ta = SimpleNamespace(**training_args)
-    ta.env_file = None
+    ta = SimpleNamespace(
+        env_type="file",
+        env_file=None,
+        env_file_name=args.env,
+        max_episode_length=args.max_steps,
+        windy=False,
+        wind=0.0,
+    )
     env = create_gridworld_env(ta)
+    canonical_states = get_canonical_free_states(env)
+    num_canonical    = len(canonical_states)
+    print(f"  Canonical states   : {num_canonical}")
 
     # ------------------------------------------------------------------
     # 2b. Validate optional fixed starting state; build eligible goal set.
@@ -871,6 +1001,47 @@ def main() -> None:
                   f"  ({len(eligible_goals)}/{num_canonical} eligible goals)")
 
     # ------------------------------------------------------------------
+    # 2c. Compute ground-truth eigenvectors from the environment (--use_gt)
+    # ------------------------------------------------------------------
+    _need_gt = args.use_gt and (args.method is None or args.method == "complex")
+    if _need_gt:
+        print(f"\n{'='*60}")
+        print("Computing ground-truth eigenvectors from environment ...")
+        print(f"{'='*60}")
+        next_state = build_transition_table(env, canonical_states)
+        N = len(canonical_states)
+        # Uniform random-walk: each of the 4 actions equally likely.
+        # Soft doors (0 < prob < 1) add a stay-in-place mass of 0.25*(1-prob)
+        # on top of the prob-weighted forward mass.
+        P = np.zeros((N, N), dtype=np.float64)
+        asym = env.asymmetric_transitions if env.has_doors else {}
+        for a in range(4):
+            for s in range(N):
+                full_s = int(canonical_states[s])
+                door_prob = asym.get((full_s, a), 1.0)
+                dest = next_state[s, a]
+                P[s, dest] += 0.25 * door_prob
+                P[s, s]    += 0.25 * (1.0 - door_prob)
+        laplacian = compute_laplacian(jnp.array(P), gamma=args.gt_gamma, delta=args.gt_delta)
+        eig = compute_eigendecomposition(laplacian, k=args.num_eigenvectors, ascending=True)
+        model_data = dict(
+            training_args={"gamma": args.gt_gamma, "delta": args.gt_delta},
+            left_real=np.array(eig["left_eigenvectors_real"]),
+            left_imag=np.array(eig["left_eigenvectors_imag"]),
+            right_real=np.array(eig["right_eigenvectors_real"]),
+            right_imag=np.array(eig["right_eigenvectors_imag"]),
+            eigenvalues_real=np.array(eig["eigenvalues_real"]),
+            eigenvalues_imag=np.array(eig["eigenvalues_imag"]),
+            eigenvalue_type="laplacian",
+        )
+        evtype = "laplacian"
+        print(f"  Eigenvector source : ground truth (from environment)")
+        print(f"  Eigenvalue type    : laplacian")
+        print(f"  Eigenvectors (K)   : {args.num_eigenvectors}")
+        print(f"  gt_gamma           : {args.gt_gamma}")
+        print(f"  gt_delta           : {args.gt_delta}")
+
+    # ------------------------------------------------------------------
     # 3. Compute hitting times (complex representation)
     # ------------------------------------------------------------------
     hitting_times = None
@@ -887,8 +1058,8 @@ def main() -> None:
                 right_imag       = model_data["right_imag"],
                 eigenvalues_real = model_data["eigenvalues_real"],
                 eigenvalues_imag = model_data["eigenvalues_imag"],
-                gamma            = training_args.get("gamma", 0.95),
-                delta            = training_args.get("delta", 0.1),
+                gamma            = model_data["training_args"].get("gamma", 0.95),
+                delta            = model_data["training_args"].get("delta", 0.1),
                 eigenvalue_type  = evtype,
             )
         )
@@ -902,13 +1073,19 @@ def main() -> None:
 
         np.save(output_dir / "hitting_times.npy", hitting_times)
 
+        plot_hitting_times_grid(
+            hitting_times,
+            np.array(canonical_states),
+            env,
+            output_dir / ("hitting_times_gt_plots" if args.use_gt else "hitting_times_complex_plots"),
+        )
+
     # Compute hitting times for ALLO representation if provided
     allo_hitting_times = None
     if allo_model_data is not None:
         print(f"\n{'='*60}")
         print("Computing hitting times (ALLO representation) ...")
         print(f"{'='*60}")
-        allo_ta = SimpleNamespace(**allo_model_data["training_args"])
         allo_hitting_times = np.array(
             compute_hitting_times_from_eigenvectors(
                 left_real        = allo_model_data["left_real"],
@@ -931,6 +1108,12 @@ def main() -> None:
         if len(allo_finite) > 0:
             print(f"  Range              : [{allo_finite.min():.2f}, {allo_finite.max():.2f}]")
         np.save(output_dir / "hitting_times_allo.npy", allo_hitting_times)
+        plot_hitting_times_grid(
+            allo_hitting_times,
+            np.array(canonical_states),
+            env,
+            output_dir / "hitting_times_allo_plots",
+        )
 
     # ------------------------------------------------------------------
     # 4. Sample one fixed (goal, eval_start) per seed for evaluation.
@@ -1013,8 +1196,8 @@ def main() -> None:
             potential_per_seed=allo_potential_per_seed, shaping_coef=args.shaping_coef
         )
 
-    # Single-seed mode: keep only the requested condition.
-    if single_seed_mode:
+    # Filter to the requested condition when --method is given.
+    if args.method is not None:
         _method_to_key = {
             "baseline": "baseline",
             "complex":  f"shaped β={args.shaping_coef} (complex)",
@@ -1052,7 +1235,7 @@ def main() -> None:
             lr                   = args.lr,
             epsilon              = args.epsilon,
             seed                 = args.seed_idx if single_seed_mode else 0,
-            log_interval         = args.log_interval,
+            log_interval_steps   = args.log_interval,
             **cond_kwargs,
         )
 

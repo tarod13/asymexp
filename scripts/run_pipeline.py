@@ -239,6 +239,7 @@ def main() -> None:
     # Build the environment inherited by the array and analysis jobs.
     env = os.environ.copy()
     env.update({
+        "ENV":               args.env_file_name,
         "MODEL_DIR":         str(complex_dir),
         "ALLO_MODEL_DIR":    str(allo_dir),
         "OUTPUT_DIR":        str(output_dir),

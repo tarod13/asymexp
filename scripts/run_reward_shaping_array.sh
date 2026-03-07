@@ -46,6 +46,7 @@ export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=${SLURM_CPUS_PER_TASK:-4}"
 
 # ── Defaults (overridden by exported env vars from submit_reward_shaping.sh) ──
+ENV="${ENV:-GridRoom-4-Doors}"
 NUM_SEEDS="${NUM_SEEDS:-5}"
 NUM_METHODS="${NUM_METHODS:-3}"
 NUM_EPISODES="${NUM_EPISODES:-30000}"
@@ -79,7 +80,7 @@ echo "========================================"
 
 CMD=(
     python experiments/reward_shaping/run_reward_shaping.py
-    --model_dir          "$MODEL_DIR"
+    --env                "$ENV"
     --method             "$METHOD"
     --seed_idx           "$seed_idx"
     --num_seeds          "$NUM_SEEDS"
@@ -95,7 +96,12 @@ CMD=(
     --output_dir         "$OUTPUT_DIR"
 )
 
-# Only pass --allo_model_dir when we actually need it (method=allo).
+# Only pass --model_dir when the complex representation is needed.
+if [ "$METHOD" = "complex" ] && [ -n "${MODEL_DIR:-}" ]; then
+    CMD+=(--model_dir "$MODEL_DIR")
+fi
+
+# Only pass --allo_model_dir when the allo representation is needed.
 if [ "$METHOD" = "allo" ] && [ -n "${ALLO_MODEL_DIR:-}" ]; then
     CMD+=(--allo_model_dir "$ALLO_MODEL_DIR")
 fi
