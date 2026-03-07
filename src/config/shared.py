@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 
 @dataclass
-class Args:
+class SharedArgs:
     # Environment
     env_type: str = "file"  # 'room4', 'maze', 'spiral', 'obstacles', 'empty', or 'file'
     env_file: str | None = None  # Path to environment text file (if env_type='file')
@@ -28,12 +28,7 @@ class Args:
     num_gradient_steps: int = 100000
     gamma: float = 0.95  # Discount factor for successor representation
     delta: float = 0.1  # Eigenvalue shift parameter: L = (1+δ)I - M (improves numerical stability)
-    lambda_x: float = 10.0  # Exponential decay parameter for CLF
-    lambda_xy: float = 10.0  # Exponential decay parameter for CLF for xy phase
-    chirality_factor: float = 0.1  # Weight for chirality term
     ema_learning_rate: float = 0.0001  # EMA update rate for eigenvalue estimates
-    dual_learning_rate: float = 3e-4  # Learning rate for dual variables (duals_learner)
-    barrier: float = 1.0  # Barrier strength for dual norm constraints (duals_learner)
 
     # Gradient clipping
     use_global_grad_clip: bool = True  # If True, use global norm clipping (original). If False, clip encoder and lambda separately
@@ -42,7 +37,7 @@ class Args:
     use_rejection_sampling: bool = True  # Use rejection sampling to flatten state distribution (eliminates need for IS correction)
     rejection_oversample_factor: int = 3  # How many extra samples to draw per rejection round
 
-    # Constraint error approximation method
+    # Constraint error approximation method (also controls sampling strategy in shared_training)
     constraint_mode: str = "ema"  # Options: "ema", "two_batch", "single_batch", "same_episodes"
     # - "ema": EMA approximation (standard sampling)
     # - "two_batch": Unbiased with two independent batches (standard sampling)
@@ -51,7 +46,7 @@ class Args:
 
     # Episodic replay buffer
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
-    
+
     # Logging and saving
     log_freq: int = 100
     plot_freq: int = 1000
@@ -63,21 +58,6 @@ class Args:
 
     # Resuming training
     resume_from: str | None = None  # Path to results directory to resume from (e.g., './results/room4/room4__allo__0__42__1234567890')
-
-    # ALLO-specific (augmented Lagrangian; only used by allo_learner)
-    duals_initial_val: float = -2.0       # Initial value for dual variables
-    barrier_initial_val: float = 0.5      # Initial barrier coefficient
-    max_barrier_coefs: float = 0.5        # Maximum barrier coefficient value
-    step_size_duals: float = 1.0          # SGD step size for dual variables
-    step_size_duals_I: float = 0.0        # Integral term step size for duals
-    integral_decay: float = 0.99          # EMA decay for constraint-error integral
-    init_dual_diag: bool = False          # Use lower-triangular dual initialisation
-    graph_epsilon: float = 0.01           # Graph perturbation strength
-    graph_variance_scale: float = 0.1     # Variance scale for graph perturbation
-    perturbation_type: str = 'none'       # 'none', 'exponential', 'squared', 'squared-null-grad'
-
-    # Algorithm selection
-    algo: str = "clf"  # Options: "clf" (CLF learner), "allo" (augmented Lagrangian)
 
     # Misc
     seed: int = 42

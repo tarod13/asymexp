@@ -3,7 +3,7 @@ from pathlib import Path
 import pickle
 import numpy as np
 from flax.training.train_state import TrainState
-from src.config.ded_clf import Args
+from src.config.shared import SharedArgs as Args
 
 
 def save_checkpoint(

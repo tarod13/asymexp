@@ -1,0 +1,12 @@
+from dataclasses import dataclass
+from src.config.shared import SharedArgs
+
+
+@dataclass
+class ClfArgs(SharedArgs):
+    # CLF parameters
+    lambda_x: float = 10.0    # Exponential decay parameter for CLF
+    lambda_xy: float = 10.0   # Exponential decay parameter for CLF for xy phase
+    chirality_factor: float = 0.1  # Weight for chirality term
+    dual_learning_rate: float = 3e-4  # Learning rate for dual variables (duals_learner)
+    barrier: float = 1.0      # Barrier strength for dual norm constraints (duals_learner)

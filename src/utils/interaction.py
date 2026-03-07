@@ -1,7 +1,7 @@
 import numpy as np
 import jax.numpy as jnp
 
-from src.config.ded_clf import Args
+from src.config.shared import SharedArgs as Args
 from src.data_collection import collect_transition_counts_and_episodes
 from src.utils.episodic_replay_buffer import EpisodicReplayBuffer
 from src.utils.envs import get_canonical_free_states
