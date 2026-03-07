@@ -156,23 +156,14 @@ def build_transition_table(
     action_effects = [(0, -1), (1, 0), (0, 1), (-1, 0)]
 
     # Blocked transitions (doors)
-    # env.asymmetric_transitions stores (dest_state, reverse_action) -> prob.
-    # Reconstruct (source_state, forward_action) pairs for the blocked set.
+    # env.asymmetric_transitions stores (state_full, action) -> prob, where
+    # prob is the probability the transition SUCCEEDS (0 = fully blocked).
+    # The env step blocks exactly (state_full, action), so use the keys directly.
     blocked: set[tuple[int, int]] = set()
     if env.has_doors:
-        action_reverse = {0: 2, 1: 3, 2: 0, 3: 1}
-        action_delta   = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
-        for (dest_full, rev_action) in env.asymmetric_transitions:
-            dest_full    = int(dest_full)
-            rev_action   = int(rev_action)
-            fwd_action   = action_reverse[rev_action]
-            dx, dy       = action_delta[rev_action]
-            dest_y, dest_x = divmod(dest_full, env.width)
-            source_x = dest_x + dx
-            source_y = dest_y + dy
-            if 0 <= source_x < env.width and 0 <= source_y < env.height:
-                source_full = source_y * env.width + source_x
-                blocked.add((source_full, fwd_action))
+        for (state_full, action), prob in env.asymmetric_transitions.items():
+            if prob == 0.0:  # hard door — deterministically blocked
+                blocked.add((int(state_full), int(action)))
 
     # Portal overrides: (source_full, action) -> dest_full
     portals: dict[tuple[int, int], int] = {}
@@ -1015,10 +1006,17 @@ def main() -> None:
         next_state = build_transition_table(env, canonical_states)
         N = len(canonical_states)
         # Uniform random-walk: each of the 4 actions equally likely.
+        # Soft doors (0 < prob < 1) add a stay-in-place mass of 0.25*(1-prob)
+        # on top of the prob-weighted forward mass.
         P = np.zeros((N, N), dtype=np.float64)
+        asym = env.asymmetric_transitions if env.has_doors else {}
         for a in range(4):
             for s in range(N):
-                P[s, next_state[s, a]] += 0.25
+                full_s = int(canonical_states[s])
+                door_prob = asym.get((full_s, a), 1.0)
+                dest = next_state[s, a]
+                P[s, dest] += 0.25 * door_prob
+                P[s, s]    += 0.25 * (1.0 - door_prob)
         laplacian = compute_laplacian(jnp.array(P), gamma=args.gt_gamma, delta=args.gt_delta)
         eig = compute_eigendecomposition(laplacian, k=args.num_eigenvectors, ascending=True)
         model_data = dict(
