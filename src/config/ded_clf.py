@@ -76,6 +76,9 @@ class Args:
     graph_variance_scale: float = 0.1     # Variance scale for graph perturbation
     perturbation_type: str = 'none'       # 'none', 'exponential', 'squared', 'squared-null-grad'
 
+    # Algorithm selection
+    algo: str = "clf"  # Options: "clf" (CLF learner), "allo" (augmented Lagrangian)
+
     # Misc
     seed: int = 42
     exp_name: str | None = None
