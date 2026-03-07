@@ -89,10 +89,10 @@ def learn_eigenvectors(args):
         print(f"{'='*60}\n")
     else:
         # Set up new run
-        run_name = f"{args.env_type}__{args.exp_name}__{args.exp_number}__{args.seed}__{int(time.time())}"
+        run_name = f"{args.env_file_name}__{args.exp_name}__{args.exp_number}__{args.seed}__{int(time.time())}"
 
         # Create results directories
-        results_dir = Path(args.results_dir) / args.env_type / run_name
+        results_dir = Path(args.results_dir) / args.env_file_name / run_name
         results_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"Results will be saved to: {results_dir}")

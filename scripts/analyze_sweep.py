@@ -9,7 +9,7 @@ Usage:
         --results_dir ./results/sweeps \
         --exp_name batch_lr_sweep \
         --output_dir ./results/sweeps/analysis \
-        [--env_type file]
+        [--env_file_name GridRoom-4-Doors]
 """
 
 import argparse
@@ -79,12 +79,12 @@ def load_run(run_dir: Path):
         return None
 
 
-def collect_runs(results_dir: Path, exp_name: str, env_type: str):
+def collect_runs(results_dir: Path, exp_name: str, env_file_name: str):
     """
-    Scan results_dir/{env_type}/* for runs matching exp_name.
+    Scan results_dir/{env_file_name}/* for runs matching exp_name.
     Returns a list of (batch_size, learning_rate, seed, metrics_list).
     """
-    env_dir = results_dir / env_type
+    env_dir = results_dir / env_file_name
     if not env_dir.exists():
         raise FileNotFoundError(f"No results found at {env_dir}")
 
@@ -248,7 +248,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--results_dir", type=str, default=None)
     parser.add_argument("--exp_name", type=str, default="batch_lr_sweep")
-    parser.add_argument("--env_type", type=str, default="file")
+    parser.add_argument("--env_file_name", type=str, default="GridRoom-4-Doors")
     parser.add_argument("--output_dir", type=str, default=None)
     args = parser.parse_args()
 
@@ -276,8 +276,8 @@ def main():
     # -------------------------------------------------------------------------
     # 1. Collect all runs
     # -------------------------------------------------------------------------
-    print(f"\nScanning {results_dir / args.env_type} for exp_name={args.exp_name!r} ...")
-    raw_runs = collect_runs(results_dir, args.exp_name, args.env_type)
+    print(f"\nScanning {results_dir / args.env_file_name} for exp_name={args.exp_name!r} ...")
+    raw_runs = collect_runs(results_dir, args.exp_name, args.env_file_name)
     if not raw_runs:
         print("No matching runs found. Exiting.")
         return
@@ -354,7 +354,7 @@ def main():
     print(f"Individual cosine similarity keys: {len(cosine_sim_indiv_keys)} keys")
     print(f"Other metric keys: {len(other_keys)} keys")
 
-    title = f"{args.exp_name} ({args.env_type})"
+    title = f"{args.exp_name} ({args.env_file_name})"
 
     # -------------------------------------------------------------------------
     # 5a. Average cosine similarity evolution (left + right)

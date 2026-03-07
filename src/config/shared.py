@@ -4,9 +4,7 @@ from dataclasses import dataclass
 @dataclass
 class SharedArgs:
     # Environment
-    env_type: str = "file"  # 'room4', 'maze', 'spiral', 'obstacles', 'empty', or 'file'
-    env_file: str | None = None  # Path to environment text file (if env_type='file')
-    env_file_name: str | None = "GridRoom-4-Doors"  # Name of environment file in src/envs/txt/ (e.g., 'GridRoom-4')
+    env_file_name: str = "GridRoom-4-Doors"  # Name of environment file in src/envs/txt/ (e.g., 'GridRoom-4-Doors')
     max_episode_length: int = 1000
     windy: bool = False  # If True, use WindyGridWorldEnv instead of GridWorldEnv
     wind: float = 0.0   # Wind strength in (-1, 1); negative = leftward, positive = rightward

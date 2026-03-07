@@ -16,7 +16,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
 python train_lap_rep.py \
-    --env_type             file \
     --env_file_name        GridRoom-4-Doors \
     --num_gradient_steps   100000 \
     --batch_size           256 \

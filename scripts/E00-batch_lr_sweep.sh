@@ -58,7 +58,6 @@ source ~/ENV/bin/activate
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 python train_lap_rep.py \
-    --env_type file \
     --env_file_name GridRoom-4-Doors \
     --num_gradient_steps 200000 \
     --batch_size "$BATCH_SIZE" \

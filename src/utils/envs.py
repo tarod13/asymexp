@@ -8,15 +8,15 @@ sys.path.append(str(Path(__file__).parent.parent))
 import jax.numpy as jnp
 
 from src.config.shared import SharedArgs as Args
-from src.envs.env import create_environment_from_text, EXAMPLE_ENVIRONMENTS
+from src.envs.env import create_environment_from_text
 
 
 def create_gridworld_env(args: Args):
     """
-    Create a gridworld environment from text file or example.
+    Create a gridworld environment from a text file in src/envs/txt/.
 
     Args:
-        args: Arguments containing env_type, env_file, or env_file_name
+        args: Arguments containing env_file_name
 
     Returns:
         env: GridWorld environment instance
@@ -24,36 +24,16 @@ def create_gridworld_env(args: Args):
     windy = getattr(args, 'windy', False)
     wind  = getattr(args, 'wind', 0.0)
 
-    if args.env_type == 'file':
-        # Load from file path
-        if args.env_file is None and args.env_file_name is None:
-            raise ValueError("Must specify either env_file or env_file_name when env_type='file'")
-
-        env = create_environment_from_text(
-            file_path=args.env_file,
-            file_name=args.env_file_name,
-            max_steps=args.max_episode_length,
-            precision=32,
-            windy=windy,
-            wind=wind,
-        )
-    else:
-        # Load from example environments
-        if args.env_type not in EXAMPLE_ENVIRONMENTS:
-            raise ValueError(f"Unknown env_type: {args.env_type}. "
-                           f"Must be one of {list(EXAMPLE_ENVIRONMENTS.keys())} or 'file'")
-
-        text_content = EXAMPLE_ENVIRONMENTS[args.env_type]
-        env = create_environment_from_text(
-            text_content=text_content,
-            max_steps=args.max_episode_length,
-            precision=32,
-            windy=windy,
-            wind=wind,
-        )
+    env = create_environment_from_text(
+        file_name=args.env_file_name,
+        max_steps=args.max_episode_length,
+        precision=32,
+        windy=windy,
+        wind=wind,
+    )
 
     env_class_name = type(env).__name__
-    print(f"Loaded environment: {args.env_type} ({env_class_name})")
+    print(f"Loaded environment: {args.env_file_name} ({env_class_name})")
     print(f"  Grid size: {env.width} x {env.height}")
     if windy:
         print(f"  Wind: {wind:+.3f} ({'left' if wind < 0 else 'right'}, p={abs(wind):.3f})")

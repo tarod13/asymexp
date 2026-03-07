@@ -3,7 +3,7 @@
 # Parallel representation training across all environments (no importance sampling)
 #
 # Launches one job per file-based environment (6 total). Results are saved to:
-#   ./results/parallel_eval/{env_type}/{env_type}__parallel_eval__0__42__{timestamp}/
+#   ./results/parallel_eval/{env_file_name}/{env_file_name}__parallel_eval__0__42__{timestamp}/
 #
 # After each job completes the resolved directory is written to:
 #   ./results/eval_manifest/{ENV_NAME}.txt
@@ -28,30 +28,21 @@ mkdir -p logs
 mkdir -p results/eval_manifest
 
 # ---------------------------------------------------------------------------
-# Environment table  (index 0-5, file-based only)
+# Environment table  (index 0-5)
 # ---------------------------------------------------------------------------
-ENV_TYPES=(
-    "file"              "file"       "file"               "file"
-    "file"                           "file"
-)
 ENV_FILES=(
     "GridRoom-4-Doors"  "GridRoom-4"  "GridRoom-4-DoorsIm"  "GridRoom-1"
     "GridRoom-1-Portals-1"            "GridRoom-1-Doors"
 )
-ENV_NAMES=(
-    "GridRoom-4-Doors"  "GridRoom-4"  "GridRoom-4-DoorsIm"  "GridRoom-1"
-    "GridRoom-1-Portals-1"            "GridRoom-1-Doors"
-)
 
-ENV_TYPE=${ENV_TYPES[$SLURM_ARRAY_TASK_ID]}
 ENV_FILE=${ENV_FILES[$SLURM_ARRAY_TASK_ID]}
-ENV_NAME=${ENV_NAMES[$SLURM_ARRAY_TASK_ID]}
+ENV_NAME=$ENV_FILE
 
 echo "========================================"
 echo "Parallel Eval Training — No Importance Sampling"
 echo "Job ID      : $SLURM_JOB_ID"
 echo "Array Task  : $SLURM_ARRAY_TASK_ID"
-echo "Environment : $ENV_NAME  (type=$ENV_TYPE, file=$ENV_FILE)"
+echo "Environment : $ENV_NAME"
 echo "Node        : $SLURM_NODELIST"
 echo "========================================"
 
@@ -65,20 +56,10 @@ source ~/ENV/bin/activate
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 # ---------------------------------------------------------------------------
-# Build optional --env_file_name argument
-# ---------------------------------------------------------------------------
-if [ -n "$ENV_FILE" ]; then
-    FILE_ARGS="--env_file_name $ENV_FILE"
-else
-    FILE_ARGS=""
-fi
-
-# ---------------------------------------------------------------------------
 # Run training (CLF, no importance sampling)
 # ---------------------------------------------------------------------------
 python train.py clf \
-    --env_type             "$ENV_TYPE" \
-    $FILE_ARGS \
+    --env_file_name        "$ENV_FILE" \
     --num_gradient_steps   100000 \
     --batch_size           256 \
     --num_eigenvector_pairs 8 \
@@ -103,10 +84,10 @@ python train.py clf \
 # ---------------------------------------------------------------------------
 # Find the results directory and write to manifest
 # The directory pattern is:
-#   ./results/parallel_eval/{env_type}/{env_type}__parallel_eval__0__42__*/
+#   ./results/parallel_eval/{env_file_name}/{env_file_name}__parallel_eval__0__42__*/
 # We take the most recent one in case of reruns.
 # ---------------------------------------------------------------------------
-RESULTS_DIR=$(ls -td "./results/parallel_eval/${ENV_TYPE}/${ENV_TYPE}__parallel_eval__0__42__"*/ 2>/dev/null | head -1)
+RESULTS_DIR=$(ls -td "./results/parallel_eval/${ENV_FILE}/${ENV_FILE}__parallel_eval__0__42__"*/ 2>/dev/null | head -1)
 
 if [ -z "$RESULTS_DIR" ]; then
     echo "ERROR: Could not find results directory for $ENV_NAME" >&2
