@@ -60,15 +60,18 @@ def init_params(encoder_initial_params, args):
 
 def create_optimizer(args):
     """
-    Two-group optimizer:
-      • encoder      → Adam  (args.learning_rate)
-      • duals + barrier_coefs → SGD  (args.step_size_duals)
+    Two-group optimizer matching allo.py exactly:
+      • encoder             → Adam  (args.learning_rate)
+      • duals + barrier_coefs → SGD  (args.learning_rate)
       • lambda_real/imag, error_integral → zero updates (managed manually)
-    """
-    step_duals = getattr(args, 'step_size_duals', 1.0)
 
+    Note: step_size_duals is a multiplier *inside* the loss (dual_loss_P),
+    not an optimizer learning rate.  Using it as the SGD lr would produce
+    an effective dual step of step_size_duals² instead of learning_rate ×
+    step_size_duals, causing catastrophically large dual updates.
+    """
     adam = optax.adam(args.learning_rate)
-    sgd  = optax.sgd(step_duals)
+    sgd  = optax.sgd(args.learning_rate)  # matches allo.py
 
     encoder_mask = {
         'encoder': True,
