@@ -58,7 +58,7 @@ from src.utils.plotting import (
 from src.utils.laplacian import compute_eigendecomposition
 
 
-def learn_eigenvectors(args, learner_module):
+def learn_eigenvectors(args, learner_module, method):
     """
     Main training loop to learn eigenvectors.
 
@@ -186,16 +186,14 @@ def learn_eigenvectors(args, learner_module):
             sampling_probs, data_env, replay_buffer, transition_matrix = \
                 collect_data_and_compute_eigenvectors(env, args)
 
-        # Check if learner provides an alternative ground truth matrix
-        # (e.g., ALLO uses L + D^{-1}L^T D instead of L)
-        compute_gt_matrix_fn = getattr(learner_module, 'compute_ground_truth_matrix', None)
-
-        # Compute eigendecomposition for ground truth
-        # Number of GT eigenvectors may differ from learning (e.g., for conjugate skipping)
-        if compute_gt_matrix_fn is not None:
-            gt_matrix = compute_gt_matrix_fn(laplacian_matrix, sampling_probs)
-            print(f"\nUsing learner-specific ground truth matrix.")
-            print(f"Computing {num_gt_eigenvectors} ground truth eigenvectors from L + D^{{-1}}L^T D...")
+        # For ALLO, the ground truth is eigenvectors of L + D^{-1}L^T D
+        # (self-adjoint w.r.t. the D-weighted inner product, real eigenvalues/eigenvectors).
+        # For all other algorithms, the ground truth uses L directly.
+        if method == "allo":
+            D = jnp.diag(sampling_probs)
+            D_inv = jnp.diag(1.0 / sampling_probs)
+            gt_matrix = laplacian_matrix + D_inv @ laplacian_matrix.T @ D
+            print(f"\nALLO: computing {num_gt_eigenvectors} ground truth eigenvectors from L + D^{{-1}}L^T D...")
             gt_eigendecomp = compute_eigendecomposition(
                 gt_matrix,
                 k=num_gt_eigenvectors,

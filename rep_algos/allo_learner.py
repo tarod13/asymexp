@@ -102,26 +102,6 @@ def get_optimizer_masks(args):
     return encoder_mask, other_mask
 
 
-def compute_ground_truth_matrix(laplacian_matrix, sampling_probs):
-    """
-    For ALLO, the ground truth eigenvectors are those of L + D^{-1}L^T D,
-    where D = diag(sampling_probs). This matrix is self-adjoint with respect
-    to the D-weighted inner product and has real eigenvalues, matching the
-    structure of what the ALLO objective (which learns real eigenvectors) is
-    designed to capture.
-
-    Args:
-        laplacian_matrix: Non-symmetric Laplacian L, shape [num_states, num_states]
-        sampling_probs: 1D array of empirical sampling probabilities, shape [num_states]
-
-    Returns:
-        Ground truth matrix L + D^{-1}L^T D, shape [num_states, num_states]
-    """
-    D_inv = jnp.diag(1.0 / sampling_probs)
-    D = jnp.diag(sampling_probs)
-    return laplacian_matrix + D_inv @ laplacian_matrix.T @ D
-
-
 def create_update_function(encoder, args):
     """
     Create the JIT-compiled ALLO update function.

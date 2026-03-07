@@ -8,12 +8,13 @@ from rep_algos.shared_training import learn_eigenvectors
 from rep_algos import clf_learner_multi_mode, allo_learner
 
 LEARNERS = {
-    ClfArgs: clf_learner_multi_mode,
-    AlloArgs: allo_learner,
+    ClfArgs: (clf_learner_multi_mode, "clf"),
+    AlloArgs: (allo_learner, "allo"),
 }
 
 args = tyro.cli(Union[
     Annotated[ClfArgs, tyro.conf.subcommand("clf")],
     Annotated[AlloArgs, tyro.conf.subcommand("allo")],
 ])
-learn_eigenvectors(args, LEARNERS[type(args)])
+learner_module, method = LEARNERS[type(args)]
+learn_eigenvectors(args, learner_module, method)
