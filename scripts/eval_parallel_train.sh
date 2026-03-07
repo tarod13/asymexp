@@ -2,7 +2,7 @@
 # =============================================================================
 # Parallel representation training across all environments (no importance sampling)
 #
-# Launches one job per environment. Results are saved to:
+# Launches one job per file-based environment (6 total). Results are saved to:
 #   ./results/parallel_eval/{env_type}/{env_type}__parallel_eval__0__42__{timestamp}/
 #
 # After each job completes the resolved directory is written to:
@@ -20,7 +20,7 @@
 #SBATCH --time=6:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
-#SBATCH --array=0-10
+#SBATCH --array=0-5
 #SBATCH --output=logs/par_eval_train_%a.out
 #SBATCH --error=logs/par_eval_train_%a.err
 
@@ -28,24 +28,19 @@ mkdir -p logs
 mkdir -p results/eval_manifest
 
 # ---------------------------------------------------------------------------
-# Environment table  (index 0-10)
-# ---------------------------------------------------------------------------
-# Each entry: ENV_TYPE  ENV_FILE_NAME (empty string for example envs)
+# Environment table  (index 0-5, file-based only)
 # ---------------------------------------------------------------------------
 ENV_TYPES=(
-    "file"   "file"       "file"               "file"
-    "file"                "file"
-    "room4"  "maze"       "spiral"  "obstacles"  "empty"
+    "file"              "file"       "file"               "file"
+    "file"                           "file"
 )
 ENV_FILES=(
     "GridRoom-4-Doors"  "GridRoom-4"  "GridRoom-4-DoorsIm"  "GridRoom-1"
     "GridRoom-1-Portals-1"            "GridRoom-1-Doors"
-    ""                  ""            ""            ""           ""
 )
 ENV_NAMES=(
     "GridRoom-4-Doors"  "GridRoom-4"  "GridRoom-4-DoorsIm"  "GridRoom-1"
     "GridRoom-1-Portals-1"            "GridRoom-1-Doors"
-    "room4"             "maze"        "spiral"  "obstacles"   "empty"
 )
 
 ENV_TYPE=${ENV_TYPES[$SLURM_ARRAY_TASK_ID]}
@@ -93,7 +88,7 @@ python train.py clf \
     --chirality_factor     0.1 \
     --gamma                0.9 \
     --sampling_mode        none \
-    --constraint_mode      ema \
+    --constraint_mode      single_batch \
     --use_residual \
     --use_layernorm \
     --num_envs             1000 \

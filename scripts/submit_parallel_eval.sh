@@ -29,7 +29,7 @@ echo "============================================================"
 # 1. Submit training array
 # ---------------------------------------------------------------------------
 echo ""
-echo "[1/2] Submitting training array job (11 environments)…"
+echo "[1/2] Submitting training array job (6 environments)…"
 
 TRAIN_JID=$(sbatch --parsable scripts/eval_parallel_train.sh)
 
@@ -38,7 +38,7 @@ if [ -z "$TRAIN_JID" ]; then
     exit 1
 fi
 
-echo "      Submitted: job $TRAIN_JID  (array 0-10)"
+echo "      Submitted: job $TRAIN_JID  (array 0-5)"
 
 # ---------------------------------------------------------------------------
 # 2. Submit plotting job (afterok = all array tasks must succeed)
@@ -64,7 +64,7 @@ echo ""
 echo "============================================================"
 echo "  Pipeline submitted successfully."
 echo ""
-echo "  Training array job : $TRAIN_JID  (11 envs, ~6 h each)"
+echo "  Training array job : $TRAIN_JID  (6 envs, ~6 h each)"
 echo "  Plotting job       : $PLOT_JID   (starts after all training)"
 echo ""
 echo "  Monitor with:"
