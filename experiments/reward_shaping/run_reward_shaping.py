@@ -60,9 +60,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.envs.gridworld import GridWorldState
-from src.utils.envs import create_gridworld_env, get_canonical_free_states
+from src.utils.envs import create_gridworld_env, get_canonical_free_states, get_env_transition_markers
 from src.utils.metrics import compute_hitting_times_from_eigenvectors
 from src.utils.laplacian import compute_laplacian, compute_eigendecomposition
+from src.utils.plotting import visualize_source_vs_target_hitting_times
 
 
 # ===========================================================================
@@ -705,32 +706,41 @@ def plot_results(
     print(f"  Plot saved → {output_path}")
 
 
-def plot_hitting_times(
+def plot_hitting_times_gt(
     hitting_times: np.ndarray,
-    output_path: Path,
-    title: str = "Hitting times",
+    canonical_states: np.ndarray,
+    env,
+    output_dir: Path,
+    ncols: int = 8,
 ) -> None:
     """
-    Save a heatmap of the hitting times matrix h[i, j] = expected steps from i to j.
-
-    Infinite / negative values are masked out (shown in grey).
+    Save grid-overlaid hitting-time maps for every canonical state,
+    using the same visualize_source_vs_target_hitting_times used during training.
+    Each state appears as both target (times TO it) and source (times FROM it).
     """
-    ht = hitting_times.astype(float).copy()
-    masked = np.ma.masked_where(~np.isfinite(ht) | (ht < 0), ht)
+    door_markers = get_env_transition_markers(env)
+    all_indices = list(range(len(canonical_states)))
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    fig, ax = plt.subplots(figsize=(7, 6))
-    cmap = plt.cm.viridis.copy()
-    cmap.set_bad(color="lightgrey")
-    im = ax.imshow(masked, aspect="auto", cmap=cmap, origin="upper")
-    fig.colorbar(im, ax=ax, label="Expected steps")
-    ax.set_xlabel("Destination state j")
-    ax.set_ylabel("Source state i")
-    ax.set_title(title)
-    fig.tight_layout()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Hitting-times plot → {output_path}")
+    for log_scale in (False, True):
+        suffix = "_log" if log_scale else ""
+        for shared in (True, False):
+            scale_str = "shared" if shared else "independent"
+            fname = output_dir / f"hitting_times_gt{suffix}_{scale_str}_scale.png"
+            visualize_source_vs_target_hitting_times(
+                state_indices=all_indices,
+                hitting_time_matrix=hitting_times,
+                canonical_states=canonical_states,
+                grid_width=env.width,
+                grid_height=env.height,
+                portals=door_markers if door_markers else None,
+                ncols=ncols,
+                save_path=str(fname),
+                log_scale=log_scale,
+                shared_colorbar=shared,
+            )
+            plt.close()
+            print(f"  GT hitting-times plot → {fname}")
 
 
 # ===========================================================================
@@ -1061,10 +1071,11 @@ def main() -> None:
         np.save(output_dir / "hitting_times.npy", hitting_times)
 
         if args.use_gt:
-            plot_hitting_times(
+            plot_hitting_times_gt(
                 hitting_times,
-                output_dir / "hitting_times.png",
-                title=f"GT hitting times  (K={args.num_eigenvectors}, γ={args.gt_gamma}, δ={args.gt_delta})",
+                np.array(canonical_states),
+                env,
+                output_dir / "hitting_times_gt_plots",
             )
 
     # Compute hitting times for ALLO representation if provided
