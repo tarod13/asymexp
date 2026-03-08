@@ -118,7 +118,7 @@ print_usage() {
     echo -e "${GREEN}Sweep-specific options:${NC}"
     echo "  --results_dir PATH Directory containing sweep results (default: ./results/sweeps)"
     echo "  --exp_name NAME    Experiment name to analyze (default: batch_lr_sweep)"
-    echo "  --env_type TYPE    Environment type (default: file)"
+    echo "  --env_file_name NAME  Environment file name (default: GridRoom-4-Doors)"
 }
 
 # Check if no arguments provided

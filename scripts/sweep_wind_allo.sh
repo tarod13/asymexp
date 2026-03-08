@@ -84,7 +84,6 @@ echo "  Results dir:  $RESULTS_DIR/task_${JOB_ID}"
 echo "========================================"
 
 python train_allo_rep.py \
-    --env_type              file \
     --env_file_name         "$ENV_FILE_NAME" \
     --num_gradient_steps    "$STEPS" \
     --batch_size            256 \

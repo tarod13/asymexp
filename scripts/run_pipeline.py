@@ -35,8 +35,8 @@ Examples
 
   # Reuse pre-trained models, just re-run reward shaping
   python scripts/run_pipeline.py \\
-      --allo_dir    ./results/file/my_allo_run \\
-      --complex_dir ./results/file/my_complex_run
+      --allo_dir    ./results/GridRoom-4-Doors/my_allo_run \\
+      --complex_dir ./results/GridRoom-4-Doors/my_complex_run
 """
 
 import argparse
@@ -145,7 +145,6 @@ def main() -> None:
     else:
         run([
             py, str(repo_root / "train_allo_rep.py"),
-            "--env_type",              "file",
             "--env_file_name",         args.env_file_name,
             "--num_gradient_steps",    str(args.steps),
             "--batch_size",            "256",
@@ -187,7 +186,6 @@ def main() -> None:
     else:
         run([
             py, str(repo_root / "train_lap_rep.py"),
-            "--env_type",              "file",
             "--env_file_name",         args.env_file_name,
             "--num_gradient_steps",    str(args.steps),
             "--batch_size",            "256",
