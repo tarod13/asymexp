@@ -24,7 +24,7 @@
 #
 # Options (all optional)
 # -----------------------
-#   --env_file_name ENV    Environment text file name   [GridRoom-4-Doors]
+#   --env_file_name ENV    Environment text file name   [GridRoom-1]
 #   --steps         N      Gradient steps per run       [40000]
 #   --seed          S      Random seed                  [42]
 #   --results_dir   DIR    Top-level output directory   [./results/wind_sweep]
@@ -46,7 +46,7 @@ export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=${SLURM_CPUS_PER_TASK:-8}"
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
-ENV_FILE_NAME="GridRoom-4-Doors"
+ENV_FILE_NAME="GridRoom-1"
 STEPS=40000
 SEED=42
 RESULTS_DIR="./results/wind_sweep"
