@@ -24,8 +24,8 @@
 #
 # Options (all optional)
 # -----------------------
-#   --env_file_name ENV    Environment text file name   [GridRoom-1]
-#   --steps         N      Gradient steps per run       [100000]
+#   --env_file_name ENV    Environment text file name   [GridRoom-4-Doors]
+#   --steps         N      Gradient steps per run       [40000]
 #   --seed          S      Random seed                  [42]
 #   --results_dir   DIR    Top-level output directory   [./results/wind_sweep]
 #   --num_eigvecs   N      Eigenvector pairs to learn   [8]
@@ -46,8 +46,8 @@ export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=${SLURM_CPUS_PER_TASK:-8}"
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
-ENV_FILE_NAME="GridRoom-1"
-STEPS=100000
+ENV_FILE_NAME="GridRoom-4-Doors"
+STEPS=40000
 SEED=42
 RESULTS_DIR="./results/wind_sweep"
 NUM_EIGVECS=8
@@ -83,14 +83,17 @@ echo "  Num eigvecs:  $NUM_EIGVECS"
 echo "  Results dir:  $RESULTS_DIR/task_${JOB_ID}"
 echo "========================================"
 
-python train_allo_rep.py \
+python train.py allo \
     --env_file_name         "$ENV_FILE_NAME" \
     --num_gradient_steps    "$STEPS" \
     --batch_size            256 \
     --num_eigenvector_pairs "$NUM_EIGVECS" \
     --learning_rate         0.0003 \
     --gamma                 0.9 \
-    --sampling_mode weighted \
+    --sampling_mode         none \
+    --constraint_mode       single_batch \
+    --use_residual \
+    --use_layernorm \
     --num_envs              1000 \
     --num_steps             1000 \
     --step_size_duals       1.0 \
