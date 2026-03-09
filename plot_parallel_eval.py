@@ -37,7 +37,8 @@ import numpy as np
 # Make sure the repo root is on the path
 sys.path.append(str(Path(__file__).parent))
 
-from src.utils.plotting import visualize_eigenvector_on_grid
+from src.utils.plotting import visualize_eigenvector_on_grid, visualize_hitting_time_on_grid
+from src.utils.metrics import compute_hitting_times_from_eigenvectors
 
 
 # ---------------------------------------------------------------------------
@@ -56,14 +57,17 @@ def load_env_data(results_dir: Path) -> dict:
 
     data = dict(
         viz_meta=viz_meta,
-        # Ground truth
+        # Ground truth eigenvectors
         gt_right_real=npy("gt_right_real.npy"),   # (num_states, K)
         gt_right_imag=npy("gt_right_imag.npy"),
         gt_left_real=npy("gt_left_real.npy"),
         gt_left_imag=npy("gt_left_imag.npy"),
+        # Ground truth eigenvalues
+        gt_eigenvalues_real=npy("gt_eigenvalues_real.npy"),
+        gt_eigenvalues_imag=npy("gt_eigenvalues_imag.npy"),
     )
 
-    # Learned (final checkpoint)
+    # Learned (final checkpoint) eigenvectors
     for key in ("final_learned_right_real", "final_learned_right_imag",
                 "final_learned_left_real",  "final_learned_left_imag"):
         path = results_dir / f"{key}.npy"
@@ -73,6 +77,16 @@ def load_env_data(results_dir: Path) -> dict:
             print(f"  Warning: {path} not found; using zeros.")
             data[key.replace("final_learned_", "learned_")] = np.zeros_like(
                 data["gt_right_real"])
+
+    # Learned eigenvalues
+    for key in ("final_learned_eigenvalues_real", "final_learned_eigenvalues_imag"):
+        path = results_dir / f"{key}.npy"
+        dest = key.replace("final_learned_", "learned_")
+        if path.exists():
+            data[dest] = np.load(path)
+        else:
+            print(f"  Warning: {path} not found; eigenvalue-dependent plots will be skipped.")
+            data[dest] = None
 
     return data
 
@@ -249,6 +263,143 @@ def make_component_figure(
     sm.set_array([])
     cb = plt.colorbar(sm, cax=cax)
     cb.ax.tick_params(labelsize=7)
+
+    return fig
+
+
+def compute_hitting_times_k(data: dict, source: str, k: int) -> np.ndarray:
+    """Compute hitting times using the first *k* eigenvectors (including stationary).
+
+    Parameters
+    ----------
+    data   : env data dict from load_env_data
+    source : 'gt' or 'learned'
+    k      : total number of eigenvectors to use (minimum 2)
+    """
+    vm = data["viz_meta"]
+    gamma = vm.get("gamma", 0.9)
+    delta = vm.get("delta", 0.0)
+
+    if source == "gt":
+        left_real = data["gt_left_real"][:, :k]
+        left_imag = data["gt_left_imag"][:, :k]
+        right_real = data["gt_right_real"][:, :k]
+        right_imag = data["gt_right_imag"][:, :k]
+        eig_real = data["gt_eigenvalues_real"][:k]
+        eig_imag = data["gt_eigenvalues_imag"][:k]
+        eigenvalue_type = "laplacian"
+    else:
+        left_real = data["learned_left_real"][:, :k]
+        left_imag = data["learned_left_imag"][:, :k]
+        right_real = data["learned_right_real"][:, :k]
+        right_imag = data["learned_right_imag"][:, :k]
+        eig_real = data["learned_eigenvalues_real"][:k]
+        eig_imag = data["learned_eigenvalues_imag"][:k]
+        eigenvalue_type = "kernel"
+
+    import jax.numpy as jnp
+    ht = compute_hitting_times_from_eigenvectors(
+        left_real=jnp.array(left_real),
+        left_imag=jnp.array(left_imag),
+        right_real=jnp.array(right_real),
+        right_imag=jnp.array(right_imag),
+        eigenvalues_real=jnp.array(eig_real),
+        eigenvalues_imag=jnp.array(eig_imag),
+        gamma=gamma,
+        delta=delta,
+        eigenvalue_type=eigenvalue_type,
+    )
+    return np.array(ht)
+
+
+def make_hitting_time_figure(
+    env_names: list,
+    all_data: dict,
+    source: str,
+    num_eigs: int,
+    subplot_size: float = 2.2,
+) -> plt.Figure:
+    """Grid of hitting-time maps: rows = num eigenvectors used, columns = environments.
+
+    Each cell shows hitting times FROM a reference state (centre of canonical states)
+    to all reachable states, computed using the first k eigenvectors (k = 2 … num_eigs).
+
+    Parameters
+    ----------
+    source    : 'gt' or 'learned'
+    num_eigs  : maximum number of eigenvectors available (rows use k=2..num_eigs)
+    """
+    k_values = list(range(2, num_eigs + 1))
+    nrows = len(k_values)
+    ncols = len(env_names)
+
+    fig_w = subplot_size * ncols * 1.25 + 0.3
+    fig_h = subplot_size * nrows + 0.6
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    gs = gridspec.GridSpec(
+        nrows, ncols,
+        figure=fig,
+        hspace=0.15,
+        wspace=0.35,
+        left=0.06,
+        right=0.97,
+        top=0.93,
+        bottom=0.03,
+    )
+
+    source_label = "Ground Truth" if source == "gt" else "Learned"
+    fig.suptitle(
+        f"{source_label} — Hitting times (FROM centre state) vs. # eigenvectors",
+        fontsize=11,
+        y=0.98,
+    )
+
+    for col, env_name in enumerate(env_names):
+        data = all_data[env_name]
+        vm = data["viz_meta"]
+        canonical_states = vm["canonical_states"]
+        portals = vm.get("door_markers") or None
+        ref_idx = len(canonical_states) // 2   # centre of canonical state list
+
+        for row, k in enumerate(k_values):
+            ax = fig.add_subplot(gs[row, col])
+            try:
+                ht = compute_hitting_times_k(data, source, k)
+                ht_from_ref = ht[ref_idx, :]
+            except Exception as e:
+                ax.set_visible(False)
+                continue
+
+            vmin = 0.0
+            finite = ht_from_ref[np.isfinite(ht_from_ref)]
+            vmax = float(np.max(finite)) if finite.size > 0 else 1.0
+
+            visualize_hitting_time_on_grid(
+                hitting_time_values=ht_from_ref,
+                center_state_idx=int(canonical_states[ref_idx]),
+                canonical_states=canonical_states,
+                grid_width=vm["grid_width"],
+                grid_height=vm["grid_height"],
+                portals=portals,
+                title=None,
+                ax=ax,
+                cmap="viridis",
+                show_colorbar=True,
+                wall_color="gray",
+                vmin=vmin,
+                vmax=vmax,
+            )
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+            if row == 0:
+                short = env_name.replace("GridRoom-", "GR-")
+                ax.set_title(short, fontsize=7, pad=2)
+
+            if col == 0:
+                ax.set_ylabel(f"k={k}", fontsize=7, labelpad=2)
 
     return fig
 
@@ -482,6 +633,34 @@ def main():
             except Exception as e:
                 print(f"    ERROR generating {label}: {e}")
                 plt.close("all")
+
+    # Hitting time figures
+    for source in SOURCES:
+        # Skip learned if eigenvalues were not saved
+        if source == "learned":
+            missing = [n for n in env_names
+                       if all_data[n].get("learned_eigenvalues_real") is None]
+            if missing:
+                print(f"  Skipping learned hitting times (eigenvalues missing for: {missing})")
+                continue
+
+        label = f"hitting_times_{source}"
+        print(f"  Generating: {label}")
+        try:
+            fig = make_hitting_time_figure(
+                env_names=env_names,
+                all_data=all_data,
+                source=source,
+                num_eigs=num_eigs,
+                subplot_size=args.subplot_size,
+            )
+            out_path = output_dir / f"{label}.png"
+            fig.savefig(out_path, dpi=args.dpi, bbox_inches="tight")
+            plt.close(fig)
+            print(f"    Saved → {out_path}")
+        except Exception as e:
+            print(f"    ERROR generating {label}: {e}")
+            plt.close("all")
 
     print(f"\nAll figures saved to: {output_dir}")
 

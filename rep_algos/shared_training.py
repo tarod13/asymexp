@@ -839,6 +839,10 @@ def learn_eigenvectors(args, learner_module, method):
     np.save(results_dir / "final_learned_left_imag.npy", np.array(final_features_dict['left_imag']))
     np.save(results_dir / "final_learned_right_real.npy", np.array(final_features_dict['right_real']))
     np.save(results_dir / "final_learned_right_imag.npy", np.array(final_features_dict['right_imag']))
+    np.save(results_dir / "final_learned_eigenvalues_real.npy",
+            np.array(encoder_state.params['lambda_real']).squeeze())
+    np.save(results_dir / "final_learned_eigenvalues_imag.npy",
+            np.array(encoder_state.params['lambda_imag']).squeeze())
 
     # Compute and save normalized eigenvectors
     final_normalized_features = normalize_eigenvectors_for_comparison(
