@@ -43,7 +43,7 @@ echo "========================================"
 # Environment setup
 # ---------------------------------------------------------------------------
 module --force purge
-module load StdEnv/2023 gcc/14.3 python/3.11 cuda/12.9
+module load StdEnv/2023 gcc/14.3 python/3.11 cuda/12.9 scipy-stack/2024b
 source ~/ENV/bin/activate
 
 # JAX on CPU is fine for plotting (no gradient computation)
