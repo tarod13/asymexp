@@ -44,6 +44,7 @@ def create_replay_buffer_only(env, canonical_states, args: Args):
         num_steps=args.num_steps,
         num_states=num_states,
         seed=args.seed,
+        random_wind=getattr(args, 'random_wind', False),
     )
     print(f"Collected {metrics['total_transitions']} transitions.")
 
@@ -104,6 +105,7 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
         num_steps=args.num_steps,
         num_states=num_states,
         seed=args.seed,
+        random_wind=getattr(args, 'random_wind', False),
     )
 
     print(f"Collected {metrics['total_transitions']} transitions.")
