@@ -303,12 +303,11 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
         num_steps: Number of steps to collect per environment
         num_states: Total number of states in the environment
         seed: Random seed
-        random_wind: If True and the environment has a 'wind' attribute (WindyGridWorldEnv),
-            a new wind value is sampled uniformly from (-0.9, 0.9) at the start of each
-            episode. The wind value for each timestep is stored in episodes['winds'] so
-            that it can be concatenated with state observations when training a
-            wind-conditioned Laplacian encoder. When False, the environment's fixed wind
-            (or no wind) is used as normal.
+        random_wind: If True and env is a WindyGridWorldEnv (has a 'wind' attribute),
+            WindyGridWorldEnv.reset() will sample a fresh wind for each episode.
+            The wind value for each timestep is stored in episodes['winds'] so that it
+            can be concatenated with state observations when training a wind-conditioned
+            Laplacian encoder. Has no effect for non-windy environments.
 
     Returns:
         transition_counts: Array of shape [num_states, num_actions, num_states]
@@ -318,11 +317,9 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
             - 'terminals': Array of shape [num_envs, max_buffer_size] with terminal flags
             - 'valids': Array of shape [num_envs, max_buffer_size] with validity flags
             - 'winds': (only when random_wind=True) Array of shape [num_envs, max_buffer_size]
-                       with the wind value active during each timestep
+                       with the wind value active at each timestep
         metrics: Dictionary with collection metrics
     """
-    from src.envs.gridworld import GridWorldEnv, GridWorldState
-
     use_random_wind = random_wind and hasattr(env, 'wind')
 
     # Get environment parameters
@@ -363,108 +360,54 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
 
     if use_random_wind:
         # ------------------------------------------------------------------
-        # Random-wind collection path
+        # Random-wind path.
         #
-        # We bypass WindyGridWorldEnv.step() (which uses a fixed self.wind
-        # compiled as a Python constant) and instead call the base-class
-        # GridWorldEnv.step() for the normal physics, then apply a
-        # fully-JAX-native wind displacement on top.  This lets wind_values
-        # be a regular JAX array that can change at every episode boundary.
+        # Wind is stored in WindyGridWorldState.wind and managed entirely by
+        # the environment:
+        #   - reset() samples a fresh wind from wind_range for each episode
+        #   - step() reads wind from state.wind and propagates it unchanged
         #
-        # Wind application order: action physics → clip/obstacle → wind → clip/obstacle.
-        # This differs slightly from WindyGridWorldEnv (action+wind → clip/obstacle)
-        # but is equivalent when the wind step does not cross an obstacle.
+        # Here we just read env_states.wind at each step and record it in a
+        # parallel wind_observations buffer alongside the state observations.
         # ------------------------------------------------------------------
 
-        _wind_left  = jnp.array([-1, 0], dtype=env.dtype)
-        _wind_right = jnp.array([ 1, 0], dtype=env.dtype)
-        _wind_none  = jnp.array([ 0, 0], dtype=env.dtype)
-
-        def _single_windy_step(key, state, action, wind_value):
-            """Base GridWorldEnv step (no wind) followed by dynamic wind displacement."""
-            key, base_key, wind_key = jax.random.split(key, 3)
-
-            # Base physics (doors, portals, obstacles, boundary clipping — no wind)
-            next_state, reward, done, info = GridWorldEnv.step(
-                env, base_key, state, action, env_params
-            )
-
-            # Stochastic wind displacement using fully-JAX ops (wind_value is a JAX scalar)
-            u = jax.random.uniform(wind_key)
-            wind_dir   = jnp.where(wind_value < 0, _wind_left, _wind_right)
-            wind_delta = jnp.where(u < jnp.abs(wind_value), wind_dir, _wind_none)
-
-            new_pos = next_state.position + wind_delta
-            new_pos = jnp.clip(
-                new_pos,
-                jnp.array([0, 0], dtype=env.dtype),
-                jnp.array([env.width - 1, env.height - 1], dtype=env.dtype),
-            )
-            if env.has_obstacles:
-                is_obstacle = jnp.any(jnp.all(new_pos == env.obstacles, axis=1))
-                new_pos = jnp.where(is_obstacle, next_state.position, new_pos)
-
-            # Skip wind displacement if the episode was already over before this step
-            final_pos = jnp.where(state.terminal, state.position, new_pos)
-
-            next_state = GridWorldState(
-                position=final_pos,
-                terminal=next_state.terminal,
-                steps=next_state.steps,
-            )
-            return next_state, reward, done, info
-
-        def _vmap_windy_step(rng, states, actions_arr, wind_values):
-            next_states, rewards, dones, infos = jax.vmap(
-                _single_windy_step, in_axes=(0, 0, 0, 0)
-            )(jax.random.split(rng, num_envs), states, actions_arr, wind_values)
-            state_indices      = jax.vmap(env.get_state_representation)(states)
-            next_state_indices = jax.vmap(env.get_state_representation)(next_states)
-            return next_states, state_indices, next_state_indices, rewards, dones, infos
-
-        # Sample initial wind values for each parallel environment
-        rng, wind_rng = jax.random.split(rng)
-        wind_values = jax.random.uniform(wind_rng, shape=(num_envs,), minval=-0.9, maxval=0.9)
-
-        # Wind observation buffer (stores the wind active at each timestep)
         wind_observations = jnp.zeros((num_envs, max_buffer_size), dtype=jnp.float32)
-        wind_observations = wind_observations.at[:, 0].set(wind_values)
+        wind_observations = wind_observations.at[:, 0].set(env_states.wind)
 
         def _update_step_windy(runner_state, step_idx):
             (transition_counts, env_states, observations, actions, terminals,
-             valids, wind_observations, wind_values, write_indices, last_written, rng) = runner_state
+             valids, wind_observations, write_indices, last_written, rng) = runner_state
 
-            rng, rng_act, rng_step, rng_wind = jax.random.split(rng, 4)
+            rng, rng_act, rng_step = jax.random.split(rng, 3)
 
             action_array = jax.random.randint(
                 rng_act, shape=(num_envs,), minval=0, maxval=num_actions,
             )
 
-            next_env_states, state_indices, next_state_indices, rewards, dones, _ = \
-                _vmap_windy_step(rng_step, env_states, action_array, wind_values)
+            next_env_states, state_indices, next_state_indices, rewards, dones, _ = vmap_step(num_envs)(
+                rng_step, env_states, action_array
+            )
 
             transition_counts = transition_counts.at[
                 state_indices, action_array, next_state_indices
             ].add(1.0)
 
-            # Pre-sample candidate new winds; only applied to envs where done=True
-            new_wind_candidates = jax.random.uniform(
-                rng_wind, shape=(num_envs,), minval=-0.9, maxval=0.9
-            )
+            # env_states.wind holds the wind for the current episode of each env.
+            # After vmap_reset below, done envs will get a new wind via reset().
+            current_winds = env_states.wind   # shape [num_envs]
 
             def update_single_env_windy(i):
-                write_idx     = write_indices[i]
-                state_idx     = state_indices[i]
+                write_idx      = write_indices[i]
+                state_idx      = state_indices[i]
                 next_state_idx = next_state_indices[i]
-                action        = action_array[i]
-                done          = dones[i]
-                wind_val      = wind_values[i]   # wind active during this step
+                action         = action_array[i]
+                done           = dones[i]
+                wind_val       = current_winds[i]
 
-                act_updated  = actions[i].at[write_idx-1].set(action)
-                term_updated = terminals[i].at[write_idx-1].set(done.astype(jnp.int32))
+                act_updated   = actions[i].at[write_idx-1].set(action)
+                term_updated  = terminals[i].at[write_idx-1].set(done.astype(jnp.int32))
                 valid_updated = valids[i].at[write_idx].set(1 - done.astype(jnp.int32))
-                obs_updated  = observations[i].at[write_idx].set(next_state_idx)
-                # Store the current episode's wind at the slot for next_state
+                obs_updated   = observations[i].at[write_idx].set(next_state_idx)
                 wind_obs_updated = wind_observations[i].at[write_idx].set(wind_val)
 
                 def handle_done(_):
@@ -475,11 +418,10 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
 
                 def handle_normal(_):
                     def after_reset(_):
-                        # Fill in the reset state's slot (write_idx-1) which was
-                        # left as a placeholder after the previous episode ended
-                        obs  = obs_updated.at[write_idx-1].set(state_idx)
-                        valid = valid_updated.at[write_idx-1].set(1)
-                        # wind_val here is already the NEW wind (updated below via jnp.where)
+                        obs      = obs_updated.at[write_idx-1].set(state_idx)
+                        valid    = valid_updated.at[write_idx-1].set(1)
+                        # wind_val is the NEW episode's wind (env_states.wind was
+                        # already updated by vmap_reset in the previous step)
                         wind_obs = wind_obs_updated.at[write_idx-1].set(wind_val)
                         return obs, valid, wind_obs
 
@@ -499,26 +441,22 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
             updates = jax.vmap(update_single_env_windy)(jnp.arange(num_envs))
             observations, actions, terminals, valids, wind_observations, write_indices, last_written = updates
 
-            # Resample wind for environments whose episode just ended
-            wind_values = jnp.where(dones, new_wind_candidates, wind_values)
-
+            # reset() on WindyGridWorldEnv samples a new wind for each done env
             reset_env_states = vmap_reset(num_envs)(rng, next_env_states, dones)
 
             runner_state = (transition_counts, reset_env_states, observations, actions,
-                           terminals, valids, wind_observations, wind_values,
-                           write_indices, last_written, rng)
+                           terminals, valids, wind_observations, write_indices, last_written, rng)
             return runner_state, None
 
         runner_state = (transition_counts, env_states, observations, actions,
-                       terminals, valids, wind_observations, wind_values,
-                       write_indices, last_written, rng)
+                       terminals, valids, wind_observations, write_indices, last_written, rng)
 
         runner_state, _ = jax.lax.scan(
             _update_step_windy, runner_state, jnp.arange(num_steps)
         )
 
         (final_transition_counts, _, final_observations, final_actions,
-         final_terminals, final_valids, final_wind_observations, _,
+         final_terminals, final_valids, final_wind_observations,
          _, final_written_indices, _) = runner_state
 
         final_terminals = final_terminals.at[jnp.arange(num_envs), final_written_indices].apply(
@@ -536,7 +474,7 @@ def collect_transition_counts_and_episodes(env, num_envs, num_steps, num_states,
 
     else:
         # ------------------------------------------------------------------
-        # Standard (non-random-wind) collection path  — original logic
+        # Standard (non-random-wind) path — original logic, unchanged
         # ------------------------------------------------------------------
 
         def _update_step(runner_state, step_idx):

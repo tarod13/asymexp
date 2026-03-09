@@ -8,7 +8,6 @@ class GridWorldState(NamedTuple):
     position: jnp.ndarray  # (x, y) coordinates
     terminal: jnp.ndarray  # Boolean flag for terminal state
     steps: jnp.ndarray  # Step counter
-    wind: jnp.ndarray = jnp.array(0.0, dtype=jnp.float32)  # Wind value; 0 for non-windy envs
 
 
 # GridWorld Environment

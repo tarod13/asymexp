@@ -1,7 +1,16 @@
 import jax
 import jax.numpy as jnp
+from typing import NamedTuple
 
 from src.envs.gridworld import GridWorldEnv, GridWorldState
+
+
+class WindyGridWorldState(NamedTuple):
+    """State for WindyGridWorldEnv — extends GridWorldState with a wind field."""
+    position: jnp.ndarray  # (x, y) coordinates
+    terminal: jnp.ndarray  # Boolean flag for terminal state
+    steps: jnp.ndarray     # Step counter
+    wind: jnp.ndarray      # Current episode wind in (-1, 1)
 
 
 class WindyGridWorldEnv(GridWorldEnv):
@@ -77,7 +86,7 @@ class WindyGridWorldEnv(GridWorldEnv):
         else:
             wind = jnp.array(self.wind, dtype=jnp.float32)
 
-        return GridWorldState(
+        return WindyGridWorldState(
             position=base_state.position,
             terminal=base_state.terminal,
             steps=base_state.steps,
@@ -197,7 +206,7 @@ class WindyGridWorldEnv(GridWorldEnv):
             terminal, jnp.logical_or(at_goal, max_steps_reached)
         )
 
-        next_state = GridWorldState(
+        next_state = WindyGridWorldState(
             position=position,
             terminal=new_terminal,
             steps=steps,
