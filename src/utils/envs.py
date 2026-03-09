@@ -23,6 +23,7 @@ def create_gridworld_env(args: Args):
     """
     windy = getattr(args, 'windy', False)
     wind  = getattr(args, 'wind', 0.0)
+    random_wind = getattr(args, 'random_wind', False)
 
     env = create_environment_from_text(
         file_name=args.env_file_name,
@@ -30,13 +31,17 @@ def create_gridworld_env(args: Args):
         precision=32,
         windy=windy,
         wind=wind,
+        random_wind=random_wind,
     )
 
     env_class_name = type(env).__name__
     print(f"Loaded environment: {args.env_file_name} ({env_class_name})")
     print(f"  Grid size: {env.width} x {env.height}")
     if windy:
-        print(f"  Wind: {wind:+.3f} ({'left' if wind < 0 else 'right'}, p={abs(wind):.3f})")
+        if random_wind:
+            print(f"  Wind: random per episode, sampled from {env.wind_range}")
+        else:
+            print(f"  Wind: {wind:+.3f} ({'left' if wind < 0 else 'right'}, p={abs(wind):.3f})")
     print(f"  Number of obstacles: {len(env.obstacles) if env.has_obstacles else 0}")
     if env.has_doors:
         print(f"  Doors: {len(env.asymmetric_transitions)} asymmetric transitions")

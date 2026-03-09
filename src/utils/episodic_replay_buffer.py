@@ -16,6 +16,7 @@ class EpisodeBatch(Generic[T]):
     """A container for batchable replayed episodes"""
     obs: T
     next_obs: T
+    winds: T | None = None  # wind value at obs timestep; None for non-windy envs
 
     def __post_init__(self) -> None:
         # some security to be removed later
@@ -245,23 +246,27 @@ class EpisodicReplayBuffer:
         # --- 2. PROCESS EPISODES ---
         num_episodes = len(episodes['lengths'])
         
+        has_winds = 'winds' in episodes
+
         for ep_idx in tqdm(range(num_episodes), desc="Populating replay buffer", disable=not verbose):
             # Get actual length of this specific episode
             episode_length = int(episodes['lengths'][ep_idx])
-            
+
             # Slice and cast to int (Vectorized slice)
             # We assume observations are 1D arrays of state indices
             raw_obs = episodes['observations'][ep_idx, :episode_length + 1].astype(int)
             raw_terms = episodes['terminals'][ep_idx, :episode_length + 1].astype(int)
+            if has_winds:
+                raw_winds = np.array(episodes['winds'][ep_idx, :episode_length + 1], dtype=np.float32)
 
             # --- A. VECTORIZED MAPPING ---
             # 1. Identify which observations are within the bounds of our lookup table
             #    (Any observation > max_state_id is automatically invalid)
             in_bounds_mask = raw_obs <= max_state_id
-            
+
             # 2. Initialize mapped array with -1
             mapped_obs = np.full_like(raw_obs, -1)
-            
+
             # 3. Apply lookup only on safe indices
             #    This effectively translates "Full State ID" -> "Canonical ID"
             mapped_obs[in_bounds_mask] = lookup_table[raw_obs[in_bounds_mask]]
@@ -281,6 +286,8 @@ class EpisodicReplayBuffer:
                     'obs': final_obs.reshape(-1, 1), # Reshape to (T, 1) as commonly expected in RL
                     'terminals': final_terms,
                 }
+                if has_winds:
+                    episode_dict['winds'] = raw_winds[valid_mask]
                 self.add_episode(episode_dict)
 
     def sample(self, batch_size, discount, env_info={}, transitions_per_episode=1, use_same_episodes=False):
@@ -433,7 +440,8 @@ class EpisodicReplayBuffer:
                 grid_location=grid_location, next_grid_location=next_grid_location
             )
 
-        return EpisodeBatch(obs=obs, next_obs=next_obs)
+        winds = self._episodes['winds'][episode_idx, obs_idx] if 'winds' in self._episodes else None
+        return EpisodeBatch(obs=obs, next_obs=next_obs, winds=winds)
     
     def get_component(self, component_name):
         if component_name == 'next_obs':

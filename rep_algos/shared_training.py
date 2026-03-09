@@ -299,7 +299,11 @@ def learn_eigenvectors(args, learner_module, method):
         print("Restored encoder state from checkpoint (optimized for device)")
     else:
         # Create dummy input for initialization
-        dummy_input = state_coords[:1]  # (1, 2)
+        # For random-wind envs the encoder receives (x, y, wind) → shape (1, 3)
+        if getattr(args, 'random_wind', False):
+            dummy_input = jnp.concatenate([state_coords[:1], jnp.zeros((1, 1))], axis=-1)  # (1, 3)
+        else:
+            dummy_input = state_coords[:1]  # (1, 2)
 
         encoder_initial_params = encoder.init(encoder_key, dummy_input)
 
@@ -346,6 +350,7 @@ def learn_eigenvectors(args, learner_module, method):
         def sample_batch_with_rejection(batch_size, discount):
             """Sample a batch using rejection sampling to flatten the state distribution."""
             accepted_samples = []
+            _has_winds = False
             while len(accepted_samples) < batch_size:
                 candidate_batch = replay_buffer.sample(
                     batch_size * args.rejection_oversample_factor,
@@ -357,19 +362,28 @@ def learn_eigenvectors(args, learner_module, method):
                 accept_probs = rejection_accept_probs[candidate_obs]
                 accept_mask = np.random.rand(len(candidate_obs)) < accept_probs
                 if np.any(accept_mask):
+                    if candidate_batch.winds is not None:
+                        _has_winds = True
                     for idx in np.where(accept_mask)[0]:
                         if len(accepted_samples) < batch_size:
-                            accepted_samples.append({
+                            entry = {
                                 'obs': candidate_batch.obs[idx],
                                 'next_obs': candidate_batch.next_obs[idx],
-                            })
+                            }
+                            if candidate_batch.winds is not None:
+                                entry['winds'] = candidate_batch.winds[idx]
+                            accepted_samples.append(entry)
 
             from collections import namedtuple
-            Batch = namedtuple('Batch', ['obs', 'next_obs'])
-            return Batch(
+            fields = ['obs', 'next_obs', 'winds'] if _has_winds else ['obs', 'next_obs']
+            Batch = namedtuple('Batch', fields)
+            kwargs = dict(
                 obs=np.array([s['obs'] for s in accepted_samples[:batch_size]]),
                 next_obs=np.array([s['next_obs'] for s in accepted_samples[:batch_size]]),
             )
+            if _has_winds:
+                kwargs['winds'] = np.array([s['winds'] for s in accepted_samples[:batch_size]])
+            return Batch(**kwargs)
 
         sample_batch = sample_batch_with_rejection
 
@@ -418,7 +432,12 @@ def learn_eigenvectors(args, learner_module, method):
 
     def get_features(params):
         """Run encoder and, for ALLO, enforce left=right and imag=0."""
-        fd = encoder.apply(params['encoder'], state_coords)[0]
+        if getattr(args, 'random_wind', False):
+            # Evaluate at wind=0 (mean of the uniform wind distribution)
+            eval_coords = jnp.concatenate([state_coords, jnp.zeros((len(state_coords), 1))], axis=-1)
+        else:
+            eval_coords = state_coords
+        fd = encoder.apply(params['encoder'], eval_coords)[0]
         if method == "allo":
             zeros = jnp.zeros_like(fd['right_real'])
             fd = {**fd, 'left_real': fd['right_real'], 'left_imag': zeros, 'right_imag': zeros}
@@ -541,6 +560,10 @@ def learn_eigenvectors(args, learner_module, method):
         warmup_next_indices = jnp.array(warmup_batch.next_obs)
         warmup_coords = state_coords[warmup_indices]
         warmup_next_coords = state_coords[warmup_next_indices]
+        if getattr(args, 'random_wind', False) and warmup_batch.winds is not None:
+            ww = jnp.array(warmup_batch.winds)[:, None]
+            warmup_coords = jnp.concatenate([warmup_coords, ww], axis=-1)
+            warmup_next_coords = jnp.concatenate([warmup_next_coords, ww], axis=-1)
         warmup_state_weighting = is_ratio[warmup_indices]
 
         # Run one update to compile with the loaded state (discard result)
@@ -598,11 +621,18 @@ def learn_eigenvectors(args, learner_module, method):
         # Most common state frequency
         max_state_freq = state_freqs.max()
 
-        # Get coordinates
+        # Get coordinates (append wind if random_wind training)
         coords_batch = state_coords[state_indices]
         next_coords_batch = state_coords[next_state_indices]
         coords_batch_2 = state_coords[state_indices_2]
         next_coords_batch_2 = state_coords[next_state_indices_2]
+        if getattr(args, 'random_wind', False):
+            w1 = jnp.array(batch1.winds)[:, None] if batch1.winds is not None else jnp.zeros((len(state_indices), 1))
+            w2 = jnp.array(batch2.winds)[:, None] if batch2.winds is not None else jnp.zeros((len(state_indices_2), 1))
+            coords_batch = jnp.concatenate([coords_batch, w1], axis=-1)
+            next_coords_batch = jnp.concatenate([next_coords_batch, w1], axis=-1)
+            coords_batch_2 = jnp.concatenate([coords_batch_2, w2], axis=-1)
+            next_coords_batch_2 = jnp.concatenate([next_coords_batch_2, w2], axis=-1)
         sample_time = time.time() - sample_start
         state_weighting = is_ratio[state_indices]
 
