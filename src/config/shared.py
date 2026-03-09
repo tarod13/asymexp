@@ -8,6 +8,7 @@ class SharedArgs:
     max_episode_length: int = 1000
     windy: bool = False  # If True, use WindyGridWorldEnv instead of GridWorldEnv
     wind: float = 0.0   # Wind strength in (-1, 1); negative = leftward, positive = rightward
+    random_wind: bool = False  # If True and windy=True, resample wind ~ Uniform(-0.9, 0.9) each episode
 
     # Data collection
     num_envs: int = 1000
