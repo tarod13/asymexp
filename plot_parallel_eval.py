@@ -253,6 +253,86 @@ def make_component_figure(
     return fig
 
 
+def make_component_figure_independent_cb(
+    env_names: list,
+    all_data: dict,
+    side: str,
+    component: str,
+    source: str,
+    num_eigs: int,
+    subplot_size: float = 2.2,
+) -> plt.Figure:
+    """Like make_component_figure but each subplot has its own independent colorbar."""
+    nrows = num_eigs
+    ncols = len(env_names)
+
+    # Extra horizontal space per column to accommodate individual colorbars
+    fig_w = subplot_size * ncols * 1.25 + 0.3
+    fig_h = subplot_size * nrows + 0.6
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+
+    gs = gridspec.GridSpec(
+        nrows, ncols,
+        figure=fig,
+        hspace=0.15,
+        wspace=0.35,
+        left=0.04,
+        right=0.97,
+        top=0.93,
+        bottom=0.03,
+    )
+
+    source_label = "Ground Truth" if source == "gt" else "Learned"
+    fig.suptitle(
+        f"{source_label} — {side.capitalize()} eigenvectors — {component} (independent colorbars)",
+        fontsize=11,
+        y=0.98,
+    )
+
+    cmap = cmap_for(component)
+
+    for col, env_name in enumerate(env_names):
+        data = all_data[env_name]
+        vm = data["viz_meta"]
+        mat = get_component(data, side, component, source)  # (num_states, K)
+        portals = vm.get("door_markers") or None
+
+        for row in range(nrows):
+            ax = fig.add_subplot(gs[row, col])
+
+            eig_vals = mat[:, row] if row < mat.shape[1] else np.zeros(mat.shape[0])
+            vmin, vmax = vrange_for(component, eig_vals)
+
+            visualize_eigenvector_on_grid(
+                eigenvector_idx=row,
+                eigenvector_values=np.array(eig_vals),
+                canonical_states=vm["canonical_states"],
+                grid_width=vm["grid_width"],
+                grid_height=vm["grid_height"],
+                portals=portals,
+                title=None,
+                ax=ax,
+                cmap=cmap,
+                show_colorbar=True,
+                wall_color="gray",
+                vmin=vmin,
+                vmax=vmax,
+            )
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+            if row == 0:
+                short = env_name.replace("GridRoom-", "GR-")
+                ax.set_title(short, fontsize=7, pad=2)
+
+            if col == 0:
+                ax.set_ylabel(f"Eig {row}", fontsize=7, labelpad=2)
+
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -356,6 +436,8 @@ def main():
     num_eigs = args.num_eigs or min(available_eigs)
     print(f"Visualising {num_eigs} eigenvectors.")
 
+    REAL_COMPONENTS = [(side, comp) for side, comp in COMPONENTS if comp == "real"]
+
     # Generate figures
     for source in SOURCES:
         for side, component in COMPONENTS:
@@ -363,6 +445,28 @@ def main():
             print(f"  Generating: {label}")
             try:
                 fig = make_component_figure(
+                    env_names=env_names,
+                    all_data=all_data,
+                    side=side,
+                    component=component,
+                    source=source,
+                    num_eigs=num_eigs,
+                    subplot_size=args.subplot_size,
+                )
+                out_path = output_dir / f"{label}.png"
+                fig.savefig(out_path, dpi=args.dpi, bbox_inches="tight")
+                plt.close(fig)
+                print(f"    Saved → {out_path}")
+            except Exception as e:
+                print(f"    ERROR generating {label}: {e}")
+                plt.close("all")
+
+        # Additional plots with independent colorbars for real parts only
+        for side, component in REAL_COMPONENTS:
+            label = f"{source}_{side}_{component}_indep_cb"
+            print(f"  Generating: {label}")
+            try:
+                fig = make_component_figure_independent_cb(
                     env_names=env_names,
                     all_data=all_data,
                     side=side,
