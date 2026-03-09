@@ -78,15 +78,17 @@ def load_env_data(results_dir: Path) -> dict:
             data[key.replace("final_learned_", "learned_")] = np.zeros_like(
                 data["gt_right_real"])
 
-    # Learned eigenvalues
-    for key in ("final_learned_eigenvalues_real", "final_learned_eigenvalues_imag"):
-        path = results_dir / f"{key}.npy"
-        dest = key.replace("final_learned_", "learned_")
-        if path.exists():
-            data[dest] = np.load(path)
-        else:
-            print(f"  Warning: {path} not found; eigenvalue-dependent plots will be skipped.")
-            data[dest] = None
+    # Learned eigenvalues — read from the saved model (params['lambda_real/imag'])
+    model_path = results_dir / "models" / "final_model.pkl"
+    if model_path.exists():
+        with open(model_path, "rb") as f:
+            model = pickle.load(f)
+        data["learned_eigenvalues_real"] = np.array(model["params"]["lambda_real"]).squeeze()
+        data["learned_eigenvalues_imag"] = np.array(model["params"]["lambda_imag"]).squeeze()
+    else:
+        print(f"  Warning: {model_path} not found; learned hitting times will be skipped.")
+        data["learned_eigenvalues_real"] = None
+        data["learned_eigenvalues_imag"] = None
 
     return data
 
