@@ -1,21 +1,33 @@
 import jax
 import jax.numpy as jnp
+from typing import NamedTuple
 
 from src.envs.gridworld import GridWorldEnv, GridWorldState
 
 
+class WindyGridWorldState(NamedTuple):
+    """State for WindyGridWorldEnv — extends GridWorldState with a wind field."""
+    position: jnp.ndarray  # (x, y) coordinates
+    terminal: jnp.ndarray  # Boolean flag for terminal state
+    steps: jnp.ndarray     # Step counter
+    wind: jnp.ndarray      # Current episode wind in (-1, 1)
+
+
 class WindyGridWorldEnv(GridWorldEnv):
     """GridWorld parametrized by a wind value in the open interval (-1, 1).
+
+    Wind is stored as part of the environment state (``state.wind``) rather than
+    as a class attribute, so it can change between episodes without recompiling.
 
     On every step the wind displacement is added on top of the agent's chosen
     action displacement.  The combined vector is then clipped to the grid
     boundaries and checked against obstacles as usual.
 
     Stochastic wind rule:
-        - With probability ``abs(wind)`` a wind displacement is applied:
-            * ``wind > 0``: delta = (+1, 0)  (rightward gust)
-            * ``wind < 0``: delta = (-1, 0)  (leftward gust)
-        - With probability ``1 - abs(wind)`` no extra displacement is added.
+        - With probability ``abs(state.wind)`` a wind displacement is applied:
+            * ``state.wind > 0``: delta = (+1, 0)  (rightward gust)
+            * ``state.wind < 0``: delta = (-1, 0)  (leftward gust)
+        - With probability ``1 - abs(state.wind)`` no extra displacement is added.
 
     Examples:
         - Agent chooses DOWN,  wind blows LEFT  → displacement (-1, +1) (diagonal).
@@ -26,7 +38,13 @@ class WindyGridWorldEnv(GridWorldEnv):
     the additive wind affects only normal-physics movement.
 
     Args:
-        wind: float strictly in (-1, 1).
+        wind: Default wind strength, strictly in (-1, 1).  Used as the wind
+            value at every reset when ``random_wind=False``.
+        random_wind: If True, ``reset()`` samples a fresh wind value uniformly
+            from ``wind_range`` at the start of every episode instead of using
+            the fixed ``wind``.
+        wind_range: ``(min, max)`` interval from which wind is sampled when
+            ``random_wind=True``.  Both bounds must be in (-1, 1).
         **kwargs: forwarded to :class:`GridWorldEnv`.
     """
 
@@ -35,20 +53,55 @@ class WindyGridWorldEnv(GridWorldEnv):
     _WIND_RIGHT = jnp.array([ 1, 0], dtype=jnp.int32)
     _WIND_NONE  = jnp.array([ 0, 0], dtype=jnp.int32)
 
-    def __init__(self, wind: float = 0.0, **kwargs):
+    def __init__(self, wind: float = 0.0, random_wind: bool = False,
+                 wind_range: tuple = (-0.99, 0.99), **kwargs):
         if not (-1 < wind < 1):
             raise ValueError(
                 f"wind must be in the open interval (-1, 1), got {wind}"
             )
         self.wind = wind
+        self.random_wind = random_wind
+        self.wind_range = wind_range
         super().__init__(**kwargs)
 
     # ------------------------------------------------------------------
-    # Step
+    # Reset  — sets the wind value for the upcoming episode
+    # ------------------------------------------------------------------
+
+    def reset(self, key, params=None):
+        """Reset position and sample (or restore) the episode wind.
+
+        When ``random_wind=True`` a fresh wind value is drawn uniformly from
+        ``self.wind_range``; otherwise ``self.wind`` is used every time.
+        """
+        key, pos_key, wind_key = jax.random.split(key, 3)
+        base_state = super().reset(pos_key, params)
+
+        if self.random_wind:
+            wind = jax.random.uniform(
+                wind_key,
+                minval=self.wind_range[0],
+                maxval=self.wind_range[1],
+            )
+        else:
+            wind = jnp.array(self.wind, dtype=jnp.float32)
+
+        return WindyGridWorldState(
+            position=base_state.position,
+            terminal=base_state.terminal,
+            steps=base_state.steps,
+            wind=wind,
+        )
+
+    # ------------------------------------------------------------------
+    # Step  — reads wind from state, propagates it unchanged
     # ------------------------------------------------------------------
 
     def step(self, key, state, action, params=None):
         """Take a step with additive wind displacement.
+
+        Wind is read from ``state.wind`` (a JAX scalar) so it works correctly
+        when wind changes between episodes without any recompilation.
 
         Priority order (same as base class):
           1. Portal  — teleport if (state, action) is a portal.
@@ -59,25 +112,19 @@ class WindyGridWorldEnv(GridWorldEnv):
         position          = state.position
         terminal          = state.terminal
         steps             = state.steps
+        wind              = state.wind          # float32 JAX scalar
         current_state_idx = self.get_state_representation(state)
 
         key, wind_key, door_key = jax.random.split(key, 3)
 
         # ------------------------------------------------------------------
-        # Compute stochastic wind delta
+        # Compute stochastic wind delta using fully-JAX ops on state.wind
         # ------------------------------------------------------------------
-        wind_dir = self._WIND_LEFT if self.wind < 0 else self._WIND_RIGHT
-        # Cast wind_dir to match the grid dtype
-        wind_dir = wind_dir.astype(self.dtype)
+        wind_dir  = jnp.where(wind < 0, self._WIND_LEFT, self._WIND_RIGHT).astype(self.dtype)
         wind_none = self._WIND_NONE.astype(self.dtype)
 
         u = jax.random.uniform(wind_key)
-        wind_delta = jax.lax.cond(
-            u < abs(self.wind),
-            lambda _: wind_dir,
-            lambda _: wind_none,
-            operand=None,
-        )
+        wind_delta = jnp.where(u < jnp.abs(wind), wind_dir, wind_none)
 
         # ------------------------------------------------------------------
         # Inner step (mirrors GridWorldEnv._step_impl with wind_delta added)
@@ -159,10 +206,11 @@ class WindyGridWorldEnv(GridWorldEnv):
             terminal, jnp.logical_or(at_goal, max_steps_reached)
         )
 
-        next_state = GridWorldState(
+        next_state = WindyGridWorldState(
             position=position,
             terminal=new_terminal,
             steps=steps,
+            wind=wind,          # propagate unchanged; reset() will set a new value
         )
 
         reward = jnp.array(0.0)
@@ -176,4 +224,6 @@ class WindyGridWorldEnv(GridWorldEnv):
     def get_params(self):
         params = super().get_params()
         params["wind"] = self.wind
+        params["random_wind"] = self.random_wind
+        params["wind_range"] = self.wind_range
         return params
