@@ -2,7 +2,7 @@ import numpy as np
 import jax.numpy as jnp
 
 from src.config.shared import SharedArgs as Args
-from src.data_collection import collect_transition_counts_and_episodes
+from src.data_collection import collect_transition_counts, collect_transition_counts_and_episodes
 from src.utils.episodic_replay_buffer import EpisodicReplayBuffer
 from src.utils.envs import get_canonical_free_states
 
@@ -200,3 +200,63 @@ def collect_data_and_compute_eigenvectors(env, args: Args):
           f"y=[{state_coords[:, 1].min():.3f}, {state_coords[:, 1].max():.3f}]")
 
     return laplacian_matrix, eigendecomp, state_coords, canonical_states, sampling_probs, data_env, replay_buffer, transition_matrix
+
+
+def compute_eigenvectors_for_fixed_wind(base_env, wind_value: float, args: Args):
+    """
+    Compute ground truth eigenvectors for a single fixed wind value.
+
+    Does NOT build a replay buffer — only accumulates transition counts and
+    computes the Laplacian eigendecomposition.  This keeps memory usage low
+    when evaluating across many wind values.
+
+    Args:
+        base_env: A WindyGridWorldEnv instance (used only for grid geometry /
+                  canonical states; a fresh fixed-wind copy is created internally).
+        wind_value: The fixed wind strength, in (-1, 1).
+        args: Training arguments (uses num_envs, num_steps, seed, gamma, delta,
+              num_eigenvector_pairs, env_file_name, max_episode_length).
+
+    Returns:
+        eigendecomp: Dict with eigenvalues and left/right eigenvectors.
+        sampling_probs: Empirical per-state visit probabilities (shape: num_canonical).
+        laplacian_matrix: The non-symmetric Laplacian (needed for ALLO GT).
+    """
+    from src.envs.env import create_environment_from_text
+
+    # Build a fresh environment with the requested fixed wind.
+    fixed_env = create_environment_from_text(
+        file_name=args.env_file_name,
+        max_steps=args.max_episode_length,
+        precision=32,
+        windy=True,
+        wind=wind_value,
+        random_wind=False,
+    )
+
+    num_states = fixed_env.width * fixed_env.height
+    canonical_states = get_canonical_free_states(fixed_env)
+
+    # Collect transition counts only — no episode storage, no replay buffer.
+    transition_counts_full, _ = collect_transition_counts(
+        env=fixed_env,
+        num_envs=args.num_envs,
+        num_steps=args.num_steps,
+        num_states=num_states,
+        seed=args.seed,
+    )
+
+    transition_counts = transition_counts_full[
+        jnp.ix_(canonical_states, jnp.arange(fixed_env.action_space), canonical_states)
+    ]
+    transition_matrix = get_transition_matrix(transition_counts)
+    sampling_distribution = compute_sampling_distribution(transition_counts)
+    sampling_probs = jnp.diag(sampling_distribution)
+
+    laplacian_matrix = compute_laplacian(transition_matrix, args.gamma, delta=args.delta)
+    eigendecomp = compute_eigendecomposition(
+        laplacian_matrix,
+        k=args.num_eigenvector_pairs,
+        ascending=True,
+    )
+    return eigendecomp, sampling_probs, laplacian_matrix

@@ -35,6 +35,7 @@ from src.utils.envs import create_gridworld_env
 from src.utils.interaction import (
     create_replay_buffer_only,
     collect_data_and_compute_eigenvectors,
+    compute_eigenvectors_for_fixed_wind,
 )
 
 from src.nets import CoordinateEncoder
@@ -230,6 +231,29 @@ def learn_eigenvectors(args, learner_module, method):
     print(f"\nState coordinates shape: {state_coords.shape}")
     print(f"Ground truth right eigenvectors shape: {gt_right_real.shape}")
     print(f"Ground truth left eigenvectors shape: {gt_left_real.shape}")
+
+    # Per-wind ground truth (only for random_wind training)
+    # Each entry: (wind_value, eigendecomp_dict, sampling_probs)
+    # Computed without a replay buffer to keep memory usage low.
+    per_wind_gt = []
+    if getattr(args, 'random_wind', False):
+        n_eval = getattr(args, 'num_eval_winds', 11)
+        eval_wind_values = np.linspace(-0.99, 0.99, n_eval)
+        print(f"\nComputing per-wind GT eigenvectors for {n_eval} wind values "
+              f"({eval_wind_values[0]:+.2f} … {eval_wind_values[-1]:+.2f})...")
+        for w in eval_wind_values:
+            print(f"  wind={w:+.3f} ...", end=" ", flush=True)
+            w_eigendecomp, w_sampling_probs, w_laplacian = compute_eigenvectors_for_fixed_wind(
+                data_env, float(w), args
+            )
+            if method == "allo":
+                D_w    = jnp.diag(w_sampling_probs)
+                D_inv_w = jnp.diag(1.0 / w_sampling_probs)
+                gt_matrix_w = w_laplacian + D_inv_w @ w_laplacian.T @ D_w
+                w_eigendecomp = compute_eigendecomposition(gt_matrix_w, k=num_gt_eigenvectors, ascending=True)
+            per_wind_gt.append((float(w), w_eigendecomp, w_sampling_probs))
+            print("done")
+        print("Per-wind GT computation complete.")
 
     # Save data for new runs (skip if resuming)
     if checkpoint_data is None:
@@ -716,6 +740,49 @@ def learn_eigenvectors(args, learner_module, method):
             for k, v in cosine_sims.items():
                 metrics_dict[k] = v
 
+            # Per-wind evaluation (only when random_wind=True)
+            if per_wind_gt:
+                wind_right_sims = []
+                wind_left_sims  = []
+                for w_val, gt_w, w_sampling_probs in per_wind_gt:
+                    # Query encoder at this specific wind value.
+                    eval_coords_w = jnp.concatenate(
+                        [state_coords,
+                         jnp.full((len(state_coords), 1), w_val, dtype=jnp.float32)],
+                        axis=-1,
+                    )
+                    fd_w = encoder.apply(encoder_state.params['encoder'], eval_coords_w)[0]
+                    if method == "allo":
+                        zeros_w = jnp.zeros_like(fd_w['right_real'])
+                        fd_w = {**fd_w, 'left_real': fd_w['right_real'],
+                                'left_imag': zeros_w, 'right_imag': zeros_w}
+
+                    w_cosine_sims = compute_complex_cosine_similarities_with_normalization(
+                        learned_left_real=fd_w['left_real'],
+                        learned_left_imag=fd_w['left_imag'],
+                        learned_right_real=fd_w['right_real'],
+                        learned_right_imag=fd_w['right_imag'],
+                        gt_left_real=gt_w['left_eigenvectors_real'],
+                        gt_left_imag=gt_w['left_eigenvectors_imag'],
+                        gt_right_real=gt_w['right_eigenvectors_real'],
+                        gt_right_imag=gt_w['right_eigenvectors_imag'],
+                        gt_eigenvalues_real=gt_w['eigenvalues_real'],
+                        gt_eigenvalues_imag=gt_w['eigenvalues_imag'],
+                        sampling_probs=w_sampling_probs,
+                        skip_conjugates=skip_conjugates,
+                        compute_left=(method != "allo"),
+                    )
+                    w_key = f"w{w_val:+.2f}"
+                    for k, v in w_cosine_sims.items():
+                        metrics_dict[f"wind/{w_key}/{k}"] = v
+                    wind_right_sims.append(w_cosine_sims['right_cosine_sim_avg'])
+                    if method != "allo":
+                        wind_left_sims.append(w_cosine_sims['left_cosine_sim_avg'])
+
+                metrics_dict['wind/right_cosine_sim_avg'] = float(np.mean(wind_right_sims))
+                if wind_left_sims:
+                    metrics_dict['wind/left_cosine_sim_avg'] = float(np.mean(wind_left_sims))
+
             # Add batch diversity metrics
             metrics_dict['batch_unique_states'] = unique_states
             metrics_dict['batch_coverage'] = coverage
@@ -732,6 +799,10 @@ def learn_eigenvectors(args, learner_module, method):
                 sim_str = f"right_sim={right_sim:.4f}"
                 if method != "allo":
                     sim_str = f"left_sim={cosine_sims['left_cosine_sim_avg']:.4f}, " + sim_str
+                if per_wind_gt:
+                    sim_str += f", wind_right_sim={metrics_dict['wind/right_cosine_sim_avg']:.4f}"
+                    if 'wind/left_cosine_sim_avg' in metrics_dict:
+                        sim_str = f"wind_left_sim={metrics_dict['wind/left_cosine_sim_avg']:.4f}, " + sim_str
                 print(f"Step {gradient_step}: total_loss={total_loss.item():.4f}, "
                         f"graph_loss={graph_loss:.4f}, clf_loss={clf_loss:.4f}, "
                         f"chirality_loss={chirality_loss:.4f}, "
