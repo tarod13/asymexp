@@ -14,7 +14,7 @@ Produces seven figures in <output_dir>/:
                           (left ≈ right and allo is real-valued, so omitted)
 
 Each task run saves its results under
-    <results_dir>/task_<id>/file/<run_name>/
+    <results_dir>/task_<id>/<env_file_name>/<run_name>/
         gt_right_real.npy                        (num_canonical_states, num_eigvecs)
         gt_right_imag.npy
         gt_left_real.npy
@@ -50,11 +50,11 @@ import numpy as np
 # ── Data loading ──────────────────────────────────────────────────────────────
 
 def find_run_dir(task_dir: Path) -> Path | None:
-    """Return the most-recently modified run directory under task_dir/file/."""
-    file_dir = task_dir / "file"
-    if not file_dir.exists():
-        return None
-    candidates = [d for d in file_dir.iterdir() if d.is_dir()]
+    """Return the most-recently modified run directory under task_dir/<env_dir>/."""
+    candidates = []
+    for subdir in task_dir.iterdir():
+        if subdir.is_dir():
+            candidates.extend(d for d in subdir.iterdir() if d.is_dir())
     if not candidates:
         return None
     return max(candidates, key=lambda d: d.stat().st_mtime)
