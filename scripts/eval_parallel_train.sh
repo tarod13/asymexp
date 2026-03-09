@@ -16,7 +16,7 @@
 # =============================================================================
 
 #SBATCH --job-name=par_eval_train
-#SBATCH --account=aip-machado
+#SBATCH --account=rrg-machado
 #SBATCH --time=6:00:00
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
@@ -32,7 +32,7 @@ mkdir -p results/eval_manifest
 # ---------------------------------------------------------------------------
 ENV_FILES=(
     "GridRoom-4-Doors"  "GridRoom-4"  "GridRoom-4-DoorsIm"  "GridRoom-1"
-    "GridRoom-1-Portals-1"            "GridRoom-1-Doors"
+    "GridRoom-1-Portals-1"  "GridRoom-1-Doors"
 )
 
 ENV_FILE=${ENV_FILES[$SLURM_ARRAY_TASK_ID]}
