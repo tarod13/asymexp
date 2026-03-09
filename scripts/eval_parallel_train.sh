@@ -78,8 +78,8 @@ python train.py clf \
     --exp_number           0 \
     --seed                 42 \
     --results_dir          ./results/parallel_eval \
-    --plot_during_training False \
-    --save_model           True
+    --no-plot_during_training \
+    --save_model
 
 # ---------------------------------------------------------------------------
 # Find the results directory and write to manifest
