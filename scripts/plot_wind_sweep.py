@@ -49,15 +49,34 @@ import numpy as np
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
-def find_run_dir(task_dir: Path) -> Path | None:
-    """Return the most-recently modified run directory under task_dir/<env_dir>/."""
+def find_run_dir(task_dir: Path, timestamp: int | None = None) -> Path | None:
+    """Return a run directory under task_dir/<env_dir>/.
+
+    If *timestamp* is given, return the run whose name ends with that Unix
+    timestamp (exact match).  Otherwise return the run with the largest
+    embedded timestamp (i.e. the most recently started run).
+    """
     candidates = []
     for subdir in task_dir.iterdir():
         if subdir.is_dir():
-            candidates.extend(d for d in subdir.iterdir() if d.is_dir())
+            candidates.extend(
+                d for d in subdir.iterdir()
+                if d.is_dir() and (d / "args.json").exists()
+            )
     if not candidates:
         return None
-    return max(candidates, key=lambda d: d.stat().st_mtime)
+
+    def run_timestamp(d: Path) -> int:
+        tail = d.name.rsplit("__", 1)[-1]
+        return int(tail) if tail.isdigit() else 0
+
+    if timestamp is not None:
+        matches = [d for d in candidates if run_timestamp(d) == timestamp]
+        if not matches:
+            return None
+        return matches[0]
+
+    return max(candidates, key=run_timestamp)
 
 
 def load_run(run_dir: Path) -> dict | None:
@@ -241,6 +260,10 @@ def parse_args():
     p.add_argument("--num_eigvecs", type=int, default=4,
                    help="Number of non-trivial eigenvectors to show "
                         "(rows after k=0). Total rows = num_eigvecs + 1.")
+    p.add_argument("--timestamp", type=int, default=None,
+                   help="Unix timestamp suffix of the run to plot "
+                        "(e.g. 1712345678). Defaults to the most recently "
+                        "started run in each task directory.")
     return p.parse_args()
 
 
@@ -249,15 +272,17 @@ def main():
     results_dir = Path(args.results_dir)
     output_dir  = Path(args.output_dir)
     num_eigvecs = args.num_eigvecs
+    timestamp   = args.timestamp
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Load runs ─────────────────────────────────────────────────────────────
-    print(f"Scanning {results_dir} …")
+    print(f"Scanning {results_dir} …"
+          + (f"  (timestamp={timestamp})" if timestamp else "  (latest run)"))
     runs = []
     for task_dir in sorted(results_dir.glob("task_*"),
                            key=lambda p: int(p.name.split("_")[1])):
-        run_dir = find_run_dir(task_dir)
+        run_dir = find_run_dir(task_dir, timestamp=timestamp)
         if run_dir is None:
             print(f"  {task_dir.name}: no run found, skipping")
             continue
