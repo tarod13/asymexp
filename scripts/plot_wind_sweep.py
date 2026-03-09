@@ -50,14 +50,23 @@ import numpy as np
 # ── Data loading ──────────────────────────────────────────────────────────────
 
 def find_run_dir(task_dir: Path) -> Path | None:
-    """Return the most-recently modified run directory under task_dir/<env_dir>/."""
+    """Return the run directory under task_dir/<env_dir>/ with the latest creation
+    timestamp, as encoded in the run-name suffix (…__<unix_ts>)."""
     candidates = []
     for subdir in task_dir.iterdir():
         if subdir.is_dir():
-            candidates.extend(d for d in subdir.iterdir() if d.is_dir())
+            candidates.extend(
+                d for d in subdir.iterdir()
+                if d.is_dir() and (d / "args.json").exists()
+            )
     if not candidates:
         return None
-    return max(candidates, key=lambda d: d.stat().st_mtime)
+
+    def run_timestamp(d: Path) -> int:
+        tail = d.name.rsplit("__", 1)[-1]
+        return int(tail) if tail.isdigit() else 0
+
+    return max(candidates, key=run_timestamp)
 
 
 def load_run(run_dir: Path) -> dict | None:
