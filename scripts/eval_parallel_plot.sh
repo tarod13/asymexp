@@ -24,7 +24,7 @@
 # =============================================================================
 
 #SBATCH --job-name=par_eval_plot
-#SBATCH --account=aip-machado
+#SBATCH --account=rrg-machado
 #SBATCH --time=1:00:00
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
