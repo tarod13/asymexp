@@ -9,6 +9,7 @@ class SharedArgs:
     windy: bool = False  # If True, use WindyGridWorldEnv instead of GridWorldEnv
     wind: float = 0.0   # Wind strength in (-1, 1); negative = leftward, positive = rightward
     random_wind: bool = False  # If True and windy=True, resample wind ~ Uniform(-0.9, 0.9) each episode
+    num_eval_winds: int = 11  # (random_wind only) number of fixed wind values for per-wind GT evaluation, equally spaced in [-0.99, 0.99]
 
     # Data collection
     num_envs: int = 1000

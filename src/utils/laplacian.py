@@ -23,11 +23,14 @@ def get_transition_matrix(
         transition_matrix = transition_counts
 
     if make_stochastic:
-        row_sums = jnp.sum(transition_matrix.clip(1e-8), axis=1, keepdims=True)
-        transition_matrix = transition_matrix.clip(1e-8) / row_sums
+        row_sums = jnp.sum(transition_matrix, axis=1, keepdims=True)
+        transition_matrix = jnp.where(
+            row_sums > 0, 
+            transition_matrix / row_sums, 
+            jnp.zeros_like(transition_matrix)  # Avoid division by zero; rows with zero counts remain zero
+        )
 
     return transition_matrix
-
 
 def compute_successor_representation(
     transition_matrix: jnp.ndarray,
