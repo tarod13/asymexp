@@ -41,9 +41,9 @@ def init_params(encoder_initial_params, args):
     init_diag    = getattr(args, 'init_dual_diag',       False)
 
     if init_diag:
-        duals = jnp.tril(jnp.full((k, k), duals_init))
+        duals = jnp.eye(k) * duals_init                        # diagonal only
     else:
-        duals = jnp.eye(k) * duals_init
+        duals = jnp.tril(jnp.full((k, k), duals_init))        # full lower-triangular (default)
 
     return {
         'encoder':        encoder_initial_params,
