@@ -370,6 +370,7 @@ def make_hitting_time_figure(
                 ht = compute_hitting_times_k(data, source, k)
                 ht_from_ref = ht[ref_idx, :]
             except Exception as e:
+                print(f"    WARNING: hitting time failed (env={env_name}, k={k}): {e}")
                 ax.set_visible(False)
                 continue
 
@@ -640,7 +641,7 @@ def main():
     for source in SOURCES:
         # Skip learned if eigenvalues were not saved
         if source == "learned":
-            missing = [n for n in env_names
+            missing = [n for n in all_data
                        if all_data[n].get("learned_eigenvalues_real") is None]
             if missing:
                 print(f"  Skipping learned hitting times (eigenvalues missing for: {missing})")
