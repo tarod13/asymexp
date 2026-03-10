@@ -807,6 +807,18 @@ def learn_eigenvectors(args, learner_module, method):
                         f"graph_loss={graph_loss:.4f}, clf_loss={clf_loss:.4f}, "
                         f"chirality_loss={chirality_loss:.4f}, "
                       f"{sim_str}")
+                if per_wind_gt:
+                    per_wind_right_strs = [
+                        f"w{w_val:+.2f}={metrics_dict[f'wind/w{w_val:+.2f}/right_cosine_sim_avg']:.4f}"
+                        for w_val, _, _ in per_wind_gt
+                    ]
+                    print(f"  Per-wind right_sim: {', '.join(per_wind_right_strs)}")
+                    if 'wind/left_cosine_sim_avg' in metrics_dict:
+                        per_wind_left_strs = [
+                            f"w{w_val:+.2f}={metrics_dict[f'wind/w{w_val:+.2f}/left_cosine_sim_avg']:.4f}"
+                            for w_val, _, _ in per_wind_gt
+                        ]
+                        print(f"  Per-wind left_sim:  {', '.join(per_wind_left_strs)}")
                 print(f"  Batch diversity: unique={unique_states}/{total_states} ({coverage*100:.1f}%), "
                       f"entropy={normalized_entropy:.3f}, max_freq={max_state_freq:.4f}")
         log_time = time.time() - log_start
