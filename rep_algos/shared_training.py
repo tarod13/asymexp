@@ -73,10 +73,15 @@ def _effective_rank(kernel: np.ndarray) -> float:
 
 
 def _compute_encoder_ranks(encoder_params: dict) -> dict:
-    """Return effective rank for every Dense kernel in the encoder param tree."""
+    """Return effective rank for every Dense kernel in the encoder param tree.
+
+    encoder_params should be the inner 'params' dict (i.e.
+    encoder_state.params['encoder']['params']), not the outer variables dict
+    that still has the 'params' key.
+    """
     ranks = {}
     for layer_name, layer_params in encoder_params.items():
-        if isinstance(layer_params, dict) and 'kernel' in layer_params:
+        if hasattr(layer_params, 'keys') and 'kernel' in layer_params:
             kernel = np.array(layer_params['kernel'])
             if kernel.ndim == 2:
                 ranks[layer_name] = _effective_rank(kernel)
@@ -815,7 +820,7 @@ def learn_eigenvectors(args, learner_module, method):
 
             # Effective rank per Dense layer (optional, gated by --eval_rank)
             if getattr(args, 'eval_rank', False):
-                layer_ranks = _compute_encoder_ranks(encoder_state.params['encoder'])
+                layer_ranks = _compute_encoder_ranks(encoder_state.params['encoder']['params'])
                 for layer_name, rank_val in layer_ranks.items():
                     metrics_dict[f'rank/{layer_name}'] = rank_val
 
