@@ -380,7 +380,7 @@ def make_hitting_time_figure(
 
             visualize_hitting_time_on_grid(
                 hitting_time_values=ht_from_ref,
-                center_state_idx=int(canonical_states[ref_idx]),
+                center_state_idx=ref_idx,
                 canonical_states=canonical_states,
                 grid_width=vm["grid_width"],
                 grid_height=vm["grid_height"],
