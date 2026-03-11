@@ -7,7 +7,7 @@ class AlloArgs(SharedArgs):
     # ALLO-specific (augmented Lagrangian)
     duals_initial_val: float = -2.0       # Initial value for dual variables
     barrier_initial_val: float = 0.5      # Initial barrier coefficient
-    max_barrier_coefs: float = 0.5        # Maximum barrier coefficient value
+    max_barrier_coefs: float = 2.0        # Maximum barrier coefficient value
     step_size_duals: float = 1.0          # SGD step size for dual variables
     step_size_duals_I: float = 0.0        # Integral term step size for duals
     integral_decay: float = 0.99          # EMA decay for constraint-error integral
