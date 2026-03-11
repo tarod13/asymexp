@@ -62,6 +62,9 @@ class SharedArgs:
     # Resuming training
     resume_from: str | None = None  # Path to results directory to resume from (e.g., './results/room4/room4__allo__0__42__1234567890')
 
+    # Diagnostics
+    eval_rank: bool = False  # If True, compute effective rank of each Dense kernel at log intervals
+
     # Misc
     seed: int = 42
     exp_name: str | None = None

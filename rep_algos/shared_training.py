@@ -59,6 +59,35 @@ from src.utils.plotting import (
 from src.utils.laplacian import compute_eigendecomposition
 
 
+def _effective_rank(kernel: np.ndarray) -> float:
+    """Entropy-based effective rank (Roy & Vetterli, 2007).
+
+    Computes exp(H) where H is the Shannon entropy of the normalised singular
+    value spectrum.  Ranges from 1 (rank-1 matrix) to min(m, n) (full rank).
+    Only meaningful for 2-D weight matrices.
+    """
+    sigmas = np.linalg.svd(kernel, compute_uv=False)
+    sigmas = sigmas / (sigmas.sum() + 1e-12)
+    entropy = -np.sum(sigmas * np.log(sigmas + 1e-12))
+    return float(np.exp(entropy))
+
+
+def _compute_encoder_ranks(encoder_params: dict) -> dict:
+    """Return effective rank for every Dense kernel in the encoder param tree.
+
+    encoder_params should be the inner 'params' dict (i.e.
+    encoder_state.params['encoder']['params']), not the outer variables dict
+    that still has the 'params' key.
+    """
+    ranks = {}
+    for layer_name, layer_params in encoder_params.items():
+        if hasattr(layer_params, 'keys') and 'kernel' in layer_params:
+            kernel = np.array(layer_params['kernel'])
+            if kernel.ndim == 2:
+                ranks[layer_name] = _effective_rank(kernel)
+    return ranks
+
+
 def learn_eigenvectors(args, learner_module, method):
     """
     Main training loop to learn eigenvectors.
@@ -789,6 +818,12 @@ def learn_eigenvectors(args, learner_module, method):
             metrics_dict['batch_entropy_normalized'] = normalized_entropy
             metrics_dict['batch_max_state_freq'] = max_state_freq
 
+            # Effective rank per Dense layer (optional, gated by --eval_rank)
+            if getattr(args, 'eval_rank', False):
+                layer_ranks = _compute_encoder_ranks(encoder_state.params['encoder']['params'])
+                for layer_name, rank_val in layer_ranks.items():
+                    metrics_dict[f'rank/{layer_name}'] = rank_val
+
             metrics_history.append(metrics_dict)
 
             if gradient_step % (args.log_freq * 10) == 0:
@@ -819,6 +854,13 @@ def learn_eigenvectors(args, learner_module, method):
                             for w_val, _, _ in per_wind_gt
                         ]
                         print(f"  Per-wind left_sim:  {', '.join(per_wind_left_strs)}")
+                if getattr(args, 'eval_rank', False):
+                    rank_strs = [
+                        f"{k.split('/')[-1]}={v:.2f}"
+                        for k, v in metrics_dict.items()
+                        if k.startswith('rank/')
+                    ]
+                    print(f"  Eff. rank: {', '.join(rank_strs)}")
                 print(f"  Batch diversity: unique={unique_states}/{total_states} ({coverage*100:.1f}%), "
                       f"entropy={normalized_entropy:.3f}, max_freq={max_state_freq:.4f}")
         log_time = time.time() - log_start
