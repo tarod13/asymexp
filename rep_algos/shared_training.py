@@ -630,7 +630,10 @@ def learn_eigenvectors(args, learner_module, method):
             ww = jnp.array(warmup_batch.winds)[:, None]
             warmup_coords = jnp.concatenate([warmup_coords, ww], axis=-1)
             warmup_next_coords = jnp.concatenate([warmup_next_coords, ww], axis=-1)
-        warmup_state_weighting = is_ratio[warmup_indices]
+        warmup_state_weighting = (
+            is_ratio[warmup_indices] if sampling_mode == "weighted"
+            else jnp.ones((len(warmup_indices), 1))
+        )
 
         # Run one update to compile with the loaded state (discard result)
         warmup_state, warmup_loss, _ = update_encoder(
@@ -700,7 +703,10 @@ def learn_eigenvectors(args, learner_module, method):
             coords_batch_2 = jnp.concatenate([coords_batch_2, w2], axis=-1)
             next_coords_batch_2 = jnp.concatenate([next_coords_batch_2, w2], axis=-1)
         sample_time = time.time() - sample_start
-        state_weighting = is_ratio[state_indices]
+        state_weighting = (
+            is_ratio[state_indices] if sampling_mode == "weighted"
+            else jnp.ones((len(state_indices), 1))
+        )
 
         # Update
         update_start = time.time()
