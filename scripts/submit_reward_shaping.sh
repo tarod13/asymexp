@@ -10,17 +10,16 @@
 # can also be invoked directly:
 #
 #   bash scripts/submit_reward_shaping.sh \
-#       --model_dir     ./results/file/<complex_run> \
-#       --allo_model_dir ./results/file/<allo_run>  \
-#       --output_dir    ./results/file/<complex_run>/reward_shaping \
-#       [--num_seeds 5] [--num_episodes 30000] [--max_steps 500] \
+#       --model_dir  ./results/file/<complex_run> \
+#       --output_dir ./results/file/<complex_run>/reward_shaping \
+#       [--num_seeds 100] [--num_episodes 60000] [--max_steps 200] \
 #       [--shaping_coef 0.1] [--gamma_rl 0.99] [--lr 0.1] \
-#       [--epsilon 0.1] [--log_interval 500] [--eval_seed 0] \
-#       [--num_eval_episodes 30] [--min_goal_distance 0] \
-#       [--start_state "x,y"]
+#       [--epsilon 0.5] [--log_interval 500] [--eval_seed 0] \
+#       [--num_eval_episodes 30] [--min_goal_distance 8] \
+#       [--start_state "1,1"] [--num_eigenvectors 8]
 #
-# When --allo_model_dir is omitted, only the baseline and complex conditions
-# are run (NUM_METHODS=2, task IDs 0..2*num_seeds-1).
+# Always runs three conditions: baseline, complex (learned model), gt (ground-truth
+# Laplacian eigenvectors via --use_gt).  Total tasks = 3 * num_seeds.
 # =============================================================================
 
 set -euo pipefail
@@ -29,26 +28,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 MODEL_DIR=""
-ALLO_MODEL_DIR=""
 OUTPUT_DIR=""
-NUM_SEEDS=5
-NUM_EPISODES=30000
-MAX_STEPS=500
+NUM_SEEDS=100
+NUM_EPISODES=60000
+MAX_STEPS=200
 SHAPING_COEF=0.1
 GAMMA_RL=0.99
 LR=0.1
-EPSILON=0.1
+EPSILON=0.5
 LOG_INTERVAL=500
 EVAL_SEED=0
 NUM_EVAL_EPISODES=30
-MIN_GOAL_DISTANCE=0
-START_STATE=""
+MIN_GOAL_DISTANCE=8
+START_STATE="1,1"
+NUM_EIGENVECTORS=8
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --model_dir)          MODEL_DIR="$2";          shift 2 ;;
-        --allo_model_dir)     ALLO_MODEL_DIR="$2";     shift 2 ;;
         --output_dir)         OUTPUT_DIR="$2";         shift 2 ;;
         --num_seeds)          NUM_SEEDS="$2";          shift 2 ;;
         --num_episodes)       NUM_EPISODES="$2";       shift 2 ;;
@@ -62,6 +60,7 @@ while [[ $# -gt 0 ]]; do
         --num_eval_episodes)  NUM_EVAL_EPISODES="$2";  shift 2 ;;
         --min_goal_distance)  MIN_GOAL_DISTANCE="$2";  shift 2 ;;
         --start_state)        START_STATE="$2";        shift 2 ;;
+        --num_eigenvectors)   NUM_EIGENVECTORS="$2";   shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -74,14 +73,9 @@ if [ -z "$OUTPUT_DIR" ]; then
     echo "ERROR: --output_dir is required." >&2; exit 1
 fi
 
-# ── Determine number of methods ───────────────────────────────────────────────
-if [ -n "$ALLO_MODEL_DIR" ]; then
-    NUM_METHODS=3
-    METHODS_LABEL="baseline, complex, allo"
-else
-    NUM_METHODS=2
-    METHODS_LABEL="baseline, complex"
-fi
+# ── Three fixed methods: baseline, complex (learned), gt (ground-truth) ───────
+NUM_METHODS=3
+METHODS_LABEL="baseline, complex, gt"
 
 NUM_TASKS=$(( NUM_METHODS * NUM_SEEDS ))
 MAX_TASK_ID=$(( NUM_TASKS - 1 ))
@@ -89,20 +83,20 @@ MAX_TASK_ID=$(( NUM_TASKS - 1 ))
 echo "========================================"
 echo "Reward-shaping distributed submission"
 echo "  Model dir      : $MODEL_DIR"
-echo "  ALLO model dir : ${ALLO_MODEL_DIR:-<none>}"
 echo "  Output dir     : $OUTPUT_DIR"
 echo "  Methods        : $METHODS_LABEL  (NUM_METHODS=$NUM_METHODS)"
 echo "  Num seeds      : $NUM_SEEDS"
 echo "  Total tasks    : $NUM_TASKS  (task IDs 0-$MAX_TASK_ID)"
 echo "  Num episodes   : $NUM_EPISODES"
 echo "  Shaping coef   : $SHAPING_COEF"
+echo "  Num eigenvectors: $NUM_EIGENVECTORS"
 echo "========================================"
 
 # ── Export env vars so child scripts inherit them ─────────────────────────────
-export MODEL_DIR ALLO_MODEL_DIR OUTPUT_DIR
+export MODEL_DIR OUTPUT_DIR
 export NUM_SEEDS NUM_METHODS NUM_EPISODES MAX_STEPS
 export SHAPING_COEF GAMMA_RL LR EPSILON LOG_INTERVAL EVAL_SEED NUM_EVAL_EPISODES
-export MIN_GOAL_DISTANCE START_STATE
+export MIN_GOAL_DISTANCE START_STATE NUM_EIGENVECTORS
 
 mkdir -p logs
 mkdir -p "${OUTPUT_DIR}/partial"

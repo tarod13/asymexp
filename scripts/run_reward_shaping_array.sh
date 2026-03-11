@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
-#SBATCH --time=6:00:00
+#SBATCH --time=1:00:00
 #SBATCH --output=logs/rs_qlearn_%A_%a.out
 #SBATCH --error=logs/rs_qlearn_%A_%a.err
 
@@ -15,7 +15,7 @@
 #
 # Task-ID encoding:
 #   task_id = method_idx * NUM_SEEDS + seed_idx
-#   method_idx : 0 = baseline, 1 = complex, 2 = allo
+#   method_idx : 0 = baseline, 1 = complex, 2 = gt
 #
 # All configuration is passed via environment variables exported by
 # scripts/submit_reward_shaping.sh (or set manually before sbatch):
@@ -23,11 +23,11 @@
 #   Required : MODEL_DIR, OUTPUT_DIR, NUM_SEEDS, NUM_METHODS
 #   Q-learning: NUM_EPISODES, MAX_STEPS, SHAPING_COEF, GAMMA_RL, LR,
 #               EPSILON, LOG_INTERVAL, EVAL_SEED, NUM_EVAL_EPISODES
-#   Optional  : ALLO_MODEL_DIR, MIN_GOAL_DISTANCE, START_STATE
+#   Optional  : MIN_GOAL_DISTANCE, START_STATE, NUM_EIGENVECTORS
 #
 # Usage
 # -----
-#   sbatch --array=0-14 --export=ALL scripts/run_reward_shaping_array.sh
+#   sbatch --array=0-299 --export=ALL scripts/run_reward_shaping_array.sh
 #   bash   scripts/run_reward_shaping_array.sh <task_id>   # local single run
 # =============================================================================
 
@@ -47,25 +47,26 @@ export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads
 
 # ── Defaults (overridden by exported env vars from submit_reward_shaping.sh) ──
 ENV="${ENV:-GridRoom-4-Doors}"
-NUM_SEEDS="${NUM_SEEDS:-5}"
+NUM_SEEDS="${NUM_SEEDS:-100}"
 NUM_METHODS="${NUM_METHODS:-3}"
-NUM_EPISODES="${NUM_EPISODES:-30000}"
-MAX_STEPS="${MAX_STEPS:-500}"
+NUM_EPISODES="${NUM_EPISODES:-60000}"
+MAX_STEPS="${MAX_STEPS:-200}"
 SHAPING_COEF="${SHAPING_COEF:-0.1}"
 GAMMA_RL="${GAMMA_RL:-0.99}"
 LR="${LR:-0.1}"
-EPSILON="${EPSILON:-0.1}"
+EPSILON="${EPSILON:-0.5}"
 LOG_INTERVAL="${LOG_INTERVAL:-500}"
 EVAL_SEED="${EVAL_SEED:-0}"
 NUM_EVAL_EPISODES="${NUM_EVAL_EPISODES:-30}"
-MIN_GOAL_DISTANCE="${MIN_GOAL_DISTANCE:-0}"
-START_STATE="${START_STATE:-}"
+MIN_GOAL_DISTANCE="${MIN_GOAL_DISTANCE:-8}"
+START_STATE="${START_STATE:-1,1}"
+NUM_EIGENVECTORS="${NUM_EIGENVECTORS:-8}"
 
 # ── Decode (method, seed) from task ID ───────────────────────────────────────
 method_idx=$(( JOB_ID / NUM_SEEDS ))
 seed_idx=$(( JOB_ID % NUM_SEEDS ))
 
-METHODS=("baseline" "complex" "allo")
+METHODS=("baseline" "complex" "gt")
 METHOD="${METHODS[$method_idx]}"
 
 echo "========================================"
@@ -78,10 +79,15 @@ echo "  Model dir : ${MODEL_DIR:-<unset>}"
 echo "  Output dir: ${OUTPUT_DIR:-<unset>}"
 echo "========================================"
 
+# The Python script --method flag accepts "baseline" and "complex" only.
+# The "gt" condition reuses --method complex combined with --use_gt.
+PYTHON_METHOD="$METHOD"
+if [ "$METHOD" = "gt" ]; then PYTHON_METHOD="complex"; fi
+
 CMD=(
     python experiments/reward_shaping/run_reward_shaping.py
     --env                "$ENV"
-    --method             "$METHOD"
+    --method             "$PYTHON_METHOD"
     --seed_idx           "$seed_idx"
     --num_seeds          "$NUM_SEEDS"
     --num_episodes       "$NUM_EPISODES"
@@ -96,14 +102,14 @@ CMD=(
     --output_dir         "$OUTPUT_DIR"
 )
 
-# Only pass --model_dir when the complex representation is needed.
+# Complex representation: load from trained model dir.
 if [ "$METHOD" = "complex" ] && [ -n "${MODEL_DIR:-}" ]; then
     CMD+=(--model_dir "$MODEL_DIR")
 fi
 
-# Only pass --allo_model_dir when the allo representation is needed.
-if [ "$METHOD" = "allo" ] && [ -n "${ALLO_MODEL_DIR:-}" ]; then
-    CMD+=(--allo_model_dir "$ALLO_MODEL_DIR")
+# GT condition: compute hitting times from ground-truth Laplacian eigenvectors.
+if [ "$METHOD" = "gt" ]; then
+    CMD+=(--use_gt --num_eigenvectors "$NUM_EIGENVECTORS")
 fi
 
 if [ "${MIN_GOAL_DISTANCE:-0}" -gt 0 ]; then
