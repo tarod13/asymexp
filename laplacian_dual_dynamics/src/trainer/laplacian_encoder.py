@@ -994,7 +994,8 @@ class LaplacianEncoderTrainer(Trainer, ABC):    # TODO: Handle device
         plt.colorbar(mesh, ax=ax, shrink=0.5, pad=0.05)
 
         # Save figure
-        fig_path = f'./results/visuals/{self.env_name}/learned_eigenvector_{eigenvector_id}_{self.logger.id}.pdf'
+        run_id = self.logger.id if (self.use_wandb and self.logger is not None) else self._date_time
+        fig_path = f'./results/visuals/{self.env_name}/learned_eigenvector_{eigenvector_id}_{run_id}.pdf'
 
         if not os.path.exists(os.path.dirname(fig_path)):
             os.makedirs(os.path.dirname(fig_path))
