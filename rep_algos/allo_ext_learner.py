@@ -140,12 +140,12 @@ def create_update_function(encoder, args):
             graph_pert = graph_pert.at[0, 0].set(0.0)
 
             diff       = phi - next_phi
-            graph_loss = (0.5 * (diff ** 2).mean(0, keepdims=True) + graph_pert).sum()
+            graph_loss = ((diff ** 2).mean(0, keepdims=True) + graph_pert).sum()
 
             # Encoder-side Lagrangian terms — duals and barrier are stop-grad'd
             # so no gradient flows back into them through the optimizer.
             dual_loss    = (jax.lax.stop_gradient(dual_variables) * error_matrix_1).sum()
-            quad_err     = (error_matrix_1 * jax.lax.stop_gradient(error_matrix_2)).sum()
+            quad_err     = (error_matrix_1 * error_matrix_2).sum()
             barrier_loss = jax.lax.stop_gradient(barrier_coefs[0, 0]) * quad_err
 
             loss = graph_loss + dual_loss + barrier_loss
