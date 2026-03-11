@@ -203,6 +203,10 @@ def create_update_function(encoder, args):
         new_params['lambda_real']    = -0.5 * jnp.diag(updated_duals)
         new_params['lambda_imag']    = jnp.zeros_like(new_params['lambda_imag'])
 
+        # Overwrite with post-update value so the logged barrier_coef reflects
+        # what will be used in the *next* gradient step.
+        aux['barrier_coef'] = updated_barrier[0, 0]
+
         # Grad norm for monitoring
         encoder_grads_flat, _ = jax.tree_util.tree_flatten(grads['encoder'])
         aux['grad_norm'] = jnp.linalg.norm(
