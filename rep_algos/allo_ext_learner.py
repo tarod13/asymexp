@@ -142,17 +142,18 @@ def create_update_function(encoder, args):
             diff       = phi - next_phi
             graph_loss = ((diff ** 2).mean(0, keepdims=True) + graph_pert).sum()
 
+            # Error matrices (matching generalized_augmented.py convention).
+            error_matrix      = 0.5 * (error_matrix_1 + error_matrix_2)
+            quad_error_matrix = error_matrix_1 * error_matrix_2
+
             # Encoder-side Lagrangian terms — duals and barrier are stop-grad'd
             # so no gradient flows back into them through the optimizer.
-            dual_loss    = (jax.lax.stop_gradient(dual_variables) * error_matrix_1).sum()
-            quad_err     = (error_matrix_1 * error_matrix_2).sum()
+            # dual_loss uses the averaged error matrix, matching al.py line 73.
+            dual_loss    = (jax.lax.stop_gradient(dual_variables) * error_matrix).sum()
+            quad_err     = quad_error_matrix.sum()
             barrier_loss = jax.lax.stop_gradient(barrier_coefs[0, 0]) * quad_err
 
             loss = graph_loss + dual_loss + barrier_loss
-
-            # Fresh error matrices returned for the external EMA/dual/barrier update.
-            error_matrix      = 0.5 * (error_matrix_1 + error_matrix_2)
-            quad_error_matrix = error_matrix_1 * error_matrix_2
 
             norm_phi  = (phi ** 2).mean(0, keepdims=True)
             total_err = jnp.absolute(error_matrix_1).sum()
