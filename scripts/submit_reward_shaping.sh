@@ -33,7 +33,14 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# When running as a SLURM job, BASH_SOURCE[0] points to a spool copy.
+# Use SLURM_SUBMIT_DIR (set by SLURM to the sbatch invocation directory)
+# combined with the known 'scripts/' subdirectory instead.
+if [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
+    SCRIPT_DIR="${SLURM_SUBMIT_DIR}/scripts"
+else
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 MODEL_DIR=""
