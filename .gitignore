@@ -215,3 +215,4 @@ results/*
 sampling_test_results/
 logs/*
 reward_shaping/
+.vscode/
