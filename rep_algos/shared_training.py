@@ -216,10 +216,12 @@ def learn_eigenvectors(args, learner_module, method):
             sampling_probs, data_env, replay_buffer, transition_matrix = \
                 collect_data_and_compute_eigenvectors(env, args)
 
-        # For ALLO, the ground truth is eigenvectors of L + D^{-1}L^T D
+        # For ALLO (without sym_eig), the ground truth is eigenvectors of L + D^{-1}L^T D
         # (self-adjoint w.r.t. the D-weighted inner product, real eigenvalues/eigenvectors).
+        # With sym_eig=True, ground truth uses eigh on L directly (matching laplacian_dual_dynamics).
         # For all other algorithms, the ground truth uses L directly.
-        if method == "allo":
+        sym_eig = getattr(args, 'sym_eig', False)
+        if method == "allo" and not sym_eig:
             D = jnp.diag(sampling_probs)
             D_inv = jnp.diag(1.0 / sampling_probs)
             gt_matrix = laplacian_matrix + D_inv @ laplacian_matrix.T @ D
@@ -227,7 +229,7 @@ def learn_eigenvectors(args, learner_module, method):
             gt_eigendecomp = compute_eigendecomposition(
                 gt_matrix,
                 k=num_gt_eigenvectors,
-                ascending=True
+                ascending=True,
             )
             gt_eigenvalues_real = gt_eigendecomp['eigenvalues_real']
             gt_eigenvalues_imag = gt_eigendecomp['eigenvalues_imag']
@@ -240,7 +242,8 @@ def learn_eigenvectors(args, learner_module, method):
             gt_eigendecomp = compute_eigendecomposition(
                 laplacian_matrix,
                 k=num_gt_eigenvectors,
-                ascending=True
+                ascending=True,
+                sym_eig=sym_eig,
             )
             gt_eigenvalues_real = gt_eigendecomp['eigenvalues_real']
             gt_eigenvalues_imag = gt_eigendecomp['eigenvalues_imag']
@@ -249,13 +252,21 @@ def learn_eigenvectors(args, learner_module, method):
             gt_right_real = gt_eigendecomp['right_eigenvectors_real']
             gt_right_imag = gt_eigendecomp['right_eigenvectors_imag']
         else:
-            # Extract ground truth eigenvalues and eigenvectors (complex)
-            gt_eigenvalues_real = eigendecomp['eigenvalues_real']
-            gt_eigenvalues_imag = eigendecomp['eigenvalues_imag']
-            gt_left_real = eigendecomp['left_eigenvectors_real']
-            gt_left_imag = eigendecomp['left_eigenvectors_imag']
-            gt_right_real = eigendecomp['right_eigenvectors_real']
-            gt_right_imag = eigendecomp['right_eigenvectors_imag']
+            if sym_eig:
+                gt_eigendecomp = compute_eigendecomposition(
+                    laplacian_matrix,
+                    k=num_gt_eigenvectors,
+                    ascending=True,
+                    sym_eig=True,
+                )
+            else:
+                gt_eigendecomp = eigendecomp
+            gt_eigenvalues_real = gt_eigendecomp['eigenvalues_real']
+            gt_eigenvalues_imag = gt_eigendecomp['eigenvalues_imag']
+            gt_left_real = gt_eigendecomp['left_eigenvectors_real']
+            gt_left_imag = gt_eigendecomp['left_eigenvectors_imag']
+            gt_right_real = gt_eigendecomp['right_eigenvectors_real']
+            gt_right_imag = gt_eigendecomp['right_eigenvectors_imag']
 
     print(f"\nState coordinates shape: {state_coords.shape}")
     print(f"Ground truth right eigenvectors shape: {gt_right_real.shape}")
@@ -275,11 +286,13 @@ def learn_eigenvectors(args, learner_module, method):
             w_eigendecomp, w_sampling_probs, w_laplacian = compute_eigenvectors_for_fixed_wind(
                 data_env, float(w), args
             )
-            if method == "allo":
+            if method == "allo" and not sym_eig:
                 D_w    = jnp.diag(w_sampling_probs)
                 D_inv_w = jnp.diag(1.0 / w_sampling_probs)
                 gt_matrix_w = w_laplacian + D_inv_w @ w_laplacian.T @ D_w
                 w_eigendecomp = compute_eigendecomposition(gt_matrix_w, k=num_gt_eigenvectors, ascending=True)
+            elif method == "allo" and sym_eig:
+                w_eigendecomp = compute_eigendecomposition(w_laplacian, k=num_gt_eigenvectors, ascending=True, sym_eig=True)
             per_wind_gt.append((float(w), w_eigendecomp, w_sampling_probs))
             print("done")
         print("Per-wind GT computation complete.")
@@ -617,7 +630,10 @@ def learn_eigenvectors(args, learner_module, method):
             ww = jnp.array(warmup_batch.winds)[:, None]
             warmup_coords = jnp.concatenate([warmup_coords, ww], axis=-1)
             warmup_next_coords = jnp.concatenate([warmup_next_coords, ww], axis=-1)
-        warmup_state_weighting = is_ratio[warmup_indices]
+        warmup_state_weighting = (
+            is_ratio[warmup_indices] if sampling_mode == "weighted"
+            else jnp.ones((len(warmup_indices), 1))
+        )
 
         # Run one update to compile with the loaded state (discard result)
         warmup_state, warmup_loss, _ = update_encoder(
@@ -687,7 +703,10 @@ def learn_eigenvectors(args, learner_module, method):
             coords_batch_2 = jnp.concatenate([coords_batch_2, w2], axis=-1)
             next_coords_batch_2 = jnp.concatenate([next_coords_batch_2, w2], axis=-1)
         sample_time = time.time() - sample_start
-        state_weighting = is_ratio[state_indices]
+        state_weighting = (
+            is_ratio[state_indices] if sampling_mode == "weighted"
+            else jnp.ones((len(state_indices), 1))
+        )
 
         # Update
         update_start = time.time()
@@ -838,9 +857,11 @@ def learn_eigenvectors(args, learner_module, method):
                     sim_str += f", wind_right_sim={metrics_dict['wind/right_cosine_sim_avg']:.4f}"
                     if 'wind/left_cosine_sim_avg' in metrics_dict:
                         sim_str = f"wind_left_sim={metrics_dict['wind/left_cosine_sim_avg']:.4f}, " + sim_str
+                barrier_coef = metrics_dict.get('barrier_coef', None)
+                barrier_str = f", barrier_coef={barrier_coef:.4f}" if barrier_coef is not None else ""
                 print(f"Step {gradient_step}: total_loss={total_loss.item():.4f}, "
                         f"graph_loss={graph_loss:.4f}, clf_loss={clf_loss:.4f}, "
-                        f"chirality_loss={chirality_loss:.4f}, "
+                        f"chirality_loss={chirality_loss:.4f}{barrier_str}, "
                       f"{sim_str}")
                 if per_wind_gt:
                     per_wind_right_strs = [

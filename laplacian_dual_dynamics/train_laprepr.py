@@ -118,7 +118,8 @@ def main(hyperparams):
         rng_key=rng_key,
         **hparam_yaml,
     )
-    trainer.train()
+    if not hyperparams.deactivate_training:
+        trainer.train()
 
     if hparam_yaml['use_wandb'] and hyperparams.wandb_offline:
         os.environ['WANDB_MODE']='online'
@@ -146,33 +147,36 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
-        "--use_wandb", 
+        "--use_wandb",
         action="store_true",
+        default=None,
         help="Raise the flag to use wandb."
     )
 
     parser.add_argument(
-        "--deactivate_training", 
+        "--deactivate_training",
         action="store_true",
-        help="Raise the flag to not train the mdel."
+        help="Raise the flag to not train the model."
     )
 
     parser.add_argument(
-        "--wandb_offline", 
+        "--wandb_offline",
         action="store_true",
+        default=None,
         help="Raise the flag to use wandb offline."
     )
 
     parser.add_argument(
-        "--save_model", 
+        "--save_model",
         action="store_true",
+        default=None,
         help="Raise the flag to save the model."
     )
 
     parser.add_argument(
-        '--obs_mode', 
-        type=str, 
-        default= 'xy',
+        '--obs_mode',
+        type=str,
+        default=None,
         help='Observation mode.'
     )
 

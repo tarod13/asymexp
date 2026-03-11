@@ -100,10 +100,11 @@ def compute_complex_cosine_similarities(
     gt_imag: jnp.ndarray,
     eigenvalues_real: jnp.ndarray,
     eigenvalues_imag: jnp.ndarray,
-    prefix: str = ""
+    prefix: str = "",
+    degenerate_atol: float = 1e-6,
 ) -> Dict[str, float]:
     """
-    Compute absolute value of real part of complex cosine similarity between learned and ground truth.
+    Compute absolute value of complex cosine similarity between learned and ground truth.
 
     Uses standard complex inner product with conjugate:
     For complex vectors u = u_real + i·u_imag, v = v_real + i·v_imag:
@@ -111,6 +112,17 @@ def compute_complex_cosine_similarities(
         ||u|| = sqrt(u_real^T u_real + u_imag^T u_imag)
         cos(θ) = <u, v> / (||u|| ||v||)
         Result: |cos(θ)|
+
+    For degenerate eigenvalues (multiple eigenvectors sharing the same eigenvalue), the metric
+    reports the projection norm of each learned eigenvector onto the ground-truth eigenspace,
+    divided by its own norm. This is invariant to the choice of basis within the eigenspace:
+        cos_sim_k = ||P_V u_k||_C / ||u_k||_C
+    where V = [v_1, ..., v_m] is the orthonormal ground-truth eigenspace basis and
+        ||P_V u||_C^2 = sum_l |<v_l, u>|_C^2
+
+    Consecutive eigenvalues are treated as degenerate if both real and imaginary parts agree
+    within `degenerate_atol`. Note that complex conjugate pairs (same real, opposite imaginary)
+    are NOT treated as degenerate and fall back to the existing 2×2 block comparison.
 
     Args:
         learned_real: Learned eigenvector real parts [num_states, num_eigenvectors]
@@ -120,10 +132,11 @@ def compute_complex_cosine_similarities(
         eigenvalues_real: Real parts of eigenvalues corresponding to eigenvectors [num_eigenvectors]
         eigenvalues_imag: Imaginary parts of eigenvalues corresponding to eigenvectors [num_eigenvectors]
         prefix: Prefix for metric names (e.g., "left_" or "right_")
+        degenerate_atol: Absolute tolerance for detecting degenerate eigenvalues.
 
     Returns:
         Dictionary containing:
-            - {prefix}cosine_sim_{i}: Absolute value of real part of cosine similarity for component i
+            - {prefix}cosine_sim_{i}: Cosine similarity (or subspace projection norm) for component i
             - {prefix}cosine_sim_avg: Average across all components
     """
     num_components = learned_real.shape[1]
@@ -131,71 +144,101 @@ def compute_complex_cosine_similarities(
     similarities = {}
     cosine_sims = []
 
-    j =0
+    j = 0
     while j < num_components:
-        is_real_eigval = eigenvalues_imag[j] < 1e-8
-        has_enough_components = j + 1 < num_components
-        if not is_real_eigval and has_enough_components:
-            # Extract complex vectors
-            u_real = learned_real[:, j:j+2]
-            u_imag = learned_imag[:, j:j+2]
-            v_real = gt_real[:, j:j+2]
-            v_imag = gt_imag[:, j:j+2]
+        # Detect degenerate eigenspace: group consecutive eigenvalues that agree in
+        # both real and imaginary parts within tolerance.
+        # Complex conjugate pairs have the same real but opposite imaginary parts,
+        # so they are NOT grouped here (|imag_j - imag_{j+1}| = 2|imag| >> atol).
+        group_end = j + 1
+        while group_end < num_components:
+            same_real = abs(float(eigenvalues_real[group_end]) - float(eigenvalues_real[j])) < degenerate_atol
+            same_imag = abs(float(eigenvalues_imag[group_end]) - float(eigenvalues_imag[j])) < degenerate_atol
+            if same_real and same_imag:
+                group_end += 1
+            else:
+                break
+        multiplicity = group_end - j
 
-            # Standard complex inner product (with conjugate): <u, v> = conj(u)^T v
-            # Real part: u_real^T v_real + u_imag^T v_imag
-            # Imag part: u_real^T v_imag - u_imag^T v_real
-            inner_real = jnp.einsum('ij,ik->jk', u_real, v_real) + jnp.einsum('ij,ik->jk', u_imag, v_imag)
-            inner_imag = jnp.einsum('ij,ik->jk', u_real, v_imag) - jnp.einsum('ij,ik->jk', u_imag, v_real)
+        if multiplicity > 1:
+            # Degenerate eigenspace: for each learned eigenvector u_k in the group,
+            # report the norm of its projection onto the ground-truth eigenspace V,
+            # normalised by ||u_k||. This is basis-invariant within the eigenspace.
+            u_real = learned_real[:, j:j + multiplicity]   # (n_states, mult)
+            u_imag = learned_imag[:, j:j + multiplicity]
+            v_real = gt_real[:, j:j + multiplicity]        # (n_states, mult)
+            v_imag = gt_imag[:, j:j + multiplicity]
 
-            # Magnitudes: ||u|| = sqrt(u_real^T u_real + u_imag^T u_imag)
-            u_norm = jnp.sqrt(jnp.einsum('ij,ij->j', u_real, u_real) + jnp.einsum('ij,ij->j', u_imag, u_imag)).reshape(-1, 1)
-            v_norm = jnp.sqrt(jnp.einsum('ij,ij->j', v_real, v_real) + jnp.einsum('ij,ij->j', v_imag, v_imag)).reshape(1, -1)
+            # Complex inner products <v_l, u_k> for all pairs (k, l):
+            #   inner_real[k, l] = Re(u_k)^T Re(v_l) + Im(u_k)^T Im(v_l)
+            #   inner_imag[k, l] = Re(u_k)^T Im(v_l) - Im(u_k)^T Re(v_l)
+            inner_real = u_real.T @ v_real + u_imag.T @ v_imag   # (mult, mult)
+            inner_imag = u_real.T @ v_imag - u_imag.T @ v_real   # (mult, mult)
 
-            # Complex cosine similarity
-            cos_real = inner_real / (u_norm * v_norm + 1e-10)
-            cos_imag = inner_imag / (u_norm * v_norm + 1e-10)
+            # Squared projection norms: ||P_V u_k||^2 = sum_l |<v_l, u_k>|^2
+            proj_norm = (inner_real ** 2 + inner_imag ** 2).sum(axis=1) ** 0.5  # (mult,)
 
-            # Take absolute value of real part
-            abs_cos_real = (cos_real**2 + cos_imag**2).sum(axis=1)**0.5
+            # Divide by ||u_k||_C to obtain cosine similarity in [0, 1]
+            u_norms = jnp.sqrt((u_real ** 2 + u_imag ** 2).sum(axis=0))  # (mult,)
+            cos_sims_k = proj_norm / (u_norms + 1e-10)
 
-            similarities[f'{prefix}cosine_sim_{j}'] = float(abs_cos_real[0])
-            similarities[f'{prefix}cosine_sim_{j+1}'] = float(abs_cos_real[1])
-            cosine_sims.append(float(abs_cos_real[0]))
-            cosine_sims.append(float(abs_cos_real[1]))
+            for k in range(multiplicity):
+                sim = float(cos_sims_k[k])
+                similarities[f'{prefix}cosine_sim_{j + k}'] = sim
+                cosine_sims.append(sim)
 
-            j += 2
+            j += multiplicity
 
         else:
+            # Non-degenerate eigenvalue: use direct comparison.
+            is_real_eigval = float(eigenvalues_imag[j]) < 1e-8
+            has_enough_components = j + 1 < num_components
+            if not is_real_eigval and has_enough_components:
+                # Complex conjugate pair — compare as a 2×2 block.
+                u_real = learned_real[:, j:j + 2]
+                u_imag = learned_imag[:, j:j + 2]
+                v_real = gt_real[:, j:j + 2]
+                v_imag = gt_imag[:, j:j + 2]
 
-            # Real eigenvalue: single real eigenvector
-            u_real = learned_real[:, j]
-            u_imag = learned_imag[:, j]
-            v_real = gt_real[:, j]
-            v_imag = gt_imag[:, j]
+                inner_real = jnp.einsum('ij,ik->jk', u_real, v_real) + jnp.einsum('ij,ik->jk', u_imag, v_imag)
+                inner_imag = jnp.einsum('ij,ik->jk', u_real, v_imag) - jnp.einsum('ij,ik->jk', u_imag, v_real)
 
-            # Standard complex inner product (with conjugate): <u, v> = conj(u)^T v
-            # Real part: u_real^T v_real + u_imag^T v_imag
-            # Imag part: u_real^T v_imag - u_imag^T v_real
-            inner_real = jnp.dot(u_real, v_real) + jnp.dot(u_imag, v_imag)
-            inner_imag = jnp.dot(u_real, v_imag) - jnp.dot(u_imag, v_real)
+                u_norm = jnp.sqrt(jnp.einsum('ij,ij->j', u_real, u_real) + jnp.einsum('ij,ij->j', u_imag, u_imag)).reshape(-1, 1)
+                v_norm = jnp.sqrt(jnp.einsum('ij,ij->j', v_real, v_real) + jnp.einsum('ij,ij->j', v_imag, v_imag)).reshape(1, -1)
 
-            # Magnitudes: ||u|| = sqrt(u_real^T u_real + u_imag^T u_imag)
-            u_norm = jnp.sqrt(jnp.dot(u_real, u_real) + jnp.dot(u_imag, u_imag))
-            v_norm = jnp.sqrt(jnp.dot(v_real, v_real) + jnp.dot(v_imag, v_imag))
+                cos_real = inner_real / (u_norm * v_norm + 1e-10)
+                cos_imag = inner_imag / (u_norm * v_norm + 1e-10)
 
-            # Complex cosine similarity
-            cos_real = inner_real / (u_norm * v_norm + 1e-10)
-            cos_imag = inner_imag / (u_norm * v_norm + 1e-10)
+                abs_cos = (cos_real ** 2 + cos_imag ** 2).sum(axis=1) ** 0.5
 
-            # Take absolute value of real part
-            abs_cos_real = (cos_real**2 + cos_imag**2)**0.5
+                similarities[f'{prefix}cosine_sim_{j}'] = float(abs_cos[0])
+                similarities[f'{prefix}cosine_sim_{j + 1}'] = float(abs_cos[1])
+                cosine_sims.append(float(abs_cos[0]))
+                cosine_sims.append(float(abs_cos[1]))
 
-            sim = float(abs_cos_real)
-            similarities[f'{prefix}cosine_sim_{j}'] = sim
-            cosine_sims.append(sim)
+                j += 2
 
-            j += 1
+            else:
+                # Single real eigenvector.
+                u_real = learned_real[:, j]
+                u_imag = learned_imag[:, j]
+                v_real = gt_real[:, j]
+                v_imag = gt_imag[:, j]
+
+                inner_real = jnp.dot(u_real, v_real) + jnp.dot(u_imag, v_imag)
+                inner_imag = jnp.dot(u_real, v_imag) - jnp.dot(u_imag, v_real)
+
+                u_norm = jnp.sqrt(jnp.dot(u_real, u_real) + jnp.dot(u_imag, u_imag))
+                v_norm = jnp.sqrt(jnp.dot(v_real, v_real) + jnp.dot(v_imag, v_imag))
+
+                cos_real = inner_real / (u_norm * v_norm + 1e-10)
+                cos_imag = inner_imag / (u_norm * v_norm + 1e-10)
+
+                sim = float((cos_real ** 2 + cos_imag ** 2) ** 0.5)
+                similarities[f'{prefix}cosine_sim_{j}'] = sim
+                cosine_sims.append(sim)
+
+                j += 1
 
     # Average across all components
     similarities[f'{prefix}cosine_sim_avg'] = float(np.mean(cosine_sims))
