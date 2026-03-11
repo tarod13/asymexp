@@ -5,11 +5,11 @@ from src.config.shared import SharedArgs
 @dataclass
 class AlloExtArgs(SharedArgs):
     # Encoder optimizer
-    learning_rate: float = 0.0003
+    learning_rate: float = 0.001
 
     # Barrier (quadratic penalty)
-    barrier_initial_val: float = 0.5      # Initial barrier coefficient
-    max_barrier_coefs: float = 2.0        # Cap on barrier coefficient
+    barrier_initial_val: float = 2.0      # Initial barrier coefficient
+    max_barrier_coefs: float = 10000.0    # Cap on barrier coefficient
     lr_barrier_coefs: float = 1.0         # Barrier growth rate (applied to mean positive quad error)
     min_barrier_coefs: float = 0.0        # Floor on barrier coefficient
 
