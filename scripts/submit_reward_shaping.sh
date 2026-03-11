@@ -13,11 +13,11 @@
 #       --model_dir     ./results/file/<complex_run> \
 #       --allo_model_dir ./results/file/<allo_run>  \
 #       --output_dir    ./results/file/<complex_run>/reward_shaping \
-#       [--num_seeds 5] [--num_episodes 30000] [--max_steps 500] \
+#       [--num_seeds 100] [--num_episodes 60000] [--max_steps 200] \
 #       [--shaping_coef 0.1] [--gamma_rl 0.99] [--lr 0.1] \
-#       [--epsilon 0.1] [--log_interval 500] [--eval_seed 0] \
-#       [--num_eval_episodes 30] [--min_goal_distance 0] \
-#       [--start_state "x,y"]
+#       [--epsilon 0.5] [--log_interval 500] [--eval_seed 0] \
+#       [--num_eval_episodes 30] [--min_goal_distance 8] \
+#       [--start_state "1,1"] [--num_eigenvectors 8]
 #
 # When --allo_model_dir is omitted, only the baseline and complex conditions
 # are run (NUM_METHODS=2, task IDs 0..2*num_seeds-1).
@@ -31,18 +31,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODEL_DIR=""
 ALLO_MODEL_DIR=""
 OUTPUT_DIR=""
-NUM_SEEDS=5
-NUM_EPISODES=30000
-MAX_STEPS=500
+NUM_SEEDS=100
+NUM_EPISODES=60000
+MAX_STEPS=200
 SHAPING_COEF=0.1
 GAMMA_RL=0.99
 LR=0.1
-EPSILON=0.1
+EPSILON=0.5
 LOG_INTERVAL=500
 EVAL_SEED=0
 NUM_EVAL_EPISODES=30
-MIN_GOAL_DISTANCE=0
-START_STATE=""
+MIN_GOAL_DISTANCE=8
+START_STATE="1,1"
+NUM_EIGENVECTORS=""
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -62,6 +63,7 @@ while [[ $# -gt 0 ]]; do
         --num_eval_episodes)  NUM_EVAL_EPISODES="$2";  shift 2 ;;
         --min_goal_distance)  MIN_GOAL_DISTANCE="$2";  shift 2 ;;
         --start_state)        START_STATE="$2";        shift 2 ;;
+        --num_eigenvectors)   NUM_EIGENVECTORS="$2";   shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -102,7 +104,7 @@ echo "========================================"
 export MODEL_DIR ALLO_MODEL_DIR OUTPUT_DIR
 export NUM_SEEDS NUM_METHODS NUM_EPISODES MAX_STEPS
 export SHAPING_COEF GAMMA_RL LR EPSILON LOG_INTERVAL EVAL_SEED NUM_EVAL_EPISODES
-export MIN_GOAL_DISTANCE START_STATE
+export MIN_GOAL_DISTANCE START_STATE NUM_EIGENVECTORS
 
 mkdir -p logs
 mkdir -p "${OUTPUT_DIR}/partial"

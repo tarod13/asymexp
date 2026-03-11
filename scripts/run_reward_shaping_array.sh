@@ -23,11 +23,11 @@
 #   Required : MODEL_DIR, OUTPUT_DIR, NUM_SEEDS, NUM_METHODS
 #   Q-learning: NUM_EPISODES, MAX_STEPS, SHAPING_COEF, GAMMA_RL, LR,
 #               EPSILON, LOG_INTERVAL, EVAL_SEED, NUM_EVAL_EPISODES
-#   Optional  : ALLO_MODEL_DIR, MIN_GOAL_DISTANCE, START_STATE
+#   Optional  : ALLO_MODEL_DIR, MIN_GOAL_DISTANCE, START_STATE, NUM_EIGENVECTORS
 #
 # Usage
 # -----
-#   sbatch --array=0-14 --export=ALL scripts/run_reward_shaping_array.sh
+#   sbatch --array=0-199 --export=ALL scripts/run_reward_shaping_array.sh
 #   bash   scripts/run_reward_shaping_array.sh <task_id>   # local single run
 # =============================================================================
 
@@ -47,19 +47,20 @@ export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads
 
 # ── Defaults (overridden by exported env vars from submit_reward_shaping.sh) ──
 ENV="${ENV:-GridRoom-4-Doors}"
-NUM_SEEDS="${NUM_SEEDS:-5}"
+NUM_SEEDS="${NUM_SEEDS:-100}"
 NUM_METHODS="${NUM_METHODS:-3}"
-NUM_EPISODES="${NUM_EPISODES:-30000}"
-MAX_STEPS="${MAX_STEPS:-500}"
+NUM_EPISODES="${NUM_EPISODES:-60000}"
+MAX_STEPS="${MAX_STEPS:-200}"
 SHAPING_COEF="${SHAPING_COEF:-0.1}"
 GAMMA_RL="${GAMMA_RL:-0.99}"
 LR="${LR:-0.1}"
-EPSILON="${EPSILON:-0.1}"
+EPSILON="${EPSILON:-0.5}"
 LOG_INTERVAL="${LOG_INTERVAL:-500}"
 EVAL_SEED="${EVAL_SEED:-0}"
 NUM_EVAL_EPISODES="${NUM_EVAL_EPISODES:-30}"
-MIN_GOAL_DISTANCE="${MIN_GOAL_DISTANCE:-0}"
-START_STATE="${START_STATE:-}"
+MIN_GOAL_DISTANCE="${MIN_GOAL_DISTANCE:-8}"
+START_STATE="${START_STATE:-1,1}"
+NUM_EIGENVECTORS="${NUM_EIGENVECTORS:-}"
 
 # ── Decode (method, seed) from task ID ───────────────────────────────────────
 method_idx=$(( JOB_ID / NUM_SEEDS ))
@@ -112,6 +113,10 @@ fi
 
 if [ -n "${START_STATE:-}" ]; then
     CMD+=(--start_state "$START_STATE")
+fi
+
+if [ -n "${NUM_EIGENVECTORS:-}" ]; then
+    CMD+=(--num_eigenvectors "$NUM_EIGENVECTORS")
 fi
 
 "${CMD[@]}"
