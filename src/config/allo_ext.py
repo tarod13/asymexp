@@ -4,6 +4,11 @@ from src.config.shared import SharedArgs
 
 @dataclass
 class AlloExtArgs(SharedArgs):
+    # Data collection (override SharedArgs defaults to match al reference: 200k samples, 50-step episodes)
+    num_envs: int = 4000
+    num_steps: int = 50
+    max_episode_length: int = 50
+
     # Encoder optimizer
     learning_rate: float = 0.001
 
