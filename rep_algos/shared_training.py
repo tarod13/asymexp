@@ -216,11 +216,12 @@ def learn_eigenvectors(args, learner_module, method):
             sampling_probs, data_env, replay_buffer, transition_matrix = \
                 collect_data_and_compute_eigenvectors(env, args)
 
-        # For ALLO, the ground truth is eigenvectors of L + D^{-1}L^T D
+        # For ALLO (without sym_eig), the ground truth is eigenvectors of L + D^{-1}L^T D
         # (self-adjoint w.r.t. the D-weighted inner product, real eigenvalues/eigenvectors).
+        # With sym_eig=True, ground truth uses eigh on L directly (matching laplacian_dual_dynamics).
         # For all other algorithms, the ground truth uses L directly.
         sym_eig = getattr(args, 'sym_eig', False)
-        if method == "allo":
+        if method == "allo" and not sym_eig:
             D = jnp.diag(sampling_probs)
             D_inv = jnp.diag(1.0 / sampling_probs)
             gt_matrix = laplacian_matrix + D_inv @ laplacian_matrix.T @ D
@@ -229,7 +230,6 @@ def learn_eigenvectors(args, learner_module, method):
                 gt_matrix,
                 k=num_gt_eigenvectors,
                 ascending=True,
-                sym_eig=sym_eig,
             )
             gt_eigenvalues_real = gt_eigendecomp['eigenvalues_real']
             gt_eigenvalues_imag = gt_eigendecomp['eigenvalues_imag']
@@ -286,11 +286,13 @@ def learn_eigenvectors(args, learner_module, method):
             w_eigendecomp, w_sampling_probs, w_laplacian = compute_eigenvectors_for_fixed_wind(
                 data_env, float(w), args
             )
-            if method == "allo":
+            if method == "allo" and not sym_eig:
                 D_w    = jnp.diag(w_sampling_probs)
                 D_inv_w = jnp.diag(1.0 / w_sampling_probs)
                 gt_matrix_w = w_laplacian + D_inv_w @ w_laplacian.T @ D_w
-                w_eigendecomp = compute_eigendecomposition(gt_matrix_w, k=num_gt_eigenvectors, ascending=True, sym_eig=sym_eig)
+                w_eigendecomp = compute_eigendecomposition(gt_matrix_w, k=num_gt_eigenvectors, ascending=True)
+            elif method == "allo" and sym_eig:
+                w_eigendecomp = compute_eigendecomposition(w_laplacian, k=num_gt_eigenvectors, ascending=True, sym_eig=True)
             per_wind_gt.append((float(w), w_eigendecomp, w_sampling_probs))
             print("done")
         print("Per-wind GT computation complete.")
