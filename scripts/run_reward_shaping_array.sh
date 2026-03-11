@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
-#SBATCH --time=6:00:00
+#SBATCH --time=1:00:00
 #SBATCH --output=logs/rs_qlearn_%A_%a.out
 #SBATCH --error=logs/rs_qlearn_%A_%a.err
 
