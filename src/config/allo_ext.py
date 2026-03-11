@@ -23,6 +23,9 @@ class AlloExtArgs(SharedArgs):
     error_update_rate: float = 1.0        # EMA rate for linear errors (1.0 = no smoothing)
     q_error_update_rate: float = 0.1      # EMA rate for quadratic errors
 
+    # Ground truth eigenvector computation
+    sym_eig: bool = False  # If True, use eigh (symmetric solver) for GT eigenvectors; imaginary parts are set to 0
+
     # Graph perturbation (kept for compatibility, default off)
     graph_epsilon: float = 0.01
     graph_variance_scale: float = 0.1

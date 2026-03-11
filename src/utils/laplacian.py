@@ -177,20 +177,22 @@ def compute_eigendecomposition(
     transition_matrix: jnp.ndarray,
     k: Optional[int] = None,
     sort_by_magnitude: bool = True,
-    ascending: bool = False
+    ascending: bool = False,
+    sym_eig: bool = False,
 ) -> Dict[str, jnp.ndarray]:
     """
-    Compute eigendecomposition of a non-symmetric matrix.
+    Compute eigendecomposition of a matrix.
 
     For non-symmetric matrices, eigenvalues and eigenvectors can be complex.
     Returns both left and right eigenvectors.
 
     Args:
-        transition_matrix: Shape [num_states, num_states], non-symmetric
+        transition_matrix: Shape [num_states, num_states]
         k: Number of eigenvalues/vectors to keep (None = keep all)
         sort_by_magnitude: If True, sort by magnitude of eigenvalues
         ascending: If True, sort in ascending order (smallest first, for Laplacians).
                    If False, sort in descending order (largest first, for transition matrices).
+        sym_eig: If True, use eigh (assumes symmetric matrix); imaginary parts are set to zero.
 
     Returns:
         Dictionary containing:
@@ -198,12 +200,47 @@ def compute_eigendecomposition(
             - right_eigenvectors: Shape [num_states, k] (complex, column vectors)
             - left_eigenvectors: Shape [num_states, k] (complex, column vectors)
             - eigenvalues_real: Real part of eigenvalues
-            - eigenvalues_imag: Imaginary part of eigenvalues
+            - eigenvalues_imag: Imaginary part of eigenvalues (zeros when sym_eig=True)
             - right_eigenvectors_real: Real part of right eigenvectors [num_states, k]
-            - right_eigenvectors_imag: Imaginary part of right eigenvectors [num_states, k]
+            - right_eigenvectors_imag: Imaginary part of right eigenvectors [num_states, k] (zeros when sym_eig=True)
             - left_eigenvectors_real: Real part of left eigenvectors [num_states, k]
-            - left_eigenvectors_imag: Imaginary part of left eigenvectors [num_states, k]
+            - left_eigenvectors_imag: Imaginary part of left eigenvectors [num_states, k] (zeros when sym_eig=True)
     """
+    if sym_eig:
+        # eigh assumes symmetry; returns real eigenvalues sorted ascending
+        eigenvalues, right_eigenvectors = jnp.linalg.eigh(transition_matrix)
+        left_eigenvectors = right_eigenvectors
+
+        # Sort by magnitude if requested (eigh already sorts ascending by value)
+        if sort_by_magnitude:
+            magnitudes = jnp.abs(eigenvalues)
+            if ascending:
+                sorted_indices = jnp.argsort(magnitudes)
+            else:
+                sorted_indices = jnp.argsort(-magnitudes)
+            eigenvalues = eigenvalues[sorted_indices]
+            right_eigenvectors = right_eigenvectors[:, sorted_indices]
+            left_eigenvectors = left_eigenvectors[:, sorted_indices]
+
+        if k is not None:
+            eigenvalues = eigenvalues[:k]
+            right_eigenvectors = right_eigenvectors[:, :k]
+            left_eigenvectors = left_eigenvectors[:, :k]
+
+        zeros = jnp.zeros_like(eigenvalues)
+        zeros_vecs = jnp.zeros_like(right_eigenvectors)
+        return {
+            "eigenvalues": eigenvalues.astype(jnp.complex64),
+            "right_eigenvectors": right_eigenvectors.astype(jnp.complex64),
+            "left_eigenvectors": left_eigenvectors.astype(jnp.complex64),
+            "eigenvalues_real": eigenvalues,
+            "eigenvalues_imag": zeros,
+            "right_eigenvectors_real": right_eigenvectors,
+            "right_eigenvectors_imag": zeros_vecs,
+            "left_eigenvectors_real": left_eigenvectors,
+            "left_eigenvectors_imag": zeros_vecs,
+        }
+
     # Compute right eigendecomposition
     # jnp.linalg.eig returns (eigenvalues, right_eigenvectors)
     eigenvalues, right_eigenvectors = jnp.linalg.eig(transition_matrix)
@@ -214,16 +251,16 @@ def compute_eigendecomposition(
 
     # Match left eigenvectors to right eigenvectors
     cross_products = jnp.einsum('ij,ik->jk', left_eigenvectors, right_eigenvectors)
-    
+
     # For each right eigenvector (column j), find the best matching left eigenvector (row i)
     best_left_indices = jnp.argmax(jnp.abs(cross_products), axis=0)
-    
+
     # Reorder left eigenvectors to match right eigenvectors
     left_eigenvectors = left_eigenvectors[:, best_left_indices]
-    
+
     # Normalize left eigenvectors
     dot_products = cross_products[best_left_indices, jnp.arange(cross_products.shape[1])]
-    
+
     # Scale left vectors by 1/dot_product
     left_eigenvectors = left_eigenvectors / dot_products[None, :]
 
