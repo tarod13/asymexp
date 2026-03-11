@@ -838,9 +838,11 @@ def learn_eigenvectors(args, learner_module, method):
                     sim_str += f", wind_right_sim={metrics_dict['wind/right_cosine_sim_avg']:.4f}"
                     if 'wind/left_cosine_sim_avg' in metrics_dict:
                         sim_str = f"wind_left_sim={metrics_dict['wind/left_cosine_sim_avg']:.4f}, " + sim_str
+                barrier_coef = metrics_dict.get('barrier_coef', None)
+                barrier_str = f", barrier_coef={barrier_coef:.4f}" if barrier_coef is not None else ""
                 print(f"Step {gradient_step}: total_loss={total_loss.item():.4f}, "
                         f"graph_loss={graph_loss:.4f}, clf_loss={clf_loss:.4f}, "
-                        f"chirality_loss={chirality_loss:.4f}, "
+                        f"chirality_loss={chirality_loss:.4f}{barrier_str}, "
                       f"{sim_str}")
                 if per_wind_gt:
                     per_wind_right_strs = [
