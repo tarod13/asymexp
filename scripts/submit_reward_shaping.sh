@@ -1,4 +1,13 @@
 #!/bin/bash
+#SBATCH --job-name=rs_submit
+#SBATCH --account=aip-machado
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=256M
+#SBATCH --time=0:05:00
+#SBATCH --output=logs/rs_submit_%j.out
+#SBATCH --error=logs/rs_submit_%j.err
 # =============================================================================
 # Orchestrate distributed Q-learning reward-shaping jobs.
 #
