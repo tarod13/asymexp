@@ -108,6 +108,12 @@ def learn_eigenvectors(args, learner_module, method):
     # Check if learner has skip_conjugates setting
     skip_conjugates = getattr(learner_module, 'get_skip_conjugates', lambda: False)()
 
+    # Check if learner provides a custom eigenvalue extractor (e.g. disentangled parameterization)
+    _get_eigenvalues = getattr(
+        learner_module, 'get_eigenvalues',
+        lambda params: (params['lambda_real'], params['lambda_imag'])
+    )
+
     # Check if learner specifies number of ground truth eigenvectors
     get_num_gt = getattr(learner_module, 'get_num_gt_eigenvectors', None)
     num_gt_eigenvectors = get_num_gt(args) if get_num_gt else args.num_eigenvector_pairs
@@ -750,13 +756,14 @@ def learn_eigenvectors(args, learner_module, method):
             )
 
             # Compute hitting times for learned eigenvectors and ground truth
+            _eig_real, _eig_imag = _get_eigenvalues(encoder_state.params)
             hitting_times = compute_hitting_times_from_eigenvectors(
                 left_real=features_dict['left_real'],
                 left_imag=features_dict['left_imag'],
                 right_real=features_dict['right_real'],
                 right_imag=features_dict['right_imag'],
-                eigenvalues_real=encoder_state.params['lambda_real'],
-                eigenvalues_imag=encoder_state.params['lambda_imag'],
+                eigenvalues_real=_eig_real,
+                eigenvalues_imag=_eig_imag,
                 gamma=args.gamma,
                 delta=args.delta,
                 eigenvalue_type='kernel',
@@ -1069,13 +1076,14 @@ def learn_eigenvectors(args, learner_module, method):
     print("Generating hitting times visualizations...")
 
     # Compute final hitting times from learned eigenvectors
+    _final_eig_real, _final_eig_imag = _get_eigenvalues(encoder_state.params)
     final_hitting_times = compute_hitting_times_from_eigenvectors(
         left_real=final_features_dict['left_real'],
         left_imag=final_features_dict['left_imag'],
         right_real=final_features_dict['right_real'],
         right_imag=final_features_dict['right_imag'],
-        eigenvalues_real=encoder_state.params['lambda_real'],
-        eigenvalues_imag=encoder_state.params['lambda_imag'],
+        eigenvalues_real=_final_eig_real,
+        eigenvalues_imag=_final_eig_imag,
         gamma=args.gamma,
         delta=args.delta,
         eigenvalue_type='kernel',
