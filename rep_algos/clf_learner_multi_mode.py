@@ -37,11 +37,23 @@ def init_params(encoder_initial_params, args):
     k = args.num_eigenvector_pairs
     params = {
         'encoder': encoder_initial_params,
-
-        # EMA estimates for eigenvalues (always needed)
-        'lambda_real': jnp.ones((k,)),
-        'lambda_imag': jnp.zeros((k,)),
     }
+
+    # EMA estimates for eigenvalues
+    if args.disentangle_eigenvalues:
+        # Separate eigenvalue estimates for x (right) and y (left) eigenvectors
+        params.update({
+            'lambda_x_real': jnp.ones((k,)),
+            'lambda_x_imag': jnp.zeros((k,)),
+            'lambda_y_real': jnp.ones((k,)),
+            'lambda_y_imag': jnp.zeros((k,)),
+        })
+    else:
+        # Shared eigenvalue estimate (averaged from x and y Rayleigh quotients)
+        params.update({
+            'lambda_real': jnp.ones((k,)),
+            'lambda_imag': jnp.zeros((k,)),
+        })
 
     # Add EMA constraint estimators only for EMA mode
     if args.constraint_mode == "ema":
@@ -63,16 +75,31 @@ def get_optimizer_masks(args):
     Returns:
         Tuple of (encoder_mask, other_mask)
     """
-    encoder_mask = {
-        'encoder': True,
-        'lambda_real': False,
-        'lambda_imag': False,
-    }
-    other_mask = {
-        'encoder': False,
-        'lambda_real': True,
-        'lambda_imag': True,
-    }
+    encoder_mask = {'encoder': True}
+    other_mask = {'encoder': False}
+
+    if args.disentangle_eigenvalues:
+        encoder_mask.update({
+            'lambda_x_real': False,
+            'lambda_x_imag': False,
+            'lambda_y_real': False,
+            'lambda_y_imag': False,
+        })
+        other_mask.update({
+            'lambda_x_real': True,
+            'lambda_x_imag': True,
+            'lambda_y_real': True,
+            'lambda_y_imag': True,
+        })
+    else:
+        encoder_mask.update({
+            'lambda_real': False,
+            'lambda_imag': False,
+        })
+        other_mask.update({
+            'lambda_real': True,
+            'lambda_imag': True,
+        })
 
     # Add EMA masks only for EMA mode
     if args.constraint_mode == "ema":
@@ -158,35 +185,77 @@ def create_update_function(encoder, args):
             # ----------------------------------------------------------------
             # 2. Extract Parameters
             # ----------------------------------------------------------------
-            ema_lambda_r = params['lambda_real'].reshape(1, -1)
-            ema_lambda_i = params['lambda_imag'].reshape(1, -1)
+            if args.disentangle_eigenvalues:
+                ema_lambda_x_r = params['lambda_x_real'].reshape(1, -1)
+                ema_lambda_x_i = params['lambda_x_imag'].reshape(1, -1)
+                ema_lambda_y_r = params['lambda_y_real'].reshape(1, -1)
+                ema_lambda_y_i = params['lambda_y_imag'].reshape(1, -1)
+            else:
+                ema_lambda_r = params['lambda_real'].reshape(1, -1)
+                ema_lambda_i = params['lambda_imag'].reshape(1, -1)
+                ema_lambda_x_r = ema_lambda_r
+                ema_lambda_x_i = ema_lambda_i
+                ema_lambda_y_r = ema_lambda_r
+                ema_lambda_y_i = ema_lambda_i
 
             # ----------------------------------------------------------------
             # 3. Update Lambda (Eigenvalue) Estimators
             # ----------------------------------------------------------------
-            
-            # Compute unnormalized Rayleigh quotients for x and y (Shape: (1,k))
-            lambda_x_r = ip(x_r, next_x_r) + ip(x_i, next_x_i)
-            lambda_x_i = ip(x_r, next_x_i) - ip(x_i, next_x_r)
-            lambda_y_r = ip(y_r, next_y_r) + ip(y_i, next_y_i)
-            lambda_y_i = ip(y_r, next_y_i) - ip(y_i, next_y_r)
 
-            # Compute new lambda estimates by averaging x and y contributions
-            new_lambda_real = 0.5 * (lambda_x_r + lambda_y_r)
-            new_lambda_imag = 0.5 * (lambda_x_i - lambda_y_i)
-            
+            # Compute norms needed for optional normalization (Shape: (1,k))
+            norm_x_sq_est = ip(x_r, x_r) + ip(x_i, x_i)
+            norm_y_sq_est = ip(y_r, y_r) + ip(y_i, y_i)
+
+            # Compute Rayleigh quotient numerators for x and y (Shape: (1,k))
+            rq_x_r = ip(x_r, next_x_r) + ip(x_i, next_x_i)
+            rq_x_i = ip(x_r, next_x_i) - ip(x_i, next_x_r)
+            rq_y_r = ip(y_r, next_y_r) + ip(y_i, next_y_i)
+            rq_y_i = ip(y_r, next_y_i) - ip(y_i, next_y_r)
+
+            if args.normalize_eigenvalue_targets:
+                # Normalize by (clipped) norms to get proper Rayleigh quotients
+                norm_x_clip = jnp.maximum(norm_x_sq_est, 1e-6)
+                norm_y_clip = jnp.maximum(norm_y_sq_est, 1e-6)
+                lambda_x_r = rq_x_r / norm_x_clip
+                lambda_x_i = rq_x_i / norm_x_clip
+                lambda_y_r = rq_y_r / norm_y_clip
+                lambda_y_i = rq_y_i / norm_y_clip
+            else:
+                lambda_x_r = rq_x_r
+                lambda_x_i = rq_x_i
+                lambda_y_r = rq_y_r
+                lambda_y_i = rq_y_i
+
             # EMA loss for eigenvalues
-            lambda_loss_real = ((sg(new_lambda_real) - ema_lambda_r) ** 2).sum()
-            lambda_loss_imag = ((sg(new_lambda_imag) - ema_lambda_i) ** 2).sum()
-            lambda_loss = lambda_loss_real + lambda_loss_imag
+            if args.disentangle_eigenvalues:
+                # Separate EMA losses for x and y eigenvalue estimates.
+                # Both lambda_x_i and lambda_y_i converge to +λ_i: the Hermitian
+                # Rayleigh quotient for left eigenvectors satisfies
+                # <y,Py>/<y,y> = <P*y,y>/<y,y> = <λ̄y,y>/<y,y> = λ,
+                # so both x and y quotients estimate the same eigenvalue λ.
+                lambda_loss = (
+                    ((sg(lambda_x_r) - ema_lambda_x_r) ** 2).sum()
+                    + ((sg(lambda_x_i) - ema_lambda_x_i) ** 2).sum()
+                    + ((sg(lambda_y_r) - ema_lambda_y_r) ** 2).sum()
+                    + ((sg(lambda_y_i) - ema_lambda_y_i) ** 2).sum()
+                )
+            else:
+                # Shared EMA loss: average x and y Rayleigh quotients into one estimate.
+                # Both converge to +λ_i (see above), so a plain mean is correct.
+                new_lambda_real = 0.5 * (lambda_x_r + lambda_y_r)
+                new_lambda_imag = 0.5 * (lambda_x_i + lambda_y_i)
+                lambda_loss = (
+                    ((sg(new_lambda_real) - ema_lambda_r) ** 2).sum()
+                    + ((sg(new_lambda_imag) - ema_lambda_i) ** 2).sum()
+                )
 
             # ----------------------------------------------------------------
             # 4. Compute Constraints & Update EMA Estimators
             # ----------------------------------------------------------------
-            # Norms
-            norm_x_sq = ip(x_r, x_r) + ip(x_i, x_i)
+            # Norms (reuse batch-1 norms already computed in section 3)
+            norm_x_sq = norm_x_sq_est
+            norm_y_sq = norm_y_sq_est
             norm_x2_sq = ip(x2_r, x2_r) + ip(x2_i, x2_i)
-            norm_y_sq = ip(y_r, y_r) + ip(y_i, y_i)
             norm_y2_sq = ip(y2_r, y2_r) + ip(y2_i, y2_i)
             next_norm_y_sq = ip(next_y_r, next_y_r) + ip(next_y_i, next_y_i)
             next_norm_y2_sq = ip(next_y2_r, next_y2_r) + ip(next_y2_i, next_y2_i)
@@ -243,16 +312,17 @@ def create_update_function(encoder, args):
                 loss_corr_xy_real + loss_corr_xy_imag
             )
 
-             # ----------------------------------------------------------------
+            # ----------------------------------------------------------------
             # 5. Graph Loss (Dynamics)
             # ----------------------------------------------------------------
-            f_x_real = - next_x_r + ema_lambda_r * x_r - ema_lambda_i * x_i
-            f_x_imag = - next_x_i + ema_lambda_i * x_r + ema_lambda_r * x_i
+            # Use separate lambda estimates for x and y when disentangled
+            f_x_real = - next_x_r + ema_lambda_x_r * x_r - ema_lambda_x_i * x_i
+            f_x_imag = - next_x_i + ema_lambda_x_i * x_r + ema_lambda_x_r * x_i
 
             f_y_0_real = - y_r
             f_y_0_imag = - y_i
-            f_y_residual_real = ema_lambda_r * y_r + ema_lambda_i * y_i
-            f_y_residual_imag = -ema_lambda_i * y_r + ema_lambda_r * y_i
+            f_y_residual_real = ema_lambda_y_r * y_r + ema_lambda_y_i * y_i
+            f_y_residual_imag = -ema_lambda_y_i * y_r + ema_lambda_y_r * y_i
 
             graph_loss_x_real = ip(x_r, sg(f_x_real))
             graph_loss_x_imag = ip(x_i, sg(f_x_imag))
@@ -544,8 +614,10 @@ def create_update_function(encoder, args):
                 'graph_loss_y_imag': graph_loss_y_imag.sum(),
                 'clf_loss_y_real': clf_loss_y_r,
                 'clf_loss_y_imag': clf_loss_y_i,
-                'lambda_x_real': ema_lambda_r.mean(),
-                'lambda_x_imag': ema_lambda_i.mean(),
+                'ema_lambda_x_real': ema_lambda_x_r.mean(),
+                'ema_lambda_x_imag': ema_lambda_x_i.mean(),
+                'ema_lambda_y_real': ema_lambda_y_r.mean(),
+                'ema_lambda_y_imag': ema_lambda_y_i.mean(),
                 'new_lambda_x_real': lambda_x_r.mean(),
                 'new_lambda_x_imag': lambda_x_i.mean(),
                 'new_lambda_y_real': lambda_y_r.mean(),
@@ -590,9 +662,19 @@ def create_update_function(encoder, args):
 
             clipped_grads = {
                 'encoder': jax.tree_util.tree_map(lambda g: g * encoder_clip_factor, grads['encoder']),
-                'lambda_real': jnp.clip(grads['lambda_real'], -1.0, 1.0),
-                'lambda_imag': jnp.clip(grads['lambda_imag'], -1.0, 1.0),
             }
+            if args.disentangle_eigenvalues:
+                clipped_grads.update({
+                    'lambda_x_real': jnp.clip(grads['lambda_x_real'], -1.0, 1.0),
+                    'lambda_x_imag': jnp.clip(grads['lambda_x_imag'], -1.0, 1.0),
+                    'lambda_y_real': jnp.clip(grads['lambda_y_real'], -1.0, 1.0),
+                    'lambda_y_imag': jnp.clip(grads['lambda_y_imag'], -1.0, 1.0),
+                })
+            else:
+                clipped_grads.update({
+                    'lambda_real': jnp.clip(grads['lambda_real'], -1.0, 1.0),
+                    'lambda_imag': jnp.clip(grads['lambda_imag'], -1.0, 1.0),
+                })
 
             # Add EMA gradient clipping only for EMA mode
             if args.constraint_mode == "ema":
@@ -621,6 +703,24 @@ def create_update_function(encoder, args):
         return new_encoder_state, total_loss, aux
 
     return update_encoder
+
+
+def get_eigenvalues(params):
+    """
+    Extract eigenvalue estimates from params.
+
+    Supports both shared (disentangle_eigenvalues=False) and disentangled
+    (disentangle_eigenvalues=True) parameterizations. When disentangled,
+    returns the average of x and y estimates as the canonical eigenvalue.
+    """
+    if 'lambda_real' in params:
+        return params['lambda_real'], params['lambda_imag']
+    else:
+        # Disentangled: both lambda_x_imag and lambda_y_imag store +λ_i (same convention),
+        # so a simple average is correct for both real and imaginary parts.
+        lambda_real = 0.5 * (params['lambda_x_real'] + params['lambda_y_real'])
+        lambda_imag = 0.5 * (params['lambda_x_imag'] + params['lambda_y_imag'])
+        return lambda_real, lambda_imag
 
 
 # Entry point for running this learner directly

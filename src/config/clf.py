@@ -10,3 +10,5 @@ class ClfArgs(SharedArgs):
     chirality_factor: float = 0.1  # Weight for chirality term
     dual_learning_rate: float = 3e-4  # Learning rate for dual variables (duals_learner)
     barrier: float = 1.0      # Barrier strength for dual norm constraints (duals_learner)
+    disentangle_eigenvalues: bool = False  # Use separate eigenvalue EMA for x and y (vs. shared averaged estimate)
+    normalize_eigenvalue_targets: bool = False  # Normalize Rayleigh quotient targets by state norms before EMA update
