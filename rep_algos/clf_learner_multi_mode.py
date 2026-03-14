@@ -9,8 +9,8 @@ Supports 4 constraint approximation modes:
 
 Supports 2 constraint enforcement methods (args.constraint_enforcement_method):
 - "clf": CLF controller — QP-style correction u = barrier·∇V, loss += ip(feat, sg(u))
-- "barrier": Increasing barrier — direct penalty sg(barrier_coef)·V, with barrier_coef
-              updated externally after each gradient step
+- "barrier": Increasing barrier — direct penalty with per-constraint sg(barrier_coefs)·V,
+              with barrier_coefs updated externally after each gradient step
 
 Usage:
     from rep_algos.shared_training import learn_eigenvectors
@@ -58,7 +58,8 @@ def _compute_lyapunov_terms(
         nabla_V:                  dict with keys x_r, x_i, y_r, y_i,
                                   next_y_r, next_y_i — gradients of V
         constraint_estimator_loss: scalar — EMA tracking loss (non-zero for "ema" mode)
-        V_components:             dict with V_x_norm, V_y_norm, V_xy_phase, V_xy_corr
+        V_components:             dict with V_x_norm, V_y_norm, V_xy_phase,
+                                  V_xy_corr_matrix (shape k×k), norm_x_sq, norm_y_sq
     """
 
     # ------------------------------------------------------------------
@@ -230,11 +231,16 @@ def _compute_lyapunov_terms(
         coef_corr_yx_real_lower_next = next_corr_yx2_real_lower
         coef_corr_yx_imag_lower_next = next_corr_yx2_imag_lower
 
-    V_xy_corr_real = jnp.sum(coef_corr_xy_real_lower_current ** 2, -1).reshape(1, -1) / 2
-    V_xy_corr_imag = jnp.sum(coef_corr_xy_imag_lower_current ** 2, -1).reshape(1, -1) / 2
-    V_yx_corr_real = jnp.sum(coef_corr_yx_real_lower_current ** 2, -1).reshape(1, -1) / 2
-    V_yx_corr_imag = jnp.sum(coef_corr_yx_imag_lower_current ** 2, -1).reshape(1, -1) / 2
-    V_xy_corr = V_xy_corr_real + V_xy_corr_imag + V_yx_corr_real + V_yx_corr_imag
+    # Per-(i,j) correlation penalty matrix (shape k×k, lower-tri only).
+    # Each entry sums the squared real and imaginary parts of both xy and yx
+    # cross-correlations for the same (i,j) pair.
+    V_xy_corr_matrix = (
+        coef_corr_xy_real_lower_current ** 2
+        + coef_corr_xy_imag_lower_current ** 2
+        + coef_corr_yx_real_lower_current ** 2
+        + coef_corr_yx_imag_lower_current ** 2
+    ) / 2
+    V_xy_corr = jnp.sum(V_xy_corr_matrix, -1).reshape(1, -1)
 
     # ------------------------------------------------------------------
     # Assemble V and ∇V
@@ -291,6 +297,7 @@ def _compute_lyapunov_terms(
         'V_x_norm': V_x_norm,
         'V_y_norm': V_y_norm,
         'V_xy_phase': V_xy_phase,
+        'V_xy_corr_matrix': V_xy_corr_matrix,
         'norm_x_sq': norm_x_sq,
         'norm_y_sq': norm_y_sq,
     }
@@ -316,17 +323,19 @@ def _make_clf_enforcement_fn(args):
     """
     lambda_x = args.lambda_x
 
-    def clf_enforcement(V, nabla_V, f_vectors, features, params, ip, sg):
+    def clf_enforcement(V, nabla_V, f_vectors, features, params, ip, sg, V_components):
         """
         Args:
-            V:         shape (1, k)
-            nabla_V:   dict — x_r, x_i, y_r, y_i, next_y_r, next_y_i
-            f_vectors: dict — x_real, x_imag, y_0_real, y_0_imag,
-                               y_res_real, y_res_imag
-            features:  dict — x_r, x_i, y_r, y_i  (batch-1 current)
-            params:    full param dict (unused by CLF enforcement)
-            ip:        weighted inner product fn
-            sg:        stop_gradient alias
+            V:            shape (1, k)
+            nabla_V:      dict — x_r, x_i, y_r, y_i, next_y_r, next_y_i
+            f_vectors:    dict — x_real, x_imag, y_0_real, y_0_imag,
+                                 y_res_real, y_res_imag
+            features:     dict — x_r, x_i, y_r, y_i  (batch-1 current)
+            params:       full param dict (unused by CLF enforcement)
+            ip:           weighted inner product fn
+            sg:           stop_gradient alias
+            V_components: dict — V_x_norm, V_y_norm, V_xy_phase, V_xy_corr_matrix, …
+                          (unused by CLF enforcement; accepted for API compatibility)
         Returns:
             (clf_loss scalar, aux dict)
         """
@@ -398,47 +407,73 @@ def _make_clf_enforcement_fn(args):
 def _make_barrier_enforcement_fn(args):
     """Factory returning the increasing-barrier enforcement function.
 
-    The returned callable applies a direct quadratic penalty:
-        loss += sg(barrier_coef) · V.sum()
+    The returned callable applies a direct quadratic penalty with one
+    independent coefficient per constraint instance:
 
-    barrier_coef is held in params but is stop_grad'd inside the loss so
+        loss += Σ_i  sg(bc['x_norm'][i])   · V_x_norm[i]
+              + Σ_i  sg(bc['y_norm'][i])   · V_y_norm[i]
+              + Σ_i  sg(bc['xy_phase'][i]) · V_xy_phase[i]
+              + Σ_{i>j} sg(bc['xy_corr'][i,j]) · V_xy_corr_matrix[i,j]
+
+    barrier_coefs is held in params but is stop_grad'd inside the loss so
     the optimizer never updates it.  It is instead updated externally after
     each gradient step (see _external_barrier_update).
     """
-    def barrier_enforcement(V, nabla_V, f_vectors, features, params, ip, sg):
+    def barrier_enforcement(V, nabla_V, f_vectors, features, params, ip, sg, V_components):
         """
         Args:
-            V:      shape (1, k)
+            V:            shape (1, k) — total Lyapunov value per eigenvector
+            V_components: dict — must contain V_x_norm (1,k), V_y_norm (1,k),
+                          V_xy_phase (1,k), V_xy_corr_matrix (k,k)
+            params:       must contain 'barrier_coefs': dict with per-constraint
+                          coefficient arrays (x_norm, y_norm, xy_phase, xy_corr)
             (all other args accepted for API compatibility but unused)
-            params: must contain 'barrier_coef': scalar array
         Returns:
             (barrier_loss scalar, aux dict)
         """
-        barrier_coef = params['barrier_coef']
-        barrier_loss = sg(barrier_coef) * V.sum()
+        bc = params['barrier_coefs']
+        V_x_norm        = V_components['V_x_norm']          # shape (1, k)
+        V_y_norm        = V_components['V_y_norm']          # shape (1, k)
+        V_xy_phase      = V_components['V_xy_phase']        # shape (1, k)
+        V_xy_corr_mat   = V_components['V_xy_corr_matrix']  # shape (k, k)
+
+        barrier_loss = (
+            (sg(bc['x_norm']).reshape(1, -1)   * V_x_norm).sum()
+            + (sg(bc['y_norm']).reshape(1, -1) * V_y_norm).sum()
+            + (sg(bc['xy_phase']).reshape(1, -1) * V_xy_phase).sum()
+            + (sg(bc['xy_corr']) * V_xy_corr_mat).sum()
+        )
 
         enforcement_aux = {
             'barrier_loss': barrier_loss,
-            'barrier_coef': barrier_coef,
-            # Expose V_mean so update_encoder can compute the external update
-            'V_mean': V.mean(),
+            # Per-type mean coefficients for logging (scalars)
+            'barrier_coef_x_norm':   bc['x_norm'].mean(),
+            'barrier_coef_y_norm':   bc['y_norm'].mean(),
+            'barrier_coef_xy_phase': bc['xy_phase'].mean(),
+            'barrier_coef_xy_corr':  bc['xy_corr'].mean(),
+            # Per-constraint violation signals for the external update
+            'V_bc_x_norm':   V_x_norm.reshape(-1),   # shape (k,)
+            'V_bc_y_norm':   V_y_norm.reshape(-1),   # shape (k,)
+            'V_bc_xy_phase': V_xy_phase.reshape(-1), # shape (k,)
+            'V_bc_xy_corr':  V_xy_corr_mat,          # shape (k, k)
         }
         return barrier_loss, enforcement_aux
 
     return barrier_enforcement
 
 
-def _external_barrier_update(params, V_mean, args):
-    """Update barrier_coef after the gradient step (called inside update_encoder).
+def _external_barrier_update(params, V_bc_signals, args):
+    """Update barrier_coefs after the gradient step (called inside update_encoder).
 
     Only active when constraint_enforcement_method == "barrier".  Increases
-    barrier_coef whenever mean constraint violation V_mean > 0, mirroring the
-    augmented-Lagrangian update pattern in allo_ext_learner.
+    each per-constraint coefficient whenever its violation signal > 0,
+    mirroring the augmented-Lagrangian update pattern.
 
     Args:
-        params:  post-optimizer param dict (mutable)
-        V_mean:  scalar — mean Lyapunov value from the forward pass
-        args:    training arguments
+        params:        post-optimizer param dict (mutable)
+        V_bc_signals:  dict with keys x_norm (k,), y_norm (k,), xy_phase (k,),
+                       xy_corr (k,k) — per-constraint violation signals
+        args:          training arguments
 
     Returns:
         Updated params dict.
@@ -447,11 +482,13 @@ def _external_barrier_update(params, V_mean, args):
     max_barrier = getattr(args, 'max_barrier_coefs', 10.0)
     lr_barrier  = getattr(args, 'lr_barrier_coefs',  0.01)
 
-    barrier_update = lr_barrier * jnp.maximum(0.0, V_mean)
-    params['barrier_coef'] = jnp.clip(
-        params['barrier_coef'] + barrier_update,
-        min_barrier, max_barrier,
-    )
+    bc = params['barrier_coefs']
+    for key in ('x_norm', 'y_norm', 'xy_phase', 'xy_corr'):
+        bc[key] = jnp.clip(
+            bc[key] + lr_barrier * jnp.maximum(0.0, V_bc_signals[key]),
+            min_barrier, max_barrier,
+        )
+    params['barrier_coefs'] = bc
     return params
 
 
@@ -505,7 +542,12 @@ def init_params(encoder_initial_params, args):
     enforcement_method = getattr(args, 'constraint_enforcement_method', 'clf')
     if enforcement_method == "barrier":
         barrier_init = getattr(args, 'barrier_initial_val', 0.5)
-        params['barrier_coef'] = jnp.array(barrier_init)
+        params['barrier_coefs'] = {
+            'x_norm':   jnp.full((k,), barrier_init),
+            'y_norm':   jnp.full((k,), barrier_init),
+            'xy_phase': jnp.full((k,), barrier_init),
+            'xy_corr':  jnp.full((k, k), barrier_init),
+        }
 
     return params
 
@@ -560,11 +602,13 @@ def get_optimizer_masks(args):
             'corr_xy_imag_ema': True,
         })
 
-    # barrier_coef is managed externally — excluded from optimizer
+    # barrier_coefs is managed externally — excluded from optimizer
     enforcement_method = getattr(args, 'constraint_enforcement_method', 'clf')
     if enforcement_method == "barrier":
-        encoder_mask['barrier_coef'] = False
-        other_mask['barrier_coef'] = True
+        _bc_mask_false = {'x_norm': False, 'y_norm': False, 'xy_phase': False, 'xy_corr': False}
+        _bc_mask_true  = {'x_norm': True,  'y_norm': True,  'xy_phase': True,  'xy_corr': True}
+        encoder_mask['barrier_coefs'] = _bc_mask_false
+        other_mask['barrier_coefs'] = _bc_mask_true
 
     return encoder_mask, other_mask
 
@@ -752,7 +796,7 @@ def create_update_function(encoder, args):
             features = {'x_r': x_r, 'x_i': x_i, 'y_r': y_r, 'y_i': y_i}
 
             enforcement_loss, enforcement_aux = _enforce_constraints(
-                V, nabla_V, f_vectors, features, params, ip, sg,
+                V, nabla_V, f_vectors, features, params, ip, sg, V_components,
             )
 
             # ----------------------------------------------------------------
@@ -838,11 +882,11 @@ def create_update_function(encoder, args):
                     'corr_xy_imag_ema': jnp.clip(grads['corr_xy_imag_ema'], -1.0, 1.0),
                 })
 
-            # barrier_coef is stop_grad'd in the loss — its gradient is always
-            # zero, but we must still include it in the clipped_grads dict to
-            # keep the tree structure consistent with encoder_state.params.
+            # barrier_coefs are stop_grad'd in the loss — their gradients are
+            # always zero, but we must still include them in clipped_grads to
+            # keep the pytree structure consistent with encoder_state.params.
             if enforcement_method == "barrier":
-                clipped_grads['barrier_coef'] = grads['barrier_coef']
+                clipped_grads['barrier_coefs'] = grads['barrier_coefs']
 
             grads = clipped_grads
 
@@ -851,11 +895,19 @@ def create_update_function(encoder, args):
             grads, encoder_state.opt_state, encoder_state.params)
         new_params = optax.apply_updates(encoder_state.params, updates)
 
-        # ── External update for barrier_coef (barrier method only) ──────────
+        # ── External update for barrier_coefs (barrier method only) ─────────
         # Python-level branch: resolved at trace time, invisible to XLA.
         if enforcement_method == "barrier":
-            new_params = _external_barrier_update(new_params, aux['V_mean'], args)
-            aux['barrier_coef'] = new_params['barrier_coef']
+            V_bc_signals = {
+                'x_norm':   aux['V_bc_x_norm'],
+                'y_norm':   aux['V_bc_y_norm'],
+                'xy_phase': aux['V_bc_xy_phase'],
+                'xy_corr':  aux['V_bc_xy_corr'],
+            }
+            new_params = _external_barrier_update(new_params, V_bc_signals, args)
+            # Overwrite aux with post-update coef means for logging
+            for _key in ('x_norm', 'y_norm', 'xy_phase', 'xy_corr'):
+                aux[f'barrier_coef_{_key}'] = new_params['barrier_coefs'][_key].mean()
 
         # Create new state
         new_encoder_state = encoder_state.replace(
