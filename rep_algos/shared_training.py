@@ -789,7 +789,7 @@ def learn_eigenvectors(args, learner_module, method):
                 "sps": int(steps_completed / max(elapsed_time, 1e-6)),  # Steps since start/resume
             }
             for k, v in metrics.items():
-                metrics_dict[k] = float(v.item())
+                metrics_dict[k] = float(jnp.mean(v).item())
 
             # Add cosine similarities to metrics (both left and right)
             for k, v in cosine_sims.items():
@@ -864,7 +864,15 @@ def learn_eigenvectors(args, learner_module, method):
                     sim_str += f", wind_right_sim={metrics_dict['wind/right_cosine_sim_avg']:.4f}"
                     if 'wind/left_cosine_sim_avg' in metrics_dict:
                         sim_str = f"wind_left_sim={metrics_dict['wind/left_cosine_sim_avg']:.4f}, " + sim_str
-                barrier_coef = metrics_dict.get('barrier_coef', None)
+                if 'barrier_coef' in metrics_dict:
+                    # single_barrier method: scalar coef logged directly
+                    barrier_coef = metrics_dict['barrier_coef']
+                else:
+                    # granular_barrier method: display mean across per-type coefs
+                    _bc_keys = ('barrier_coef_x_norm', 'barrier_coef_y_norm',
+                                'barrier_coef_xy_phase', 'barrier_coef_xy_corr')
+                    _bc_vals = [metrics_dict[k] for k in _bc_keys if k in metrics_dict]
+                    barrier_coef = sum(_bc_vals) / len(_bc_vals) if _bc_vals else None
                 barrier_str = f", barrier_coef={barrier_coef:.4f}" if barrier_coef is not None else ""
                 print(f"Step {gradient_step}: total_loss={total_loss.item():.4f}, "
                         f"graph_loss={graph_loss:.4f}, clf_loss={clf_loss:.4f}, "

@@ -47,6 +47,15 @@ class SharedArgs:
     # - "single_batch": Biased with single batch (standard sampling)
     # - "same_episodes": Intermediate bias - two batches from same episodes (special sampling)
 
+    # Constraint enforcement mechanism (selects how constraint violations drive the loss)
+    constraint_enforcement_method: str = "clf"  # Options: "clf", "barrier"
+    # - "clf": CLF controller — computes a QP-style correction u = barrier·∇V and adds ip(feat, sg(u))
+    # - "barrier": Increasing barrier — directly penalises V with a growing coefficient: sg(barrier_coef)·V
+    barrier_initial_val: float = 0.5    # Initial value of barrier_coef (barrier method only)
+    min_barrier_coefs: float = 0.0      # Minimum allowed barrier_coef (barrier method only)
+    max_barrier_coefs: float = 10.0     # Maximum allowed barrier_coef (barrier method only)
+    lr_barrier_coefs: float = 0.01      # Step size for barrier_coef external update (barrier method only)
+
     # Episodic replay buffer
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
 
