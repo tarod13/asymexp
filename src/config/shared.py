@@ -33,6 +33,9 @@ class SharedArgs:
     # Gradient clipping
     use_global_grad_clip: bool = True  # If True, use global norm clipping (original). If False, clip encoder and lambda separately
 
+    # Loss normalization
+    norm_graph_loss: bool = False  # If True, divide each per-eigenvector graph_loss component by its 2-norm (<x_i,x_i> or <y_i,y_i>)
+
     # Sampling / importance-sampling mode
     # "rejection" : rejection sampling to flatten state distribution (no IS weights needed)
     # "weighted"  : sample from buffer as-is, apply IS ratio weights in the loss

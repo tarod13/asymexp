@@ -252,6 +252,7 @@ def normalize_eigenvectors_for_comparison(
     right_real: jnp.ndarray,
     right_imag: jnp.ndarray,
     sampling_probs: jnp.ndarray,
+    apply_left_distribution_scaling: bool = True,
 ) -> Dict[str, jnp.ndarray]:
     """
     Apply normalization transformations to eigenvectors for proper comparison.
@@ -338,8 +339,11 @@ def normalize_eigenvectors_for_comparison(
 
         # Scale each entry by the stationary state distribution
         # This converts from adjoint eigenvectors to true left eigenvectors
-        scaled_left_real = scaled_left_real * sampling_probs
-        scaled_left_imag = scaled_left_imag * sampling_probs
+        # Skipped when sampling_mode == "none" (no IS correction, so left
+        # eigenvectors are not learned under the D-adjoint inner product).
+        if apply_left_distribution_scaling:
+            scaled_left_real = scaled_left_real * sampling_probs
+            scaled_left_imag = scaled_left_imag * sampling_probs
 
         normalized_left_real = normalized_left_real.at[:, i].set(scaled_left_real)
         normalized_left_imag = normalized_left_imag.at[:, i].set(scaled_left_imag)
@@ -366,6 +370,7 @@ def compute_complex_cosine_similarities_with_normalization(
     sampling_probs: jnp.ndarray,
     skip_conjugates: bool = False,
     compute_left: bool = True,
+    apply_left_distribution_scaling: bool = True,
 ) -> Dict[str, float]:
     """
     Compute cosine similarities with proper normalization for adjoint eigenvectors.
@@ -384,6 +389,7 @@ def compute_complex_cosine_similarities_with_normalization(
        - Multiply by the largest component from corresponding right eigenvector
        - Multiply by the norm of the corresponding right eigenvector (before normalization)
        - Scale each entry by the stationary state distribution (to convert from adjoint)
+         (skipped when apply_left_distribution_scaling=False, e.g. sampling_mode="none")
 
     Important: Ground truth eigenvectors are already normalized and should NOT be
     normalized again. We only normalize the learned eigenvectors.
@@ -406,6 +412,8 @@ def compute_complex_cosine_similarities_with_normalization(
         skip_conjugates: If True, use conjugate skipping when matching learned to ground truth.
             This is needed when conjugate eigenvectors are not directly learned but skipped.
             Ground truth should have more eigenvectors than learned (e.g., 2x) to accommodate.
+        apply_left_distribution_scaling: If False, skip the sampling_probs multiplication
+            in the left eigenvector normalization. Should be False when sampling_mode="none".
 
     Returns:
         Dictionary containing cosine similarities for left and right eigenvectors
@@ -416,7 +424,8 @@ def compute_complex_cosine_similarities_with_normalization(
         left_imag=learned_left_imag,
         right_real=learned_right_real,
         right_imag=learned_right_imag,
-        sampling_probs=sampling_probs
+        sampling_probs=sampling_probs,
+        apply_left_distribution_scaling=apply_left_distribution_scaling,
     )
 
     # Select the appropriate cosine similarity function
