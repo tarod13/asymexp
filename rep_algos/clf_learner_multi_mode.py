@@ -228,12 +228,17 @@ def create_update_function(encoder, args):
 
             # EMA loss for eigenvalues
             if args.disentangle_eigenvalues:
-                # Separate EMA losses for x and y eigenvalue estimates
+                # Separate EMA losses for x and y eigenvalue estimates.
+                # Note: lambda_y_i (Rayleigh quotient for y) converges to -λ_i because
+                # left eigenvectors satisfy E[next_y] = λ̄·y.  We negate the y-imaginary
+                # target so that ema_lambda_y_i stores +λ_i (same sign convention as
+                # ema_lambda_x_i), keeping the graph-loss formula (which subtracts the
+                # imaginary part internally) correct for both x and y.
                 lambda_loss = (
                     ((sg(lambda_x_r) - ema_lambda_x_r) ** 2).sum()
                     + ((sg(lambda_x_i) - ema_lambda_x_i) ** 2).sum()
                     + ((sg(lambda_y_r) - ema_lambda_y_r) ** 2).sum()
-                    + ((sg(lambda_y_i) - ema_lambda_y_i) ** 2).sum()
+                    + ((sg(-lambda_y_i) - ema_lambda_y_i) ** 2).sum()  # negate: lambda_y_i → -λ_i
                 )
             else:
                 # Shared EMA loss: average x and y Rayleigh quotients into one estimate
@@ -711,9 +716,10 @@ def get_eigenvalues(params):
     if 'lambda_real' in params:
         return params['lambda_real'], params['lambda_imag']
     else:
-        # Disentangled: average x and y Rayleigh quotient estimates
+        # Disentangled: both lambda_x_imag and lambda_y_imag store +λ_i (same convention),
+        # so a simple average is correct for both real and imaginary parts.
         lambda_real = 0.5 * (params['lambda_x_real'] + params['lambda_y_real'])
-        lambda_imag = 0.5 * (params['lambda_x_imag'] - params['lambda_y_imag'])
+        lambda_imag = 0.5 * (params['lambda_x_imag'] + params['lambda_y_imag'])
         return lambda_real, lambda_imag
 
 
