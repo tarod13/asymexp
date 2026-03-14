@@ -229,21 +229,21 @@ def create_update_function(encoder, args):
             # EMA loss for eigenvalues
             if args.disentangle_eigenvalues:
                 # Separate EMA losses for x and y eigenvalue estimates.
-                # Note: lambda_y_i (Rayleigh quotient for y) converges to -λ_i because
-                # left eigenvectors satisfy E[next_y] = λ̄·y.  We negate the y-imaginary
-                # target so that ema_lambda_y_i stores +λ_i (same sign convention as
-                # ema_lambda_x_i), keeping the graph-loss formula (which subtracts the
-                # imaginary part internally) correct for both x and y.
+                # Both lambda_x_i and lambda_y_i converge to +λ_i: the Hermitian
+                # Rayleigh quotient for left eigenvectors satisfies
+                # <y,Py>/<y,y> = <P*y,y>/<y,y> = <λ̄y,y>/<y,y> = λ,
+                # so both x and y quotients estimate the same eigenvalue λ.
                 lambda_loss = (
                     ((sg(lambda_x_r) - ema_lambda_x_r) ** 2).sum()
                     + ((sg(lambda_x_i) - ema_lambda_x_i) ** 2).sum()
                     + ((sg(lambda_y_r) - ema_lambda_y_r) ** 2).sum()
-                    + ((sg(-lambda_y_i) - ema_lambda_y_i) ** 2).sum()  # negate: lambda_y_i → -λ_i
+                    + ((sg(lambda_y_i) - ema_lambda_y_i) ** 2).sum()
                 )
             else:
-                # Shared EMA loss: average x and y Rayleigh quotients into one estimate
+                # Shared EMA loss: average x and y Rayleigh quotients into one estimate.
+                # Both converge to +λ_i (see above), so a plain mean is correct.
                 new_lambda_real = 0.5 * (lambda_x_r + lambda_y_r)
-                new_lambda_imag = 0.5 * (lambda_x_i - lambda_y_i)
+                new_lambda_imag = 0.5 * (lambda_x_i + lambda_y_i)
                 lambda_loss = (
                     ((sg(new_lambda_real) - ema_lambda_r) ** 2).sum()
                     + ((sg(new_lambda_imag) - ema_lambda_i) ** 2).sum()
