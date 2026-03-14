@@ -226,7 +226,18 @@ def learn_eigenvectors(args, learner_module, method):
         # (self-adjoint w.r.t. the D-weighted inner product, real eigenvalues/eigenvectors).
         # With sym_eig=True, ground truth uses eigh on L directly (matching laplacian_dual_dynamics).
         # For all other algorithms, the ground truth uses L directly.
+        #
+        # When sampling_mode='none' and constraint_enforcement_method='clf', the network
+        # learns left features under the empirical distribution D rather than the uniform
+        # distribution.  Pass D to compute_eigendecomposition so that left eigenvectors are
+        # derived from the D-adjoint D^{-1}L^T D (with normalized, consistently ordered
+        # pairing) rather than from the plain transpose L^T.
         sym_eig = getattr(args, 'sym_eig', False)
+        gt_D = (
+            jnp.diag(sampling_probs)
+            if args.sampling_mode == "none" and args.constraint_enforcement_method == "clf"
+            else None
+        )
         if method == "allo" and not sym_eig:
             D = jnp.diag(sampling_probs)
             D_inv = jnp.diag(1.0 / sampling_probs)
@@ -250,6 +261,7 @@ def learn_eigenvectors(args, learner_module, method):
                 k=num_gt_eigenvectors,
                 ascending=True,
                 sym_eig=sym_eig,
+                D=gt_D,
             )
             gt_eigenvalues_real = gt_eigendecomp['eigenvalues_real']
             gt_eigenvalues_imag = gt_eigendecomp['eigenvalues_imag']
@@ -264,6 +276,15 @@ def learn_eigenvectors(args, learner_module, method):
                     k=num_gt_eigenvectors,
                     ascending=True,
                     sym_eig=True,
+                )
+            elif gt_D is not None:
+                # Recompute so that left eigenvectors use the D-adjoint; reusing the
+                # cached eigendecomp would silently skip the D-weighted pairing.
+                gt_eigendecomp = compute_eigendecomposition(
+                    laplacian_matrix,
+                    k=num_gt_eigenvectors,
+                    ascending=True,
+                    D=gt_D,
                 )
             else:
                 gt_eigendecomp = eigendecomp
@@ -299,6 +320,14 @@ def learn_eigenvectors(args, learner_module, method):
                 w_eigendecomp = compute_eigendecomposition(gt_matrix_w, k=num_gt_eigenvectors, ascending=True)
             elif method == "allo" and sym_eig:
                 w_eigendecomp = compute_eigendecomposition(w_laplacian, k=num_gt_eigenvectors, ascending=True, sym_eig=True)
+            elif gt_D is not None:
+                # none+clf: recompute so left eigenvectors use the per-wind D-adjoint.
+                w_eigendecomp = compute_eigendecomposition(
+                    w_laplacian,
+                    k=num_gt_eigenvectors,
+                    ascending=True,
+                    D=jnp.diag(w_sampling_probs),
+                )
             per_wind_gt.append((float(w), w_eigendecomp, w_sampling_probs))
             print("done")
         print("Per-wind GT computation complete.")

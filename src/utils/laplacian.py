@@ -179,6 +179,7 @@ def compute_eigendecomposition(
     sort_by_magnitude: bool = True,
     ascending: bool = False,
     sym_eig: bool = False,
+    D: Optional[jnp.ndarray] = None,
 ) -> Dict[str, jnp.ndarray]:
     """
     Compute eigendecomposition of a matrix.
@@ -193,6 +194,10 @@ def compute_eigendecomposition(
         ascending: If True, sort in ascending order (smallest first, for Laplacians).
                    If False, sort in descending order (largest first, for transition matrices).
         sym_eig: If True, use eigh (assumes symmetric matrix); imaginary parts are set to zero.
+        D: Optional diagonal weight matrix of shape [num_states, num_states].
+           When provided, left eigenvectors are computed as the right eigenvectors of the
+           D-adjoint D^{-1} L^T D instead of L^T.  When None (default), the standard
+           transpose L^T is used (equivalent to D = Identity).
 
     Returns:
         Dictionary containing:
@@ -241,30 +246,72 @@ def compute_eigendecomposition(
             "left_eigenvectors_imag": zeros_vecs,
         }
 
-    # Compute right eigendecomposition
-    # jnp.linalg.eig returns (eigenvalues, right_eigenvectors)
+    # Compute right eigendecomposition.
+    # jnp.linalg.eig returns (eigenvalues, right_eigenvectors).
     eigenvalues, right_eigenvectors = jnp.linalg.eig(transition_matrix)
 
-    # Compute left eigendecomposition via transpose
-    # For left eigenvectors: v^T A = lambda v^T => A^T v = lambda v
-    eigenvalues_left, left_eigenvectors = jnp.linalg.eig(transition_matrix.T)
+    # Compute the adjoint matrix and its right eigenvectors.
+    # When D is None the adjoint is L^T (standard left eigenvectors).
+    # When D is provided the adjoint is D^{-1} L^T D, whose right eigenvectors
+    # are the left eigenvectors of L in the D-weighted inner product.
+    if D is not None:
+        d = jnp.diag(D)
+        D_inv = jnp.diag(1.0 / d)
+        adjoint_matrix = D_inv @ transition_matrix.T @ D
+    else:
+        adjoint_matrix = transition_matrix.T
+        d = None
 
-    # Match left eigenvectors to right eigenvectors
-    cross_products = jnp.einsum('ij,ik->jk', left_eigenvectors, right_eigenvectors)
+    _, left_eigenvectors = jnp.linalg.eig(adjoint_matrix)
 
-    # For each right eigenvector (column j), find the best matching left eigenvector (row i)
-    best_left_indices = jnp.argmax(jnp.abs(cross_products), axis=0)
+    # Normalize adjoint eigenvector columns by their D-weighted norm before
+    # pairing.  This makes the matching scale-invariant (directional only),
+    # preventing large-norm vectors from dominating the argmax.
+    # D-norm:  ||w||_D = sqrt( w^H D w ).  When D is None this reduces to the
+    # standard Euclidean norm.
+    if d is not None:
+        # einsum computes diag of (left^H diag(d) left), i.e. per-column D-norms²
+        norms = jnp.sqrt(
+            jnp.einsum('i,ij,ij->j', d, jnp.conj(left_eigenvectors), left_eigenvectors).real
+        )
+    else:
+        norms = jnp.sqrt(jnp.sum(jnp.abs(left_eigenvectors) ** 2, axis=0))
 
-    # Reorder left eigenvectors to match right eigenvectors
+    left_normalized = left_eigenvectors / jnp.maximum(norms, 1e-12)[None, :]
+
+    # Match each right eigenvector to the best adjoint eigenvector via the
+    # D-weighted inner product of the *normalized* adjoint columns.
+    # cross_products[i, j] ≈ (w_i / ||w_i||_D)^H D r_j.
+    if d is not None:
+        cross_products_norm = jnp.einsum(
+            'ij,i,ik->jk', jnp.conj(left_normalized), d, right_eigenvectors
+        )
+    else:
+        cross_products_norm = jnp.einsum(
+            'ij,ik->jk', jnp.conj(left_normalized), right_eigenvectors
+        )
+
+    # For each right eigenvector (column j) find the best matching adjoint
+    # eigenvector (row i) — scale-free thanks to normalization above.
+    best_left_indices = jnp.argmax(jnp.abs(cross_products_norm), axis=0)
+
+    # Reorder the *un-normalized* adjoint eigenvectors to align with the right
+    # eigenvectors, then apply biorthogonality normalization using the
+    # D-weighted inner product of the original (un-normalized) vectors.
     left_eigenvectors = left_eigenvectors[:, best_left_indices]
 
-    # Normalize left eigenvectors
-    dot_products = cross_products[best_left_indices, jnp.arange(cross_products.shape[1])]
+    if d is not None:
+        dot_products = jnp.einsum(
+            'ij,i,ij->j', jnp.conj(left_eigenvectors), d, right_eigenvectors
+        )
+    else:
+        dot_products = jnp.einsum(
+            'ij,ij->j', jnp.conj(left_eigenvectors), right_eigenvectors
+        )
 
-    # Scale left vectors by 1/dot_product
     left_eigenvectors = left_eigenvectors / dot_products[None, :]
 
-    # Sort by magnitude if requested
+    # Sort by magnitude of right eigenvalues if requested.
     if sort_by_magnitude:
         magnitudes = jnp.abs(eigenvalues)
         if ascending:
@@ -275,13 +322,13 @@ def compute_eigendecomposition(
         right_eigenvectors = right_eigenvectors[:, sorted_indices]
         left_eigenvectors = left_eigenvectors[:, sorted_indices]
 
-    # Keep only top k if specified
+    # Keep only top k if specified.
     if k is not None:
         eigenvalues = eigenvalues[:k]
         right_eigenvectors = right_eigenvectors[:, :k]
         left_eigenvectors = left_eigenvectors[:, :k]
 
-    # Separate into real and imaginary parts
+    # Separate into real and imaginary parts.
     eigenvalues_real = jnp.real(eigenvalues)
     eigenvalues_imag = jnp.imag(eigenvalues)
     right_eigenvectors_real = jnp.real(right_eigenvectors)
