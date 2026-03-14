@@ -789,7 +789,7 @@ def learn_eigenvectors(args, learner_module, method):
                 "sps": int(steps_completed / max(elapsed_time, 1e-6)),  # Steps since start/resume
             }
             for k, v in metrics.items():
-                metrics_dict[k] = float(v.item())
+                metrics_dict[k] = float(jnp.mean(v).item())
 
             # Add cosine similarities to metrics (both left and right)
             for k, v in cosine_sims.items():
