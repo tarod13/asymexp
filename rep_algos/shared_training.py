@@ -274,6 +274,25 @@ def learn_eigenvectors(args, learner_module, method):
             gt_right_real = gt_eigendecomp['right_eigenvectors_real']
             gt_right_imag = gt_eigendecomp['right_eigenvectors_imag']
 
+        # When no importance sampling is used with the CLF learning method, the network
+        # learns left features under the empirical distribution D rather than the uniform
+        # distribution.  The correct ground truth for the left eigenvectors is therefore
+        # the right eigenvectors of the D-adjoint of the Laplacian: D^{-1}L^T D.
+        # The right eigenvectors ground truth (from L) is left unchanged.
+        if args.sampling_mode == "none" and args.constraint_enforcement_method == "clf":
+            print(f"\nCLF + no-IS: overriding left GT eigenvectors with right eigenvectors "
+                  f"of D^{{-1}}L^T D (adjoint Laplacian)...")
+            D_clf     = jnp.diag(sampling_probs)
+            D_inv_clf = jnp.diag(1.0 / sampling_probs)
+            adjoint_laplacian = D_inv_clf @ laplacian_matrix.T @ D_clf
+            adj_eigendecomp = compute_eigendecomposition(
+                adjoint_laplacian,
+                k=num_gt_eigenvectors,
+                ascending=True,
+            )
+            gt_left_real = adj_eigendecomp['right_eigenvectors_real']
+            gt_left_imag = adj_eigendecomp['right_eigenvectors_imag']
+
     print(f"\nState coordinates shape: {state_coords.shape}")
     print(f"Ground truth right eigenvectors shape: {gt_right_real.shape}")
     print(f"Ground truth left eigenvectors shape: {gt_left_real.shape}")
@@ -299,6 +318,20 @@ def learn_eigenvectors(args, learner_module, method):
                 w_eigendecomp = compute_eigendecomposition(gt_matrix_w, k=num_gt_eigenvectors, ascending=True)
             elif method == "allo" and sym_eig:
                 w_eigendecomp = compute_eigendecomposition(w_laplacian, k=num_gt_eigenvectors, ascending=True, sym_eig=True)
+            if args.sampling_mode == "none" and args.constraint_enforcement_method == "clf":
+                D_w_clf     = jnp.diag(w_sampling_probs)
+                D_inv_w_clf = jnp.diag(1.0 / w_sampling_probs)
+                adj_laplacian_w = D_inv_w_clf @ w_laplacian.T @ D_w_clf
+                adj_eigendecomp_w = compute_eigendecomposition(
+                    adj_laplacian_w,
+                    k=num_gt_eigenvectors,
+                    ascending=True,
+                )
+                w_eigendecomp = {
+                    **w_eigendecomp,
+                    'left_eigenvectors_real': adj_eigendecomp_w['right_eigenvectors_real'],
+                    'left_eigenvectors_imag': adj_eigendecomp_w['right_eigenvectors_imag'],
+                }
             per_wind_gt.append((float(w), w_eigendecomp, w_sampling_probs))
             print("done")
         print("Per-wind GT computation complete.")
