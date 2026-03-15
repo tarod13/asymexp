@@ -846,6 +846,14 @@ def create_update_function(encoder, args):
             graph_loss_y_imag = ip(next_y_i, sg(f_y_0_imag)) + ip(y_i, sg(f_y_res_imag))
             graph_loss_y = graph_loss_y_real + graph_loss_y_imag
 
+            if args.norm_graph_loss:
+                # Divide each per-eigenvector component by its 2-norm to normalise the loss
+                # scale. norm_x_sq_est / norm_y_sq_est have shape (1, k), matching graph_loss_x/y.
+                norm_x_clip = jnp.maximum(norm_x_sq_est, 1e-6)
+                norm_y_clip = jnp.maximum(norm_y_sq_est, 1e-6)
+                graph_loss_x = graph_loss_x / norm_x_clip
+                graph_loss_y = graph_loss_y / norm_y_clip
+
             graph_loss = (graph_loss_x + graph_loss_y).sum()
 
             x_i_normalized = x_i / jnp.sqrt(norm_x_sq_est + 1e-6)

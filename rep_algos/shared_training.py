@@ -782,6 +782,7 @@ def learn_eigenvectors(args, learner_module, method):
                 sampling_probs=eval_distribution,
                 skip_conjugates=skip_conjugates,
                 compute_left=(method != "allo"),
+                apply_left_distribution_scaling=(args.sampling_mode != "none"),
             )
 
             # Compute hitting times for learned eigenvectors and ground truth
