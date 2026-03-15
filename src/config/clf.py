@@ -12,3 +12,4 @@ class ClfArgs(SharedArgs):
     barrier: float = 1.0      # Barrier strength for dual norm constraints (duals_learner)
     disentangle_eigenvalues: bool = False  # Use separate eigenvalue EMA for x and y (vs. shared averaged estimate)
     normalize_eigenvalue_targets: bool = False  # Normalize Rayleigh quotient targets by state norms before EMA update
+    use_sg_ip: bool = False  # Apply stop_gradient to smaller-indexed eigenvector in bi-orthogonality inner products to break symmetry

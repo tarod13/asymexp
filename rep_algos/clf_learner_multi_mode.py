@@ -108,13 +108,29 @@ def _compute_lyapunov_terms(
     # ------------------------------------------------------------------
     # Correlations (crossed terms)
     # ------------------------------------------------------------------
+    # When use_sg_ip=True, stop_gradient is applied to the smaller-indexed
+    # eigenvector in each inner product, matching the ALLO-Ext convention:
+    #   multi_ip(a, b)[j, k] = <a_j, b_k>
+    # For tril(., k=-1) the column index k < j is always the smaller index.
+    # XY: smaller index is on the y-side (second arg) → sg(y).
+    # YX: these are computed separately (not as .T of XY) so the smaller
+    #     index is on the x-side (second arg of multi_ip(y, sg(x))).
+    use_sg_ip = getattr(args, 'use_sg_ip', False)
+    _sg = jax.lax.stop_gradient if use_sg_ip else (lambda z: z)
+
     # Batch 1 — current
-    corr_xy_real = multi_ip(x_r, y_r) + multi_ip(x_i, y_i)
-    corr_xy_imag = -multi_ip(x_r, y_i) + multi_ip(x_i, y_r)
+    corr_xy_real = multi_ip(x_r, _sg(y_r)) + multi_ip(x_i, _sg(y_i))
+    corr_xy_imag = -multi_ip(x_r, _sg(y_i)) + multi_ip(x_i, _sg(y_r))
+    if use_sg_ip:
+        corr_yx_real_b1 = multi_ip(y_r, _sg(x_r)) + multi_ip(y_i, _sg(x_i))
+        corr_yx_imag_b1 = -multi_ip(y_i, _sg(x_r)) + multi_ip(y_r, _sg(x_i))
 
     # Batch 2 — current
-    cross_xy2_real = multi_ip(x2_r, y2_r) + multi_ip(x2_i, y2_i)
-    cross_xy2_imag = -multi_ip(x2_r, y2_i) + multi_ip(x2_i, y2_r)
+    cross_xy2_real = multi_ip(x2_r, _sg(y2_r)) + multi_ip(x2_i, _sg(y2_i))
+    cross_xy2_imag = -multi_ip(x2_r, _sg(y2_i)) + multi_ip(x2_i, _sg(y2_r))
+    if use_sg_ip:
+        corr_yx_real_b2 = multi_ip(y2_r, _sg(x2_r)) + multi_ip(y2_i, _sg(x2_i))
+        corr_yx_imag_b2 = -multi_ip(y2_i, _sg(x2_r)) + multi_ip(y2_r, _sg(x2_i))
 
     # EMA loss for correlations (only for "ema" mode)
     if args.constraint_mode == "ema":
@@ -182,28 +198,48 @@ def _compute_lyapunov_terms(
     # 4. Crossed-term correlation coefficients
     corr_xy_real_lower = jnp.tril(corr_xy_real, k=-1)
     corr_xy_imag_lower = jnp.tril(corr_xy_imag, k=-1)
-    corr_yx_real_lower = jnp.tril(corr_xy_real.T, k=-1)
-    corr_yx_imag_lower = jnp.tril(corr_xy_imag.T, k=-1)
+    if use_sg_ip:
+        corr_yx_real_lower = jnp.tril(corr_yx_real_b1, k=-1)
+        corr_yx_imag_lower = jnp.tril(corr_yx_imag_b1, k=-1)
+    else:
+        corr_yx_real_lower = jnp.tril(corr_xy_real.T, k=-1)
+        corr_yx_imag_lower = jnp.tril(corr_xy_imag.T, k=-1)
 
     corr_xy2_real_lower = jnp.tril(cross_xy2_real, k=-1)
     corr_xy2_imag_lower = jnp.tril(cross_xy2_imag, k=-1)
-    corr_yx2_real_lower = jnp.tril(cross_xy2_real.T, k=-1)
-    corr_yx2_imag_lower = jnp.tril(cross_xy2_imag.T, k=-1)
+    if use_sg_ip:
+        corr_yx2_real_lower = jnp.tril(corr_yx_real_b2, k=-1)
+        corr_yx2_imag_lower = jnp.tril(corr_yx_imag_b2, k=-1)
+    else:
+        corr_yx2_real_lower = jnp.tril(cross_xy2_real.T, k=-1)
+        corr_yx2_imag_lower = jnp.tril(cross_xy2_imag.T, k=-1)
 
     # Next-state correlations (batch 1 and 2)
-    next_corr_xy_real = multi_ip(next_x_r, next_y_r) + multi_ip(next_x_i, next_y_i)
-    next_corr_xy_imag = -multi_ip(next_x_r, next_y_i) + multi_ip(next_x_i, next_y_r)
+    next_corr_xy_real = multi_ip(next_x_r, _sg(next_y_r)) + multi_ip(next_x_i, _sg(next_y_i))
+    next_corr_xy_imag = -multi_ip(next_x_r, _sg(next_y_i)) + multi_ip(next_x_i, _sg(next_y_r))
     next_corr_xy_real_lower = jnp.tril(next_corr_xy_real, k=-1)
     next_corr_xy_imag_lower = jnp.tril(next_corr_xy_imag, k=-1)
-    next_corr_yx_real_lower = jnp.tril(next_corr_xy_real.T, k=-1)
-    next_corr_yx_imag_lower = jnp.tril(next_corr_xy_imag.T, k=-1)
+    if use_sg_ip:
+        next_corr_yx_real = multi_ip(next_y_r, _sg(next_x_r)) + multi_ip(next_y_i, _sg(next_x_i))
+        next_corr_yx_imag = -multi_ip(next_y_i, _sg(next_x_r)) + multi_ip(next_y_r, _sg(next_x_i))
+        next_corr_yx_real_lower = jnp.tril(next_corr_yx_real, k=-1)
+        next_corr_yx_imag_lower = jnp.tril(next_corr_yx_imag, k=-1)
+    else:
+        next_corr_yx_real_lower = jnp.tril(next_corr_xy_real.T, k=-1)
+        next_corr_yx_imag_lower = jnp.tril(next_corr_xy_imag.T, k=-1)
 
-    next_cross_xy2_real = multi_ip(next_x2_r, next_y2_r) + multi_ip(next_x2_i, next_y2_i)
-    next_cross_xy2_imag = -multi_ip(next_x2_r, next_y2_i) + multi_ip(next_x2_i, next_y2_r)
+    next_cross_xy2_real = multi_ip(next_x2_r, _sg(next_y2_r)) + multi_ip(next_x2_i, _sg(next_y2_i))
+    next_cross_xy2_imag = -multi_ip(next_x2_r, _sg(next_y2_i)) + multi_ip(next_x2_i, _sg(next_y2_r))
     next_corr_xy2_real_lower = jnp.tril(next_cross_xy2_real, k=-1)
     next_corr_xy2_imag_lower = jnp.tril(next_cross_xy2_imag, k=-1)
-    next_corr_yx2_real_lower = jnp.tril(next_cross_xy2_real.T, k=-1)
-    next_corr_yx2_imag_lower = jnp.tril(next_cross_xy2_imag.T, k=-1)
+    if use_sg_ip:
+        next_corr_yx2_real = multi_ip(next_y2_r, _sg(next_x2_r)) + multi_ip(next_y2_i, _sg(next_x2_i))
+        next_corr_yx2_imag = -multi_ip(next_y2_i, _sg(next_x2_r)) + multi_ip(next_y2_r, _sg(next_x2_i))
+        next_corr_yx2_real_lower = jnp.tril(next_corr_yx2_real, k=-1)
+        next_corr_yx2_imag_lower = jnp.tril(next_corr_yx2_imag, k=-1)
+    else:
+        next_corr_yx2_real_lower = jnp.tril(next_cross_xy2_real.T, k=-1)
+        next_corr_yx2_imag_lower = jnp.tril(next_cross_xy2_imag.T, k=-1)
 
     if args.constraint_mode == "ema":
         coef_corr_xy_real_lower_current = jnp.tril(params['corr_xy_real_ema'], k=-1)
