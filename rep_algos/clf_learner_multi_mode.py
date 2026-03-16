@@ -1046,8 +1046,8 @@ def create_update_function(encoder, args):
                 # scale. norm_x_sq_est / norm_y_sq_est have shape (1, k), matching graph_loss_x/y.
                 norm_x_clip = jnp.maximum(norm_x_sq_est, 1e-6)
                 norm_y_clip = jnp.maximum(norm_y_sq_est, 1e-6)
-                graph_loss_x = graph_loss_x / norm_x_clip
-                graph_loss_y = graph_loss_y / norm_y_clip
+                graph_loss_x = graph_loss_x / sg(norm_x_clip)
+                graph_loss_y = graph_loss_y / sg(norm_y_clip)
 
             graph_loss = (graph_loss_x + graph_loss_y).sum()
 
