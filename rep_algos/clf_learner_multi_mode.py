@@ -7,12 +7,15 @@ Supports 4 constraint approximation modes:
 - "single_batch": Biased with single batch (reuse batch1 for constraints)
 - "same_episodes": Intermediate bias - two batches from same episodes
 
-Supports 2 constraint enforcement methods (args.constraint_enforcement_method):
+Supports 4 constraint enforcement methods (args.constraint_enforcement_method):
 - "clf": CLF controller — QP-style correction u = barrier·∇V, loss += ip(feat, sg(u))
 - "barrier": Increasing barrier — single scalar penalty sg(barrier_coef)·V,
               with barrier_coef updated externally after each gradient step
 - "granular_barrier": Increasing barrier — per-constraint penalties sg(bc[i])·V[i],
               with individual coefficients updated externally after each gradient step
+- "complex_allo": Complex augmented-Lagrangian — dual variables multiplying each
+              linear constraint error + scalar barrier sg(barrier_coef)·V (identical
+              to "barrier"); both updated externally after each gradient step
 
 Usage:
     from rep_algos.shared_training import learn_eigenvectors
@@ -115,7 +118,7 @@ def _compute_lyapunov_terms(
     # XY: smaller index is on the y-side (second arg) → sg(y).
     # YX: these are computed separately (not as .T of XY) so the smaller
     #     index is on the x-side (second arg of multi_ip(y, sg(x))).
-    use_sg_ip = getattr(args, 'use_sg_ip', False)
+    use_sg_ip = getattr(args, 'use_sg_ip', True)
     _sg = jax.lax.stop_gradient if use_sg_ip else (lambda z: z)
 
     # Batch 1 — current
@@ -338,6 +341,15 @@ def _compute_lyapunov_terms(
         'V_xy_corr_matrix': V_xy_corr_matrix,
         'norm_x_sq': norm_x_sq,
         'norm_y_sq': norm_y_sq,
+        # Raw (unsquared) constraint errors — used by complex_allo dual loss.
+        # Already computed above; zero extra cost.
+        'c_x_norm':       coef_x_norm,                        # shape (1, k)
+        'c_y_norm':       coef_y_norm_current,                # shape (1, k)
+        'c_xy_phase':     coef_xy_phase_current,              # shape (1, k)
+        'c_xy_corr_real': coef_corr_xy_real_lower_current,    # shape (k, k)
+        'c_xy_corr_imag': coef_corr_xy_imag_lower_current,    # shape (k, k)
+        'c_yx_corr_real': coef_corr_yx_real_lower_current,    # shape (k, k)
+        'c_yx_corr_imag': coef_corr_yx_imag_lower_current,    # shape (k, k)
     }
 
     return V, nabla_V, constraint_estimator_loss, V_components
@@ -533,6 +545,85 @@ def _make_granular_barrier_enforcement_fn(args):
     return granular_barrier_enforcement
 
 
+def _make_complex_allo_enforcement_fn(args):
+    """Factory returning the complex ALLO enforcement function.
+
+    Combines two mechanisms:
+      1. Dual variables multiplying each linear constraint error — mirrors the
+         augmented-Lagrangian structure of ALLO-Ext, but over the full complex
+         bi-orthogonality constraint set.
+      2. A scalar barrier identical to the "barrier" enforcement method:
+             sg(barrier_coef) · V.sum()
+
+    The dual variables and barrier_coef are stop-grad'd inside the loss and
+    updated externally after each gradient step via _external_complex_allo_update.
+
+    The raw constraint errors (c_*) come from V_components, which are computed
+    in _compute_lyapunov_terms with use_sg_ip=True (default) so that stop
+    gradients are applied to the smaller-indexed eigenvector in each
+    bi-orthogonality inner product — breaking ordering symmetries and making
+    ordered eigenvectors the stable equilibrium.
+    """
+    def complex_allo_enforcement(V, nabla_V, f_vectors, features, params, ip, sg, V_components):
+        """
+        Args:
+            V:            shape (1, k) — per-eigenvector Lyapunov values
+            V_components: must contain c_x_norm, c_y_norm, c_xy_phase (shape (1,k))
+                          and c_xy_corr_real/imag, c_yx_corr_real/imag (shape (k,k))
+            params:       must contain 'duals' (dict) and 'barrier_coef' (scalar)
+            (all other args accepted for API compatibility)
+        Returns:
+            (enforcement_loss scalar, aux dict)
+        """
+        duals = params['duals']
+
+        # Linear constraint errors (raw, not squared)
+        c_x_norm      = V_components['c_x_norm']       # (1, k)
+        c_y_norm      = V_components['c_y_norm']        # (1, k)
+        c_xy_phase    = V_components['c_xy_phase']      # (1, k)
+        c_xy_corr_real = V_components['c_xy_corr_real'] # (k, k) lower-tri
+        c_xy_corr_imag = V_components['c_xy_corr_imag'] # (k, k) lower-tri
+        c_yx_corr_real = V_components['c_yx_corr_real'] # (k, k) lower-tri
+        c_yx_corr_imag = V_components['c_yx_corr_imag'] # (k, k) lower-tri
+
+        # Dual loss: sg(dual) * constraint_error for each constraint type.
+        # Duals are stop-grad'd so no gradient flows back into them through
+        # the optimizer; they are updated externally (augmented-Lagrangian style).
+        dual_loss = (
+            (sg(duals['x_norm']).reshape(1, -1)      * c_x_norm).sum()
+            + (sg(duals['y_norm']).reshape(1, -1)    * c_y_norm).sum()
+            + (sg(duals['xy_phase']).reshape(1, -1)  * c_xy_phase).sum()
+            + (sg(duals['xy_corr_real'])              * c_xy_corr_real).sum()
+            + (sg(duals['xy_corr_imag'])              * c_xy_corr_imag).sum()
+            + (sg(duals['yx_corr_real'])              * c_yx_corr_real).sum()
+            + (sg(duals['yx_corr_imag'])              * c_yx_corr_imag).sum()
+        )
+
+        # Barrier loss: identical to _make_barrier_enforcement_fn.
+        barrier_coef = params['barrier_coef']
+        barrier_loss = sg(barrier_coef) * V.sum()
+
+        enforcement_loss = dual_loss + barrier_loss
+
+        enforcement_aux = {
+            'dual_loss':    dual_loss,
+            'barrier_loss': barrier_loss,
+            'barrier_coef': barrier_coef,
+            'V_mean':       V.mean(),
+            # Raw constraint errors forwarded for external dual update
+            'c_x_norm':       c_x_norm.reshape(-1),
+            'c_y_norm':       c_y_norm.reshape(-1),
+            'c_xy_phase':     c_xy_phase.reshape(-1),
+            'c_xy_corr_real': c_xy_corr_real,
+            'c_xy_corr_imag': c_xy_corr_imag,
+            'c_yx_corr_real': c_yx_corr_real,
+            'c_yx_corr_imag': c_yx_corr_imag,
+        }
+        return enforcement_loss, enforcement_aux
+
+    return complex_allo_enforcement
+
+
 def _external_barrier_update(params, V_mean, args):
     """Update barrier_coef after the gradient step (called inside update_encoder).
 
@@ -587,6 +678,47 @@ def _external_granular_barrier_update(params, V_bc_signals, args):
             min_barrier, max_barrier,
         )
     params['barrier_coefs'] = bc
+    return params
+
+
+def _external_complex_allo_update(params, aux, args):
+    """Update dual variables and barrier_coef after the gradient step.
+
+    Only active when constraint_enforcement_method == "complex_allo".
+
+    Dual update (augmented-Lagrangian rule):
+        duals[key] += lr_duals * constraint_error[key]
+        duals[key]  = clip(duals[key], min_duals, max_duals)
+
+    Barrier update: delegates to the existing _external_barrier_update so the
+    barrier component is treated identically to the "barrier" method.
+
+    Args:
+        params: post-optimizer param dict (mutable)
+        aux:    enforcement_aux dict returned by the loss (contains c_* errors
+                and V_mean)
+        args:   training arguments
+
+    Returns:
+        Updated params dict.
+    """
+    lr_duals  = getattr(args, 'lr_duals',   0.001)
+    min_duals = getattr(args, 'min_duals', -100.0)
+    max_duals = getattr(args, 'max_duals',  100.0)
+
+    duals = params['duals']
+    for key in ('x_norm', 'y_norm', 'xy_phase',
+                'xy_corr_real', 'xy_corr_imag',
+                'yx_corr_real', 'yx_corr_imag'):
+        # Reshape aux errors to match duals shape (aux flattens x_norm/y_norm/xy_phase)
+        err = aux[f'c_{key}']
+        if key in ('x_norm', 'y_norm', 'xy_phase'):
+            err = err.reshape(duals[key].shape)
+        duals[key] = jnp.clip(duals[key] + lr_duals * err, min_duals, max_duals)
+    params['duals'] = duals
+
+    # Barrier update — identical logic to the "barrier" method
+    params = _external_barrier_update(params, aux['V_mean'], args)
     return params
 
 
@@ -648,6 +780,19 @@ def init_params(encoder_initial_params, args):
             'y_norm':   jnp.full((k,), barrier_init),
             'xy_phase': jnp.full((k,), barrier_init),
             'xy_corr':  jnp.full((k, k), barrier_init),
+        }
+    elif enforcement_method == "complex_allo":
+        barrier_init = getattr(args, 'barrier_initial_val', 0.5)
+        duals_init   = getattr(args, 'duals_initial_val',   0.0)
+        params['barrier_coef'] = jnp.array(barrier_init)
+        params['duals'] = {
+            'x_norm':       jnp.full((k,),    duals_init),
+            'y_norm':       jnp.full((k,),    duals_init),
+            'xy_phase':     jnp.full((k,),    duals_init),
+            'xy_corr_real': jnp.full((k, k),  duals_init),
+            'xy_corr_imag': jnp.full((k, k),  duals_init),
+            'yx_corr_real': jnp.full((k, k),  duals_init),
+            'yx_corr_imag': jnp.full((k, k),  duals_init),
         }
 
     return params
@@ -713,6 +858,18 @@ def get_optimizer_masks(args):
         _bc_mask_true  = {'x_norm': True,  'y_norm': True,  'xy_phase': True,  'xy_corr': True}
         encoder_mask['barrier_coefs'] = _bc_mask_false
         other_mask['barrier_coefs'] = _bc_mask_true
+    elif enforcement_method == "complex_allo":
+        # barrier_coef and duals are managed purely externally — excluded from
+        # both optimizer groups (stop-grad'd in loss → zero gradients anyway).
+        _duals_mask_false = {
+            'x_norm': False, 'y_norm': False, 'xy_phase': False,
+            'xy_corr_real': False, 'xy_corr_imag': False,
+            'yx_corr_real': False, 'yx_corr_imag': False,
+        }
+        encoder_mask['barrier_coef'] = False
+        other_mask['barrier_coef']   = False
+        encoder_mask['duals'] = _duals_mask_false
+        other_mask['duals']   = _duals_mask_false
 
     return encoder_mask, other_mask
 
@@ -737,10 +894,12 @@ def create_update_function(encoder, args):
         _enforce_constraints = _make_barrier_enforcement_fn(args)
     elif enforcement_method == "granular_barrier":
         _enforce_constraints = _make_granular_barrier_enforcement_fn(args)
+    elif enforcement_method == "complex_allo":
+        _enforce_constraints = _make_complex_allo_enforcement_fn(args)
     else:
         raise ValueError(
             f"Unknown constraint_enforcement_method: {enforcement_method!r}. "
-            "Choose 'clf', 'barrier', or 'granular_barrier'."
+            "Choose 'clf', 'barrier', 'granular_barrier', or 'complex_allo'."
         )
 
     def sg(z):
@@ -1003,6 +1162,9 @@ def create_update_function(encoder, args):
                 clipped_grads['barrier_coef'] = grads['barrier_coef']
             elif enforcement_method == "granular_barrier":
                 clipped_grads['barrier_coefs'] = grads['barrier_coefs']
+            elif enforcement_method == "complex_allo":
+                clipped_grads['barrier_coef'] = grads['barrier_coef']
+                clipped_grads['duals'] = grads['duals']
 
             grads = clipped_grads
 
@@ -1027,6 +1189,9 @@ def create_update_function(encoder, args):
             # Overwrite aux with post-update coef means for logging
             for _key in ('x_norm', 'y_norm', 'xy_phase', 'xy_corr'):
                 aux[f'barrier_coef_{_key}'] = new_params['barrier_coefs'][_key].mean()
+        elif enforcement_method == "complex_allo":
+            new_params = _external_complex_allo_update(new_params, aux, args)
+            aux['barrier_coef'] = new_params['barrier_coef']
 
         # Create new state
         new_encoder_state = encoder_state.replace(
