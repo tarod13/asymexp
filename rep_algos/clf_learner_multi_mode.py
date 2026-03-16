@@ -723,58 +723,66 @@ def _external_complex_allo_update(params, aux, args):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Shared helper: eigenvalue target computation
+# Shared helper: eigenvalue EMA loss
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _compute_lambda_targets(
+def _compute_lambda_loss(
     x_r, x_i, y_r, y_i,
     next_x_r, next_x_i, next_y_r, next_y_i,
     norm_x_sq_est, norm_y_sq_est,
+    params,
     eigenvalue_estimation_method, normalize_eigenvalue_targets,
     ip,
 ):
-    """Compute per-eigenvector lambda targets for the EMA eigenvalue estimators.
+    """Compute the EMA eigenvalue tracking loss and return the current EMA values.
+
+    Handles all three estimation methods.  Targets are computed internally and
+    never leave this function — only the scalar loss and the four EMA lambda
+    values needed downstream are returned.
 
     Args:
-        x_r, x_i:                  Batch-1 current right-eigenvector features
-        y_r, y_i:                  Batch-1 current left-eigenvector features
-        next_x_r, next_x_i:        Batch-1 next-step right-eigenvector features
-        next_y_r, next_y_i:        Batch-1 next-step left-eigenvector features
-        norm_x_sq_est:             Squared norm of x, shape (1, k) — pre-computed
-                                   by caller (also used downstream for graph loss)
-        norm_y_sq_est:             Squared norm of y, shape (1, k) — same
-        eigenvalue_estimation_method: One of 'separate', 'average', 'two_sided'
-        normalize_eigenvalue_targets: Whether to normalize Rayleigh quotients by
-                                   state norms (ignored for 'two_sided')
+        x_r, x_i:                  Current right-eigenvector features, shape (B, k)
+        y_r, y_i:                  Current left-eigenvector features, shape (B, k)
+        next_x_r, next_x_i:        Next-step right-eigenvector features
+        next_y_r, next_y_i:        Next-step left-eigenvector features
+        norm_x_sq_est:             ||x||² estimate, shape (1, k) — pre-computed by
+                                   caller (also needed downstream for graph loss)
+        norm_y_sq_est:             ||y||² estimate, shape (1, k)
+        params:                    Full parameter dict containing EMA lambda entries
+        eigenvalue_estimation_method: 'separate', 'average', or 'two_sided'
+        normalize_eigenvalue_targets: Divide Rayleigh quotients by state norms
+                                   (ignored for 'two_sided')
         ip:                        Weighted inner-product closure
 
     Returns:
-        Tuple (lambda_x_r, lambda_x_i, lambda_y_r, lambda_y_i), each shape (1, k).
-        For 'two_sided', lambda_x == lambda_y (same common estimate for both).
+        (lambda_loss, ema_lambda_x_r, ema_lambda_x_i, ema_lambda_y_r, ema_lambda_y_i)
+        For 'average' and 'two_sided' the four EMA values are equal (single shared
+        lambda); for 'separate' they differ.
     """
     if eigenvalue_estimation_method == 'two_sided':
-        # Bi-orthogonal complex division: lambda = <y, next_x> / <y, x>
-        # normalize_eigenvalue_targets is ignored; the division denominator
-        # already normalises the estimate.
+        # Single shared EMA lambda — bi-orthogonal estimate: <y, next_x> / <y, x>
+        ema_lambda_r = params['lambda_real'].reshape(1, -1)
+        ema_lambda_i = params['lambda_imag'].reshape(1, -1)
 
-        # Numerator (A = <y, next_x>)
-        num_r = ip(y_r, next_x_r) + ip(y_i, next_x_i)
-        num_i = ip(y_r, next_x_i) - ip(y_i, next_x_r)
-        # Denominator (B = <y, x>)
-        den_r = ip(y_r, x_r) + ip(y_i, x_i)
-        den_i = ip(y_r, x_i) - ip(y_i, x_r)
-        # Denominator Magnitude Squared (|B|^2)
+        num_r = ip(y_r, next_x_r) + ip(y_i, next_x_i)   # <y, next_x> real
+        num_i = ip(y_r, next_x_i) - ip(y_i, next_x_r)   # <y, next_x> imag
+        den_r = ip(y_r, x_r)      + ip(y_i, x_i)         # <y, x> real
+        den_i = ip(y_r, x_i)      - ip(y_i, x_r)         # <y, x> imag
         den_mag_sq = jnp.maximum(den_r**2 + den_i**2, 1e-6)
-        # Complex Division
-        lambda_r = (num_r * den_r + num_i * den_i) / den_mag_sq
-        lambda_i = (num_i * den_r - num_r * den_i) / den_mag_sq
+        target_r = (num_r * den_r + num_i * den_i) / den_mag_sq
+        target_i = (num_i * den_r - num_r * den_i) / den_mag_sq
 
-        # Assign common lambda to both x and y so downstream EMA loss works
-        # without modification.
-        return lambda_r, lambda_i, lambda_r, lambda_i
+        lambda_loss = (
+            ((sg(target_r) - ema_lambda_r) ** 2).sum()
+            + ((sg(target_i) - ema_lambda_i) ** 2).sum()
+        )
+        return lambda_loss, ema_lambda_r, ema_lambda_i, ema_lambda_r, ema_lambda_i
 
-    else:
-        # 'separate' and 'average': Rayleigh quotient numerators
+    elif eigenvalue_estimation_method == 'average':
+        # Single shared EMA lambda — averaged Rayleigh quotient from x and y
+        ema_lambda_r = params['lambda_real'].reshape(1, -1)
+        ema_lambda_i = params['lambda_imag'].reshape(1, -1)
+
         rq_x_r = ip(x_r, next_x_r) + ip(x_i, next_x_i)
         rq_x_i = ip(x_r, next_x_i) - ip(x_i, next_x_r)
         rq_y_r = ip(y_r, next_y_r) + ip(y_i, next_y_i)
@@ -783,14 +791,43 @@ def _compute_lambda_targets(
         if normalize_eigenvalue_targets:
             norm_x_clip = jnp.maximum(norm_x_sq_est, 1e-6)
             norm_y_clip = jnp.maximum(norm_y_sq_est, 1e-6)
-            return (
-                rq_x_r / norm_x_clip,
-                rq_x_i / norm_x_clip,
-                rq_y_r / norm_y_clip,
-                rq_y_i / norm_y_clip,
-            )
-        else:
-            return rq_x_r, rq_x_i, rq_y_r, rq_y_i
+            rq_x_r, rq_x_i = rq_x_r / norm_x_clip, rq_x_i / norm_x_clip
+            rq_y_r, rq_y_i = rq_y_r / norm_y_clip, rq_y_i / norm_y_clip
+
+        target_r = 0.5 * (rq_x_r + rq_y_r)
+        target_i = 0.5 * (rq_x_i + rq_y_i)
+
+        lambda_loss = (
+            ((sg(target_r) - ema_lambda_r) ** 2).sum()
+            + ((sg(target_i) - ema_lambda_i) ** 2).sum()
+        )
+        return lambda_loss, ema_lambda_r, ema_lambda_i, ema_lambda_r, ema_lambda_i
+
+    else:  # 'separate'
+        # Disentangled EMA lambdas for x (right) and y (left)
+        ema_lambda_x_r = params['lambda_x_real'].reshape(1, -1)
+        ema_lambda_x_i = params['lambda_x_imag'].reshape(1, -1)
+        ema_lambda_y_r = params['lambda_y_real'].reshape(1, -1)
+        ema_lambda_y_i = params['lambda_y_imag'].reshape(1, -1)
+
+        rq_x_r = ip(x_r, next_x_r) + ip(x_i, next_x_i)
+        rq_x_i = ip(x_r, next_x_i) - ip(x_i, next_x_r)
+        rq_y_r = ip(y_r, next_y_r) + ip(y_i, next_y_i)
+        rq_y_i = ip(y_r, next_y_i) - ip(y_i, next_y_r)
+
+        if normalize_eigenvalue_targets:
+            norm_x_clip = jnp.maximum(norm_x_sq_est, 1e-6)
+            norm_y_clip = jnp.maximum(norm_y_sq_est, 1e-6)
+            rq_x_r, rq_x_i = rq_x_r / norm_x_clip, rq_x_i / norm_x_clip
+            rq_y_r, rq_y_i = rq_y_r / norm_y_clip, rq_y_i / norm_y_clip
+
+        lambda_loss = (
+            ((sg(rq_x_r) - ema_lambda_x_r) ** 2).sum()
+            + ((sg(rq_x_i) - ema_lambda_x_i) ** 2).sum()
+            + ((sg(rq_y_r) - ema_lambda_y_r) ** 2).sum()
+            + ((sg(rq_y_i) - ema_lambda_y_i) ** 2).sum()
+        )
+        return lambda_loss, ema_lambda_x_r, ema_lambda_x_i, ema_lambda_y_r, ema_lambda_y_i
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -814,9 +851,8 @@ def init_params(encoder_initial_params, args):
     }
 
     # EMA estimates for eigenvalues
-    if args.eigenvalue_estimation_method != 'average':
-        # Separate eigenvalue estimates for x (right) and y (left) eigenvectors
-        # Used by 'separate' and 'two_sided' methods
+    if args.eigenvalue_estimation_method == 'separate':
+        # Disentangled eigenvalue estimates for x (right) and y (left) eigenvectors
         params.update({
             'lambda_x_real': jnp.ones((k,)),
             'lambda_x_imag': jnp.zeros((k,)),
@@ -824,7 +860,9 @@ def init_params(encoder_initial_params, args):
             'lambda_y_imag': jnp.zeros((k,)),
         })
     else:
-        # Shared eigenvalue estimate (averaged from x and y Rayleigh quotients)
+        # Single shared eigenvalue estimate
+        # 'average': averaged Rayleigh quotient from x and y
+        # 'two_sided': bi-orthogonal estimate <y, next_x> / <y, x>
         params.update({
             'lambda_real': jnp.ones((k,)),
             'lambda_imag': jnp.zeros((k,)),
@@ -880,7 +918,7 @@ def get_optimizer_masks(args):
     encoder_mask = {'encoder': True}
     other_mask = {'encoder': False}
 
-    if args.eigenvalue_estimation_method != 'average':
+    if args.eigenvalue_estimation_method == 'separate':
         encoder_mask.update({
             'lambda_x_real': False,
             'lambda_x_imag': False,
@@ -1024,55 +1062,24 @@ def create_update_function(encoder, args):
             next_y2_r, next_y2_i = next_features_2['left_real'], next_features_2['left_imag']
 
             # ----------------------------------------------------------------
-            # 2. Extract Parameters
-            # ----------------------------------------------------------------
-            if args.eigenvalue_estimation_method != 'average':
-                ema_lambda_x_r = params['lambda_x_real'].reshape(1, -1)
-                ema_lambda_x_i = params['lambda_x_imag'].reshape(1, -1)
-                ema_lambda_y_r = params['lambda_y_real'].reshape(1, -1)
-                ema_lambda_y_i = params['lambda_y_imag'].reshape(1, -1)
-            else:
-                ema_lambda_r = params['lambda_real'].reshape(1, -1)
-                ema_lambda_i = params['lambda_imag'].reshape(1, -1)
-                ema_lambda_x_r = ema_lambda_r
-                ema_lambda_x_i = ema_lambda_i
-                ema_lambda_y_r = ema_lambda_r
-                ema_lambda_y_i = ema_lambda_i
-
-            # ----------------------------------------------------------------
-            # 3. Update Lambda (Eigenvalue) Estimators
+            # 2. Lambda (Eigenvalue) Estimators — targets + EMA loss
             # ----------------------------------------------------------------
 
-            # Compute norms (Shape: (1,k)) — used unconditionally by graph loss
-            # normalisation and chirality loss downstream.
+            # Norms (shape (1,k)) — also used downstream by graph loss / chirality
             norm_x_sq_est = ip(x_r, x_r) + ip(x_i, x_i)
             norm_y_sq_est = ip(y_r, y_r) + ip(y_i, y_i)
 
-            lambda_x_r, lambda_x_i, lambda_y_r, lambda_y_i = _compute_lambda_targets(
+            (lambda_loss,
+             ema_lambda_x_r, ema_lambda_x_i,
+             ema_lambda_y_r, ema_lambda_y_i) = _compute_lambda_loss(
                 x_r, x_i, y_r, y_i,
                 next_x_r, next_x_i, next_y_r, next_y_i,
                 norm_x_sq_est, norm_y_sq_est,
+                params,
                 args.eigenvalue_estimation_method,
                 args.normalize_eigenvalue_targets,
                 ip,
             )
-
-            # EMA loss for eigenvalues
-            if args.eigenvalue_estimation_method == 'average':
-                new_lambda_real = 0.5 * (lambda_x_r + lambda_y_r)
-                new_lambda_imag = 0.5 * (lambda_x_i + lambda_y_i)
-                lambda_loss = (
-                    ((sg(new_lambda_real) - ema_lambda_r) ** 2).sum()
-                    + ((sg(new_lambda_imag) - ema_lambda_i) ** 2).sum()
-                )
-            else:
-                # 'separate' and 'two_sided' both use disentangled x/y EMA params
-                lambda_loss = (
-                    ((sg(lambda_x_r) - ema_lambda_x_r) ** 2).sum()
-                    + ((sg(lambda_x_i) - ema_lambda_x_i) ** 2).sum()
-                    + ((sg(lambda_y_r) - ema_lambda_y_r) ** 2).sum()
-                    + ((sg(lambda_y_i) - ema_lambda_y_i) ** 2).sum()
-                )
 
             # ----------------------------------------------------------------
             # 4. Lyapunov function V and ∇V (shared between enforcement methods)
