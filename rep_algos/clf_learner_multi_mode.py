@@ -723,6 +723,77 @@ def _external_complex_allo_update(params, aux, args):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Shared helper: eigenvalue target computation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _compute_lambda_targets(
+    x_r, x_i, y_r, y_i,
+    next_x_r, next_x_i, next_y_r, next_y_i,
+    norm_x_sq_est, norm_y_sq_est,
+    eigenvalue_estimation_method, normalize_eigenvalue_targets,
+    ip,
+):
+    """Compute per-eigenvector lambda targets for the EMA eigenvalue estimators.
+
+    Args:
+        x_r, x_i:                  Batch-1 current right-eigenvector features
+        y_r, y_i:                  Batch-1 current left-eigenvector features
+        next_x_r, next_x_i:        Batch-1 next-step right-eigenvector features
+        next_y_r, next_y_i:        Batch-1 next-step left-eigenvector features
+        norm_x_sq_est:             Squared norm of x, shape (1, k) — pre-computed
+                                   by caller (also used downstream for graph loss)
+        norm_y_sq_est:             Squared norm of y, shape (1, k) — same
+        eigenvalue_estimation_method: One of 'separate', 'average', 'two_sided'
+        normalize_eigenvalue_targets: Whether to normalize Rayleigh quotients by
+                                   state norms (ignored for 'two_sided')
+        ip:                        Weighted inner-product closure
+
+    Returns:
+        Tuple (lambda_x_r, lambda_x_i, lambda_y_r, lambda_y_i), each shape (1, k).
+        For 'two_sided', lambda_x == lambda_y (same common estimate for both).
+    """
+    if eigenvalue_estimation_method == 'two_sided':
+        # Bi-orthogonal complex division: lambda = <y, next_x> / <y, x>
+        # normalize_eigenvalue_targets is ignored; the division denominator
+        # already normalises the estimate.
+
+        # Numerator (A = <y, next_x>)
+        num_r = ip(y_r, next_x_r) + ip(y_i, next_x_i)
+        num_i = ip(y_r, next_x_i) - ip(y_i, next_x_r)
+        # Denominator (B = <y, x>)
+        den_r = ip(y_r, x_r) + ip(y_i, x_i)
+        den_i = ip(y_r, x_i) - ip(y_i, x_r)
+        # Denominator Magnitude Squared (|B|^2)
+        den_mag_sq = jnp.maximum(den_r**2 + den_i**2, 1e-6)
+        # Complex Division
+        lambda_r = (num_r * den_r + num_i * den_i) / den_mag_sq
+        lambda_i = (num_i * den_r - num_r * den_i) / den_mag_sq
+
+        # Assign common lambda to both x and y so downstream EMA loss works
+        # without modification.
+        return lambda_r, lambda_i, lambda_r, lambda_i
+
+    else:
+        # 'separate' and 'average': Rayleigh quotient numerators
+        rq_x_r = ip(x_r, next_x_r) + ip(x_i, next_x_i)
+        rq_x_i = ip(x_r, next_x_i) - ip(x_i, next_x_r)
+        rq_y_r = ip(y_r, next_y_r) + ip(y_i, next_y_i)
+        rq_y_i = ip(y_r, next_y_i) - ip(y_i, next_y_r)
+
+        if normalize_eigenvalue_targets:
+            norm_x_clip = jnp.maximum(norm_x_sq_est, 1e-6)
+            norm_y_clip = jnp.maximum(norm_y_sq_est, 1e-6)
+            return (
+                rq_x_r / norm_x_clip,
+                rq_x_i / norm_x_clip,
+                rq_y_r / norm_y_clip,
+                rq_y_i / norm_y_clip,
+            )
+        else:
+            return rq_x_r, rq_x_i, rq_y_r, rq_y_i
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -972,56 +1043,19 @@ def create_update_function(encoder, args):
             # 3. Update Lambda (Eigenvalue) Estimators
             # ----------------------------------------------------------------
 
-            # Compute Rayleigh quotient numerators for x and y (Shape: (1,k))
-            # Used by 'separate' and 'average' methods; also computed here so
-            # 'two_sided' can reuse x/y norms if needed in the future.
-            rq_x_r = ip(x_r, next_x_r) + ip(x_i, next_x_i)
-            rq_x_i = ip(x_r, next_x_i) - ip(x_i, next_x_r)
-            rq_y_r = ip(y_r, next_y_r) + ip(y_i, next_y_i)
-            rq_y_i = ip(y_r, next_y_i) - ip(y_i, next_y_r)
+            # Compute norms (Shape: (1,k)) — used unconditionally by graph loss
+            # normalisation and chirality loss downstream.
+            norm_x_sq_est = ip(x_r, x_r) + ip(x_i, x_i)
+            norm_y_sq_est = ip(y_r, y_r) + ip(y_i, y_i)
 
-            # ── Branch on eigenvalue_estimation_method ────────────────────────
-            if args.eigenvalue_estimation_method == 'two_sided':
-                # Bi-orthogonal complex division: lambda = <y, next_x> / <y, x>
-                # The normalize_eigenvalue_targets flag is ignored for this method;
-                # the complex division denominator serves the same role.
-
-                # Numerator (A = <y, next_x>)
-                num_r = ip(y_r, next_x_r) + ip(y_i, next_x_i)
-                num_i = ip(y_r, next_x_i) - ip(y_i, next_x_r)
-                # Denominator (B = <y, x>)
-                den_r = ip(y_r, x_r) + ip(y_i, x_i)
-                den_i = ip(y_r, x_i) - ip(y_i, x_r)
-                # Denominator Magnitude Squared (|B|^2)
-                den_mag_sq = jnp.maximum(den_r**2 + den_i**2, 1e-6)
-                # Complex Division
-                lambda_r = (num_r * den_r + num_i * den_i) / den_mag_sq
-                lambda_i = (num_i * den_r - num_r * den_i) / den_mag_sq
-
-                # Assign common lambda to both x and y variables so the EMA
-                # loss computation below works without modification.
-                lambda_x_r = lambda_r
-                lambda_x_i = lambda_i
-                lambda_y_r = lambda_r
-                lambda_y_i = lambda_i
-
-            else:
-                # 'separate' and 'average': optionally normalize Rayleigh quotients
-                if args.normalize_eigenvalue_targets:
-                    # Normalize by (clipped) norms to get proper Rayleigh quotients
-                    norm_x_sq_est = ip(x_r, x_r) + ip(x_i, x_i)
-                    norm_y_sq_est = ip(y_r, y_r) + ip(y_i, y_i)
-                    norm_x_clip = jnp.maximum(norm_x_sq_est, 1e-6)
-                    norm_y_clip = jnp.maximum(norm_y_sq_est, 1e-6)
-                    lambda_x_r = rq_x_r / norm_x_clip
-                    lambda_x_i = rq_x_i / norm_x_clip
-                    lambda_y_r = rq_y_r / norm_y_clip
-                    lambda_y_i = rq_y_i / norm_y_clip
-                else:
-                    lambda_x_r = rq_x_r
-                    lambda_x_i = rq_x_i
-                    lambda_y_r = rq_y_r
-                    lambda_y_i = rq_y_i
+            lambda_x_r, lambda_x_i, lambda_y_r, lambda_y_i = _compute_lambda_targets(
+                x_r, x_i, y_r, y_i,
+                next_x_r, next_x_i, next_y_r, next_y_i,
+                norm_x_sq_est, norm_y_sq_est,
+                args.eigenvalue_estimation_method,
+                args.normalize_eigenvalue_targets,
+                ip,
+            )
 
             # EMA loss for eigenvalues
             if args.eigenvalue_estimation_method == 'average':
