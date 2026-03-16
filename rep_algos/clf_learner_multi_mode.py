@@ -54,7 +54,7 @@ def _compute_lyapunov_terms(
         next_x_r, next_x_i, next_y_r, next_y_i:  Batch-1 next-step features
         next_x2_r, next_x2_i, next_y2_r, next_y2_i: Batch-2 next-step features
         params:   Full parameter dict
-        args:     Training arguments (constraint_mode, disentangle_eigenvalues, …)
+        args:     Training arguments (constraint_mode, eigenvalue_estimation_method, …)
         ip:       Weighted inner product (closure over state_weighting)
         multi_ip: Multi-vector weighted inner product (closure over state_weighting)
 
@@ -743,8 +743,9 @@ def init_params(encoder_initial_params, args):
     }
 
     # EMA estimates for eigenvalues
-    if args.disentangle_eigenvalues:
+    if args.eigenvalue_estimation_method != 'average':
         # Separate eigenvalue estimates for x (right) and y (left) eigenvectors
+        # Used by 'separate' and 'two_sided' methods
         params.update({
             'lambda_x_real': jnp.ones((k,)),
             'lambda_x_imag': jnp.zeros((k,)),
@@ -808,7 +809,7 @@ def get_optimizer_masks(args):
     encoder_mask = {'encoder': True}
     other_mask = {'encoder': False}
 
-    if args.disentangle_eigenvalues:
+    if args.eigenvalue_estimation_method != 'average':
         encoder_mask.update({
             'lambda_x_real': False,
             'lambda_x_imag': False,
@@ -954,7 +955,7 @@ def create_update_function(encoder, args):
             # ----------------------------------------------------------------
             # 2. Extract Parameters
             # ----------------------------------------------------------------
-            if args.disentangle_eigenvalues:
+            if args.eigenvalue_estimation_method != 'average':
                 ema_lambda_x_r = params['lambda_x_real'].reshape(1, -1)
                 ema_lambda_x_i = params['lambda_x_imag'].reshape(1, -1)
                 ema_lambda_y_r = params['lambda_y_real'].reshape(1, -1)
@@ -971,44 +972,72 @@ def create_update_function(encoder, args):
             # 3. Update Lambda (Eigenvalue) Estimators
             # ----------------------------------------------------------------
 
-            # Compute norms needed for optional normalization (Shape: (1,k))
-            norm_x_sq_est = ip(x_r, x_r) + ip(x_i, x_i)
-            norm_y_sq_est = ip(y_r, y_r) + ip(y_i, y_i)
-
             # Compute Rayleigh quotient numerators for x and y (Shape: (1,k))
+            # Used by 'separate' and 'average' methods; also computed here so
+            # 'two_sided' can reuse x/y norms if needed in the future.
             rq_x_r = ip(x_r, next_x_r) + ip(x_i, next_x_i)
             rq_x_i = ip(x_r, next_x_i) - ip(x_i, next_x_r)
             rq_y_r = ip(y_r, next_y_r) + ip(y_i, next_y_i)
             rq_y_i = ip(y_r, next_y_i) - ip(y_i, next_y_r)
 
-            if args.normalize_eigenvalue_targets:
-                # Normalize by (clipped) norms to get proper Rayleigh quotients
-                norm_x_clip = jnp.maximum(norm_x_sq_est, 1e-6)
-                norm_y_clip = jnp.maximum(norm_y_sq_est, 1e-6)
-                lambda_x_r = rq_x_r / norm_x_clip
-                lambda_x_i = rq_x_i / norm_x_clip
-                lambda_y_r = rq_y_r / norm_y_clip
-                lambda_y_i = rq_y_i / norm_y_clip
+            # ── Branch on eigenvalue_estimation_method ────────────────────────
+            if args.eigenvalue_estimation_method == 'two_sided':
+                # Bi-orthogonal complex division: lambda = <y, next_x> / <y, x>
+                # The normalize_eigenvalue_targets flag is ignored for this method;
+                # the complex division denominator serves the same role.
+
+                # Numerator (A = <y, next_x>)
+                num_r = ip(y_r, next_x_r) + ip(y_i, next_x_i)
+                num_i = ip(y_r, next_x_i) - ip(y_i, next_x_r)
+                # Denominator (B = <y, x>)
+                den_r = ip(y_r, x_r) + ip(y_i, x_i)
+                den_i = ip(y_r, x_i) - ip(y_i, x_r)
+                # Denominator Magnitude Squared (|B|^2)
+                den_mag_sq = jnp.maximum(den_r**2 + den_i**2, 1e-6)
+                # Complex Division
+                lambda_r = (num_r * den_r + num_i * den_i) / den_mag_sq
+                lambda_i = (num_i * den_r - num_r * den_i) / den_mag_sq
+
+                # Assign common lambda to both x and y variables so the EMA
+                # loss computation below works without modification.
+                lambda_x_r = lambda_r
+                lambda_x_i = lambda_i
+                lambda_y_r = lambda_r
+                lambda_y_i = lambda_i
+
             else:
-                lambda_x_r = rq_x_r
-                lambda_x_i = rq_x_i
-                lambda_y_r = rq_y_r
-                lambda_y_i = rq_y_i
+                # 'separate' and 'average': optionally normalize Rayleigh quotients
+                if args.normalize_eigenvalue_targets:
+                    # Normalize by (clipped) norms to get proper Rayleigh quotients
+                    norm_x_sq_est = ip(x_r, x_r) + ip(x_i, x_i)
+                    norm_y_sq_est = ip(y_r, y_r) + ip(y_i, y_i)
+                    norm_x_clip = jnp.maximum(norm_x_sq_est, 1e-6)
+                    norm_y_clip = jnp.maximum(norm_y_sq_est, 1e-6)
+                    lambda_x_r = rq_x_r / norm_x_clip
+                    lambda_x_i = rq_x_i / norm_x_clip
+                    lambda_y_r = rq_y_r / norm_y_clip
+                    lambda_y_i = rq_y_i / norm_y_clip
+                else:
+                    lambda_x_r = rq_x_r
+                    lambda_x_i = rq_x_i
+                    lambda_y_r = rq_y_r
+                    lambda_y_i = rq_y_i
 
             # EMA loss for eigenvalues
-            if args.disentangle_eigenvalues:
-                lambda_loss = (
-                    ((sg(lambda_x_r) - ema_lambda_x_r) ** 2).sum()
-                    + ((sg(lambda_x_i) - ema_lambda_x_i) ** 2).sum()
-                    + ((sg(lambda_y_r) - ema_lambda_y_r) ** 2).sum()
-                    + ((sg(lambda_y_i) - ema_lambda_y_i) ** 2).sum()
-                )
-            else:
+            if args.eigenvalue_estimation_method == 'average':
                 new_lambda_real = 0.5 * (lambda_x_r + lambda_y_r)
                 new_lambda_imag = 0.5 * (lambda_x_i + lambda_y_i)
                 lambda_loss = (
                     ((sg(new_lambda_real) - ema_lambda_r) ** 2).sum()
                     + ((sg(new_lambda_imag) - ema_lambda_i) ** 2).sum()
+                )
+            else:
+                # 'separate' and 'two_sided' both use disentangled x/y EMA params
+                lambda_loss = (
+                    ((sg(lambda_x_r) - ema_lambda_x_r) ** 2).sum()
+                    + ((sg(lambda_x_i) - ema_lambda_x_i) ** 2).sum()
+                    + ((sg(lambda_y_r) - ema_lambda_y_r) ** 2).sum()
+                    + ((sg(lambda_y_i) - ema_lambda_y_i) ** 2).sum()
                 )
 
             # ----------------------------------------------------------------
@@ -1133,7 +1162,7 @@ def create_update_function(encoder, args):
             clipped_grads = {
                 'encoder': jax.tree_util.tree_map(lambda g: g * encoder_clip_factor, grads['encoder']),
             }
-            if args.disentangle_eigenvalues:
+            if args.eigenvalue_estimation_method != 'average':
                 clipped_grads.update({
                     'lambda_x_real': jnp.clip(grads['lambda_x_real'], -1.0, 1.0),
                     'lambda_x_imag': jnp.clip(grads['lambda_x_imag'], -1.0, 1.0),
@@ -1209,8 +1238,8 @@ def get_eigenvalues(params):
     """
     Extract eigenvalue estimates from params.
 
-    Supports both shared (disentangle_eigenvalues=False) and disentangled
-    (disentangle_eigenvalues=True) parameterizations. When disentangled,
+    Supports both shared ('average') and disentangled ('separate', 'two_sided')
+    eigenvalue_estimation_method parameterizations. When disentangled,
     returns the average of x and y estimates as the canonical eigenvalue.
     """
     if 'lambda_real' in params:
