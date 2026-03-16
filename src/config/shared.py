@@ -23,10 +23,10 @@ class SharedArgs:
     use_layernorm: bool = True  # Whether to use LayerNorm in the network
 
     # Training
-    learning_rate: float = 1e-5
+    learning_rate: float = 3e-4
     batch_size: int = 256
     num_gradient_steps: int = 100000
-    gamma: float = 0.95  # Discount factor for successor representation
+    gamma: float = 0.9  # Discount factor for successor representation
     delta: float = 0.1  # Eigenvalue shift parameter: L = (1+δ)I - M (improves numerical stability)
     ema_learning_rate: float = 0.0001  # EMA update rate for eigenvalue estimates
 
@@ -40,11 +40,11 @@ class SharedArgs:
     # "rejection" : rejection sampling to flatten state distribution (no IS weights needed)
     # "weighted"  : sample from buffer as-is, apply IS ratio weights in the loss
     # "none"      : sample from buffer as-is, no IS correction (correct when distribution is uniform)
-    sampling_mode: str = "rejection"
+    sampling_mode: str = "none"
     rejection_oversample_factor: int = 3  # How many extra samples to draw per rejection round (only used for "rejection")
 
     # Constraint error approximation method (also controls sampling strategy in shared_training)
-    constraint_mode: str = "ema"  # Options: "ema", "two_batch", "single_batch", "same_episodes"
+    constraint_mode: str = "single_batch"  # Options: "ema", "two_batch", "single_batch", "same_episodes"
     # - "ema": EMA approximation (standard sampling)
     # - "two_batch": Unbiased with two independent batches (standard sampling)
     # - "single_batch": Biased with single batch (standard sampling)
