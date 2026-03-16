@@ -726,13 +726,13 @@ def _external_complex_allo_update(params, aux, args):
 # Shared helper: eigenvalue EMA loss
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _compute_lambda_loss(
+def _compute_lambda_terms(
     x_r, x_i, y_r, y_i,
     next_x_r, next_x_i, next_y_r, next_y_i,
     norm_x_sq_est, norm_y_sq_est,
     params,
     eigenvalue_estimation_method, normalize_eigenvalue_targets,
-    ip,
+    ip, sg,
 ):
     """Compute the EMA eigenvalue tracking loss and return the current EMA values.
 
@@ -753,6 +753,7 @@ def _compute_lambda_loss(
         normalize_eigenvalue_targets: Divide Rayleigh quotients by state norms
                                    (ignored for 'two_sided')
         ip:                        Weighted inner-product closure
+        sg:                        Stop-gradient alias
 
     Returns:
         (lambda_loss, ema_lambda_x_r, ema_lambda_x_i, ema_lambda_y_r, ema_lambda_y_i)
@@ -1071,14 +1072,14 @@ def create_update_function(encoder, args):
 
             (lambda_loss,
              ema_lambda_x_r, ema_lambda_x_i,
-             ema_lambda_y_r, ema_lambda_y_i) = _compute_lambda_loss(
+             ema_lambda_y_r, ema_lambda_y_i) = _compute_lambda_terms(
                 x_r, x_i, y_r, y_i,
                 next_x_r, next_x_i, next_y_r, next_y_i,
                 norm_x_sq_est, norm_y_sq_est,
                 params,
                 args.eigenvalue_estimation_method,
                 args.normalize_eigenvalue_targets,
-                ip,
+                ip, sg
             )
 
             # ----------------------------------------------------------------
@@ -1166,10 +1167,6 @@ def create_update_function(encoder, args):
                 'ema_lambda_x_imag': ema_lambda_x_i.mean(),
                 'ema_lambda_y_real': ema_lambda_y_r.mean(),
                 'ema_lambda_y_imag': ema_lambda_y_i.mean(),
-                'new_lambda_x_real': lambda_x_r.mean(),
-                'new_lambda_x_imag': lambda_x_i.mean(),
-                'new_lambda_y_real': lambda_y_r.mean(),
-                'new_lambda_y_imag': lambda_y_i.mean(),
                 **V_components,
                 **enforcement_aux,
             }
