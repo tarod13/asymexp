@@ -3,7 +3,25 @@ import matplotlib.patches as mpatches
 import numpy as np
 import jax.numpy as jnp
 from pathlib import Path
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Set, Tuple, List
+
+
+def _draw_portal_tile_overlays(ax, portal_sources, portal_ends, grid_width):
+    """Overlay colored tiles on portal source (orange) and end (teal) states."""
+    for state in (portal_sources or []):
+        y, x = divmod(state, grid_width)
+        ax.add_patch(mpatches.Rectangle(
+            (x - 0.5, y - 0.5), 1, 1,
+            facecolor='orange', edgecolor='darkorange',
+            alpha=0.4, linewidth=1.5, zorder=9,
+        ))
+    for state in (portal_ends or []):
+        y, x = divmod(state, grid_width)
+        ax.add_patch(mpatches.Rectangle(
+            (x - 0.5, y - 0.5), 1, 1,
+            facecolor='cyan', edgecolor='darkcyan',
+            alpha=0.4, linewidth=1.5, zorder=9,
+        ))
 
 
 
@@ -220,6 +238,8 @@ def plot_eigenvector_comparison(
     normalized_left_real: np.ndarray = None,
     normalized_left_imag: np.ndarray = None,
     door_markers: dict = None,
+    portal_sources: Optional[Set[int]] = None,
+    portal_ends: Optional[Set[int]] = None,
 ):
     """
     Create comparison plots between ground truth and learned eigenvectors.
@@ -237,7 +257,9 @@ def plot_eigenvector_comparison(
         canonical_states: Array of canonical state indices
         grid_width, grid_height: Grid dimensions
         save_dir: Directory to save plots
-        door_markers: Optional door/portal markers for visualization
+        door_markers: Optional door markers (arrows) for visualization
+        portal_sources: Optional set of portal source state indices (colored orange)
+        portal_ends: Optional set of portal end state indices (colored teal)
     """
     from pathlib import Path
     save_dir = Path(save_dir)
@@ -274,7 +296,7 @@ def plot_eigenvector_comparison(
             ax.set_yticks(np.arange(grid_height) - 0.5, minor=True)
             ax.grid(which="minor", color="gray", linestyle='-', linewidth=0.5, alpha=0.3)
 
-            # Add door markers if provided
+            # Add door markers (arrows) if provided
             if door_markers:
                 for (state, action), next_state in door_markers.items():
                     y = state // grid_width
@@ -286,6 +308,8 @@ def plot_eigenvector_comparison(
                     ax.arrow(x, y, dx * 0.3, dy * 0.3,
                             head_width=0.2, head_length=0.15,
                             fc='green', ec='green', linewidth=2, alpha=0.7)
+
+            _draw_portal_tile_overlays(ax, portal_sources, portal_ends, grid_width)
 
             ax.set_title(f'{title}', fontsize=12)
             ax.set_xlabel('X')
@@ -430,6 +454,8 @@ def visualize_eigenvector_on_grid(
     grid_width: int,
     grid_height: int,
     portals: Optional[Dict[Tuple[int, int], int]] = None,
+    portal_sources: Optional[Set[int]] = None,
+    portal_ends: Optional[Set[int]] = None,
     title: Optional[str] = None,
     ax: Optional[plt.Axes] = None,
     cmap: str = 'RdBu_r',
@@ -481,9 +507,8 @@ def visualize_eigenvector_on_grid(
     for j in range(grid_width + 1):
         ax.axvline(j - 0.5, color='gray', linewidth=0.5, alpha=0.3)
 
-    # Add portals/doors if provided
+    # Add door markers (rect+triangle at cell edge) if provided
     if portals is not None and len(portals) > 0:
-        # Door rectangle dimensions
         rect_thickness = 0.15
         rect_width = 0.7
 
@@ -529,6 +554,8 @@ def visualize_eigenvector_on_grid(
             ax.add_patch(rect)
             ax.add_patch(triangle)
 
+    _draw_portal_tile_overlays(ax, portal_sources, portal_ends, grid_width)
+
     ax.set_xlim(-0.5, grid_width - 0.5)
     ax.set_ylim(grid_height - 0.5, -0.5)
     ax.set_aspect('equal')
@@ -547,6 +574,8 @@ def visualize_multiple_eigenvectors(
     grid_width: int,
     grid_height: int,
     portals: Optional[Dict[Tuple[int, int], int]] = None,
+    portal_sources: Optional[Set[int]] = None,
+    portal_ends: Optional[Set[int]] = None,
     eigenvector_type: str = 'right',
     component: str = 'real',
     nrows: Optional[int] = None,
@@ -628,6 +657,8 @@ def visualize_multiple_eigenvectors(
             grid_width=grid_width,
             grid_height=grid_height,
             portals=portals,
+            portal_sources=portal_sources,
+            portal_ends=portal_ends,
             title=f'{eigenvector_type.capitalize()} Eigvec {eigenvec_idx} ({component})\nλ = {np.abs(eigenvalue):.3f}',
             ax=ax,
             cmap='RdBu_r',
@@ -668,6 +699,8 @@ def visualize_hitting_time_on_grid(
     grid_height: int,
     mode: str = 'target',  # 'target' or 'source'
     portals: Optional[Dict[Tuple[int, int], int]] = None,
+    portal_sources: Optional[Set[int]] = None,
+    portal_ends: Optional[Set[int]] = None,
     title: Optional[str] = None,
     ax: Optional[plt.Axes] = None,
     cmap: str = 'viridis',
@@ -741,7 +774,7 @@ def visualize_hitting_time_on_grid(
     for j in range(grid_width + 1):
         ax.axvline(j - 0.5, color='gray', linewidth=0.5, alpha=0.3)
 
-    # Add portals/doors if provided
+    # Add door markers (rect+triangle at cell edge) if provided
     if portals is not None and len(portals) > 0:
         rect_thickness = 0.15
         rect_width = 0.7
@@ -751,7 +784,6 @@ def visualize_hitting_time_on_grid(
             source_x = source_idx % grid_width
             margin = 0.02
 
-            # Action mapping: 0=up, 1=right, 2=down, 3=left
             if action == 0:  # Up
                 rect_x, rect_y = source_x - rect_width/2, source_y - 0.5 - rect_thickness/2
                 rect_w, rect_h = rect_width, rect_thickness
@@ -788,6 +820,8 @@ def visualize_hitting_time_on_grid(
             ax.add_patch(mpatches.Rectangle((rect_x, rect_y), rect_w, rect_h, linewidth=0, edgecolor='none', facecolor='black', zorder=10))
             ax.add_patch(triangle)
 
+    _draw_portal_tile_overlays(ax, portal_sources, portal_ends, grid_width)
+
     ax.set_xlim(-0.5, grid_width - 0.5)
     ax.set_ylim(grid_height - 0.5, -0.5)
     ax.set_aspect('equal')
@@ -808,6 +842,8 @@ def visualize_source_vs_target_hitting_times(
     grid_width: int,
     grid_height: int,
     portals: Optional[Dict[Tuple[int, int], int]] = None,
+    portal_sources: Optional[Set[int]] = None,
+    portal_ends: Optional[Set[int]] = None,
     ncols: int = 5,
     figsize: Optional[Tuple[int, int]] = None,
     wall_color: str = 'gray',
@@ -896,6 +932,8 @@ def visualize_source_vs_target_hitting_times(
             grid_height=grid_height,
             mode='target',
             portals=portals,
+            portal_sources=portal_sources,
+            portal_ends=portal_ends,
             title=f'State {state_idx}\n(Target View: Times TO here)',
             ax=ax_target,
             cmap='viridis',
@@ -917,6 +955,8 @@ def visualize_source_vs_target_hitting_times(
             grid_height=grid_height,
             mode='source',
             portals=portals,
+            portal_sources=portal_sources,
+            portal_ends=portal_ends,
             title=f'State {state_idx}\n(Source View: Times FROM here)',
             ax=ax_source,
             cmap='viridis',
@@ -1608,6 +1648,8 @@ def plot_sampling_distribution(
     grid_height: int,
     save_path: str,
     portals: dict = None,
+    portal_sources: Optional[Set[int]] = None,
+    portal_ends: Optional[Set[int]] = None,
 ):
     """Visualize the empirical sampling distribution D on the grid."""
     fig, ax = plt.subplots(1, 1, figsize=(10, 8))
@@ -1638,6 +1680,8 @@ def plot_sampling_distribution(
                      head_width=0.2, head_length=0.15,
                      fc='red', ec='red', linewidth=2, alpha=0.7)
 
+    _draw_portal_tile_overlays(ax, portal_sources, portal_ends, grid_width)
+
     ax.set_xlabel('X', fontsize=12)
     ax.set_ylabel('Y', fontsize=12)
     ax.set_title('Empirical Sampling Distribution D', fontsize=14, fontweight='bold')
@@ -1664,6 +1708,8 @@ def plot_roc_heatmap(
     title: str,
     save_path: str,
     portals: Optional[Dict[Tuple[int, int], int]] = None,
+    portal_sources: Optional[Set[int]] = None,
+    portal_ends: Optional[Set[int]] = None,
 ) -> None:
     """
     Plot a per-state Spearman ROC value overlaid onto the maze topology.
@@ -1687,6 +1733,8 @@ def plot_roc_heatmap(
         grid_width=grid_width,
         grid_height=grid_height,
         portals=portals,
+        portal_sources=portal_sources,
+        portal_ends=portal_ends,
         title=title,
         ax=ax,
         cmap='RdBu_r',

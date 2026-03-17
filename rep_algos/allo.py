@@ -1311,6 +1311,8 @@ def learn_eigenvectors(args):
                     s_full = int(canonical_states[s_canonical])
                     s_prime_full = int(canonical_states[s_prime_canonical])
                     door_markers[(s_full, a_forward)] = s_prime_full
+            from src.utils.envs import get_portal_tile_sets
+            portal_sources, portal_ends = get_portal_tile_sets(env)
 
             plot_sampling_distribution(
                 sampling_probs=sampling_probs,
@@ -1318,7 +1320,9 @@ def learn_eigenvectors(args):
                 grid_width=env.width,
                 grid_height=env.height,
                 save_path=str(plots_dir / "sampling_distribution.png"),
-                portals=door_markers if door_markers else None
+                portals=door_markers if door_markers else None,
+                portal_sources=portal_sources if portal_sources else None,
+                portal_ends=portal_ends if portal_ends else None,
             )
 
     # Initialize the encoder
@@ -1582,6 +1586,8 @@ def learn_eigenvectors(args):
             s_full = int(canonical_states[s_canonical])
             s_prime_full = int(canonical_states[s_prime_canonical])
             door_markers[(s_full, a_forward)] = s_prime_full
+    from src.utils.envs import get_portal_tile_sets
+    portal_sources, portal_ends = get_portal_tile_sets(env)
 
     # Save visualization metadata for new runs (skip if resuming)
     if checkpoint_data is None:
@@ -1590,6 +1596,8 @@ def learn_eigenvectors(args):
             'grid_width': env.width,
             'grid_height': env.height,
             'door_markers': door_markers,
+            'portal_sources': portal_sources,
+            'portal_ends': portal_ends,
             'num_eigenvectors': args.num_eigenvectors,
             'gamma': args.gamma,
         }
@@ -1615,6 +1623,8 @@ def learn_eigenvectors(args):
                 grid_width=env.width,
                 grid_height=env.height,
                 portals=door_markers if door_markers else None,
+                portal_sources=portal_sources if portal_sources else None,
+                portal_ends=portal_ends if portal_ends else None,
                 eigenvector_type='right',
                 component='real',
                 ncols=min(4, args.num_eigenvectors),
@@ -1641,6 +1651,8 @@ def learn_eigenvectors(args):
                 grid_width=env.width,
                 grid_height=env.height,
                 portals=door_markers if door_markers else None,
+                portal_sources=portal_sources if portal_sources else None,
+                portal_ends=portal_ends if portal_ends else None,
                 eigenvector_type='right',
                 component='real',
                 ncols=min(4, args.num_eigenvectors),
@@ -1667,6 +1679,8 @@ def learn_eigenvectors(args):
                 grid_width=env.width,
                 grid_height=env.height,
                 portals=door_markers if door_markers else None,
+                portal_sources=portal_sources if portal_sources else None,
+                portal_ends=portal_ends if portal_ends else None,
                 eigenvector_type='right',
                 component='real',
                 ncols=min(4, args.num_eigenvectors),
@@ -1851,6 +1865,8 @@ def learn_eigenvectors(args):
                     grid_width=env.width,
                     grid_height=env.height,
                     portals=door_markers if door_markers else None,
+                    portal_sources=portal_sources if portal_sources else None,
+                    portal_ends=portal_ends if portal_ends else None,
                     eigenvector_type='right',
                     component='real',
                     ncols=min(4, args.num_eigenvectors),
@@ -1939,6 +1955,8 @@ def learn_eigenvectors(args):
             grid_width=env.width,
             grid_height=env.height,
             portals=door_markers if door_markers else None,
+            portal_sources=portal_sources if portal_sources else None,
+            portal_ends=portal_ends if portal_ends else None,
             title='Ground Truth Eigenvector 1',
             ax=axes[0],
             cmap='RdBu_r',
@@ -1954,6 +1972,8 @@ def learn_eigenvectors(args):
             grid_width=env.width,
             grid_height=env.height,
             portals=door_markers if door_markers else None,
+            portal_sources=portal_sources if portal_sources else None,
+            portal_ends=portal_ends if portal_ends else None,
             title='Learned Feature 1',
             ax=axes[1],
             cmap='RdBu_r',
