@@ -13,8 +13,10 @@ The encoder's `right_real` head is used as φ_k; the other heads (`left_real`,
 ignored at evaluation time.  run_reward_shaping.py is expected to load the
 ALLO model with  left = right = right_real  and  imag = 0.
 
-Eigenvalue estimates are derived from the dual diagonal:
-    λ_k  ≈  −0.5 · duals[k, k]
+Eigenvalue estimates are kernel eigenvalues λ_M computed via geometric Rayleigh
+quotient: λ_k ≈ E_D[φ_k(s) · φ_k(s')] where s' is drawn geometrically from s
+with parameter γ.  This matches the 'kernel' eigenvalue_type used by
+shared_training.py for hitting-time computation.
 
 Usage:
     from rep_algos.shared_training import learn_eigenvectors
@@ -225,6 +227,16 @@ def create_update_function(encoder, args):
                 error_matrix_1[:, :min(2, d)]
             ).sum()
 
+            # Geometric Rayleigh quotient: E_D[φ_k(s) · φ_k(s')] ≈ ⟨φ_k, Mφ_k⟩ = λ_M[k]
+            # With geometric replay buffer (parameter γ) and normalized φ (E_D[φ²] ≈ 1),
+            # this directly estimates kernel eigenvalues λ_M.  stop_gradient ensures this
+            # monitoring quantity does not contribute extra gradients to the encoder.
+            rayleigh_quotient = jnp.einsum(
+                'ij,ij->j',
+                state_weighting * jax.lax.stop_gradient(phi),
+                jax.lax.stop_gradient(next_phi),
+            ) / n
+
             aux = {
                 'total_loss':                    allo_loss,
                 'graph_loss':                    graph_loss,
@@ -237,6 +249,7 @@ def create_update_function(encoder, args):
                 'total_two_component_error':     total_two,
                 'distance_to_constraint_manifold': dist_manif,
                 'distance_to_origin':            norm_phi.sum(),
+                'rayleigh_quotient':             rayleigh_quotient,
             }
 
             return allo_loss, (error_matrix_1, aux)
@@ -257,8 +270,11 @@ def create_update_function(encoder, args):
         new_params['barrier_coefs'] = jnp.clip(
             new_params['barrier_coefs'], 0.0, max_barrier
         )
-        # Derive eigenvalue estimates from dual diagonal
-        new_params['lambda_real'] = -0.5 * jnp.diag(new_params['duals'])
+        # Kernel eigenvalue estimates via geometric Rayleigh quotient.
+        # E_D[φ_k(s) · φ_k(s')] ≈ ⟨φ_k, M φ_k⟩ = λ_M[k] under geometric replay,
+        # replacing the previous dual-diagonal heuristic which gave (λ_L − δ)/4,
+        # an incorrect space for the 'kernel' eigenvalue_type used downstream.
+        new_params['lambda_real'] = aux['rayleigh_quotient']
         new_params['lambda_imag'] = jnp.zeros_like(new_params['lambda_imag'])
 
         # Grad norm for monitoring

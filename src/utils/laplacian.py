@@ -250,66 +250,92 @@ def compute_eigendecomposition(
     # jnp.linalg.eig returns (eigenvalues, right_eigenvectors).
     eigenvalues, right_eigenvectors = jnp.linalg.eig(transition_matrix)
 
-    # Compute the adjoint matrix and its right eigenvectors.
-    # When D is None the adjoint is L^T (standard left eigenvectors).
-    # When D is provided the adjoint is D^{-1} L^T D, whose right eigenvectors
-    # are the left eigenvectors of L in the D-weighted inner product.
-    if D is not None:
-        d = jnp.diag(D)
-        D_inv = jnp.diag(1.0 / d.clip(min=1e-12))  # Avoid division by zero
-        adjoint_matrix = D_inv @ transition_matrix.T @ D
+    if k is None:
+        # -----------------------------------------------------------------------
+        # Full-rank path: compute biorthonormal left eigenvectors via the matrix
+        # inverse of R (the right eigenvector matrix).
+        #
+        # If L = R Λ R^{-1} then the biorthonormal left eigenvectors are the
+        # columns of conj(inv(R)).T, i.e. Ψ^H Φ = conj(R^{-1})^T ^H @ R
+        #                                        = R^{-1} @ R = I  ✓
+        #
+        # The argmax-matching approach used for the truncated (k < N) case is
+        # NOT bijective: multiple right eigenvectors can claim the same left
+        # eigenvector, silently breaking biorthonormality and producing large
+        # spurious (negative) contributions in the hitting-time formula.
+        # The matrix-inverse path avoids this entirely.
+        # -----------------------------------------------------------------------
+        left_eigenvectors = jnp.conj(jnp.linalg.inv(right_eigenvectors)).T
+
     else:
-        adjoint_matrix = transition_matrix.T
-        d = None
+        # -----------------------------------------------------------------------
+        # Truncated path: match each right eigenvector to the closest left
+        # eigenvector of the adjoint, then biorthogonalize.
+        # -----------------------------------------------------------------------
 
-    _, left_eigenvectors = jnp.linalg.eig(adjoint_matrix)
+        # Compute the adjoint matrix and its right eigenvectors.
+        # When D is None the adjoint is L^T (standard left eigenvectors).
+        # When D is provided the adjoint is D^{-1} L^T D, whose right eigenvectors
+        # are the left eigenvectors of L in the D-weighted inner product.
+        if D is not None:
+            d = jnp.diag(D)
+            D_inv = jnp.diag(1.0 / d.clip(min=1e-12))  # Avoid division by zero
+            adjoint_matrix = D_inv @ transition_matrix.T @ D
+        else:
+            adjoint_matrix = transition_matrix.T
+            d = None
 
-    # Normalize adjoint eigenvector columns by their D-weighted norm before
-    # pairing.  This makes the matching scale-invariant (directional only),
-    # preventing large-norm vectors from dominating the argmax.
-    # D-norm:  ||w||_D = sqrt( w^H D w ).  When D is None this reduces to the
-    # standard Euclidean norm.
-    if D is not None:
-        # einsum computes diag of (left^H diag(d) left), i.e. per-column D-norms²
-        norms = jnp.sqrt(
-            jnp.einsum('i,ij,ij->j', d, jnp.conj(left_eigenvectors), left_eigenvectors).real
-        )
-    else:
-        norms = jnp.sqrt(jnp.sum(jnp.abs(left_eigenvectors) ** 2, axis=0))
+        _, left_eigenvectors = jnp.linalg.eig(adjoint_matrix)
 
-    left_normalized = left_eigenvectors / jnp.maximum(norms, 1e-12)[None, :]
+        # Normalize adjoint eigenvector columns by their D-weighted norm before
+        # pairing.  This makes the matching scale-invariant (directional only),
+        # preventing large-norm vectors from dominating the argmax.
+        # D-norm:  ||w||_D = sqrt( w^H D w ).  When D is None this reduces to the
+        # standard Euclidean norm.
+        if D is not None:
+            # einsum computes diag of (left^H diag(d) left), i.e. per-column D-norms²
+            norms = jnp.sqrt(
+                jnp.einsum('i,ij,ij->j', d, jnp.conj(left_eigenvectors), left_eigenvectors).real
+            )
+        else:
+            norms = jnp.sqrt(jnp.sum(jnp.abs(left_eigenvectors) ** 2, axis=0))
 
-    # Match each right eigenvector to the best adjoint eigenvector via the
-    # D-weighted inner product of the *normalized* adjoint columns.
-    # cross_products[i, j] ≈ (w_i / ||w_i||_D)^H D r_j.
-    if D is not None:
-        cross_products_norm = jnp.einsum(
-            'ij,i,ik->jk', jnp.conj(left_normalized), d, right_eigenvectors
-        )
-    else:
-        cross_products_norm = jnp.einsum(
-            'ij,ik->jk', jnp.conj(left_normalized), right_eigenvectors
-        )
+        left_normalized = left_eigenvectors / jnp.maximum(norms, 1e-12)[None, :]
 
-    # For each right eigenvector (column j) find the best matching adjoint
-    # eigenvector (row i) — scale-free thanks to normalization above.
-    best_left_indices = jnp.argmax(jnp.abs(cross_products_norm), axis=0)
+        # Match each right eigenvector to the best adjoint eigenvector via the
+        # D-weighted inner product of the *normalized* adjoint columns.
+        # cross_products[i, j] ≈ (w_i / ||w_i||_D)^H D r_j.
+        if D is not None:
+            cross_products_norm = jnp.einsum(
+                'ij,i,ik->jk', jnp.conj(left_normalized), d, right_eigenvectors
+            )
+        else:
+            cross_products_norm = jnp.einsum(
+                'ij,ik->jk', jnp.conj(left_normalized), right_eigenvectors
+            )
 
-    # Reorder the *un-normalized* adjoint eigenvectors to align with the right
-    # eigenvectors, then apply biorthogonality normalization using the
-    # D-weighted inner product of the original (un-normalized) vectors.
-    left_eigenvectors = left_normalized[:, best_left_indices]
+        # For each right eigenvector (column j) find the best matching adjoint
+        # eigenvector (row i) — scale-free thanks to normalization above.
+        best_left_indices = jnp.argmax(jnp.abs(cross_products_norm), axis=0)
 
-    if d is not None:
-        dot_products = jnp.einsum(
-            'ij,i,ij->j', jnp.conj(left_eigenvectors), d, right_eigenvectors
-        )
-    else:
-        dot_products = jnp.einsum(
-            'ij,ij->j', jnp.conj(left_eigenvectors), right_eigenvectors
-        )
+        # Reorder the *un-normalized* adjoint eigenvectors to align with the right
+        # eigenvectors, then apply biorthogonality normalization using the
+        # D-weighted inner product of the original (un-normalized) vectors.
+        left_eigenvectors = left_normalized[:, best_left_indices]
 
-    left_eigenvectors = left_eigenvectors / dot_products[None, :]
+        if d is not None:
+            dot_products = jnp.einsum(
+                'ij,i,ij->j', jnp.conj(left_eigenvectors), d, right_eigenvectors
+            )
+        else:
+            dot_products = jnp.einsum(
+                'ij,ij->j', jnp.conj(left_eigenvectors), right_eigenvectors
+            )
+
+        # Biorthogonality normalization: scale each left eigenvector so that
+        # ⟨ψ_k, φ_k⟩ = 1.  (The full-rank path already satisfies this exactly
+        # via the matrix inverse, so this step only applies to the truncated path.)
+        left_eigenvectors = left_eigenvectors / dot_products[None, :]
 
     # Sort by magnitude of right eigenvalues if requested.
     if sort_by_magnitude:

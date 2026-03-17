@@ -630,7 +630,7 @@ def compute_hitting_times_from_eigenvectors(
     # matrices the eigensolver may return the stationary eigenvector with negative
     # sign, making left[:,0] = π/α with α < 0.  Dividing by sum(left[:,0]) = 1/α
     # gives π regardless of the sign of α.
-    stationary = jnp.real(left[:, 0]) / jnp.sum(jnp.real(left[:, 0]))
+    stationary = jnp.abs(left[:, 0]) / jnp.sum(jnp.abs(left[:, 0]))
 
     # Effective horizon weights: 1/(1-λ_P) for k >= 1
     mode_weights = 1.0 / (1.0 - eigenvalues[1:])  # [num_eigenvectors-1]
@@ -642,12 +642,18 @@ def compute_hitting_times_from_eigenvectors(
         - jnp.expand_dims(right[:, 1:], axis=0)
     )  # [num_states, num_states, num_eigenvectors-1]
 
-    # h(i,j) = Σ_k mode_weights[k] * (1/π_j) * ψ_jk * (φ_jk - φ_ik)
+    # Biorthogonality normalization: divide by ⟨ψ_.k, φ_.k⟩ for each mode k ≥ 1.
+    # For biorthonormal eigenvectors these inner products equal 1 (no-op).
+    # For biorthogonal learned eigenvectors this corrects the spectral expansion
+    # coefficients so the formula is exact regardless of per-mode scaling.
+    inner_products = jnp.einsum('jk,jk->k', jnp.conj(left[:, 1:]), right[:, 1:])
+
+    # h(i,j) = Σ_k [mode_weights[k] / ⟨ψ_.k, φ_.k⟩] * (1/π_j) * ψ_jk * (φ_jk - φ_ik)
     hitting_times = jnp.real(jnp.einsum(
         'k,j,jk,jik->ij',
-        mode_weights,
+        mode_weights / inner_products,
         1.0 / stationary,
-        left[:, 1:],
+        jnp.conj(left[:, 1:]),
         pairwise_diff,
     ))  # [num_states, num_states]
 
@@ -692,7 +698,7 @@ def compute_hitting_times(
         'k,j,jk,jik->ij',
         mode_effective_horizons,
         1 / stationary_distribution,
-        left_eigenvectors[:, 1:],
+        jnp.conj(left_eigenvectors[:, 1:]),
         pairwise_differences,
     )  # Shape [num_states, num_states]
 
