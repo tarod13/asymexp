@@ -113,7 +113,7 @@ def plot_learning_curves_one(metrics_history: list, save_path: str):
     axes[2, 0].set_title('Eigenvalue Estimates (kernel/SR space)')
     _eig_indices = sorted(set(
         int(key.split('_')[1])
-        for m in metrics_history[:1]
+        for m in metrics_history
         for key in m
         if key.startswith('eigenvalue_') and key.endswith('_real')
     ))
@@ -128,7 +128,7 @@ def plot_learning_curves_one(metrics_history: list, save_path: str):
             steps, [m.get(f'eigenvalue_{_ki}_imag', float('nan')) for m in metrics_history],
             label=f'λ_{_ki} (imag)', linestyle='--', color=_c, alpha=0.7,
         )
-    if 'avg_eigenvalue_error' in metrics_history[0]:
+    if any('avg_eigenvalue_error' in m for m in metrics_history):
         ax2 = axes[2, 0].twinx()
         ax2.plot(
             steps, [m.get('avg_eigenvalue_error', float('nan')) for m in metrics_history],
@@ -373,10 +373,12 @@ def plot_auxiliary_metrics(metrics_history: list, save_path: str):
     fig.suptitle('Auxiliary Metrics Evolution', fontsize=14)
 
     # Plot 1: Eigenvalue estimates (real part) — keyed as eigenvalue_{k}_real
+    # Search all entries (not just the first) so that runs resumed from older
+    # checkpoints that pre-date eigenvalue logging still render correctly.
     ax = axes[0, 0]
     _eig_indices = sorted(set(
         int(key.split('_')[1])
-        for m in metrics_history[:1]
+        for m in metrics_history
         for key in m
         if key.startswith('eigenvalue_') and key.endswith('_real')
     ))
@@ -404,7 +406,7 @@ def plot_auxiliary_metrics(metrics_history: list, save_path: str):
     ax.set_title('Eigenvalue Estimates - Imag Part (kernel/SR)')
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
-    if 'avg_eigenvalue_error' in metrics_history[0]:
+    if any('avg_eigenvalue_error' in m for m in metrics_history):
         ax2 = ax.twinx()
         ax2.plot(
             steps, [m.get('avg_eigenvalue_error', float('nan')) for m in metrics_history],
@@ -1746,3 +1748,120 @@ def plot_roc_heatmap(
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"ROC heatmap saved to {save_path}")
+
+
+def plot_hitting_time_heatmap(
+    hitting_times: np.ndarray,
+    canonical_states: np.ndarray,
+    grid_width: int,
+    grid_height: int,
+    title: str,
+    save_path: str,
+    portals: Optional[Dict[Tuple[int, int], int]] = None,
+    portal_sources: Optional[Set[int]] = None,
+    portal_ends: Optional[Set[int]] = None,
+) -> None:
+    """
+    Save a heatmap of the mean hitting time FROM each state (row mean of the
+    hitting-time matrix) overlaid on the maze topology.
+
+    The per-state mean hitting time (averaged over all goals) gives an
+    interpretable single-number summary of how 'central' or 'reachable'
+    each state is.
+
+    Args:
+        hitting_times: [num_states, num_states] matrix where entry [i, j] is
+                       the expected hitting time from state i to state j.
+        canonical_states: 1-D array of canonical state indices [num_states].
+        grid_width:       Width of the grid in cells.
+        grid_height:      Height of the grid in cells.
+        title:            Plot title.
+        save_path:        File path for the saved figure.
+        portals:          Optional portal/door markers.
+    """
+    mean_ht = np.nanmean(hitting_times, axis=1)   # [num_states]
+    fig, ax = plt.subplots(figsize=(7, 6))
+    visualize_eigenvector_on_grid(
+        eigenvector_idx=0,
+        eigenvector_values=mean_ht,
+        canonical_states=canonical_states,
+        grid_width=grid_width,
+        grid_height=grid_height,
+        portals=portals,
+        portal_sources=portal_sources,
+        portal_ends=portal_ends,
+        title=title,
+        ax=ax,
+        cmap='viridis',
+        show_colorbar=True,
+    )
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Hitting time heatmap saved to {save_path}")
+
+
+def plot_full_ideal_summary(
+    full_ideal_hitting_times: np.ndarray,
+    goal_rocs: np.ndarray,
+    source_rocs: np.ndarray,
+    canonical_states: np.ndarray,
+    grid_width: int,
+    grid_height: int,
+    save_dir: str,
+    portals: Optional[Dict[Tuple[int, int], int]] = None,
+    portal_sources: Optional[Set[int]] = None,
+    portal_ends: Optional[Set[int]] = None,
+) -> None:
+    """
+    Generate and save the three Full Ideal summary plots:
+      1. Full Ideal GT hitting time heatmap (mean over goals).
+      2. Goal ROC heatmap  – per-goal  Spearman ρ overlaid on maze.
+      3. Source ROC heatmap – per-source Spearman ρ overlaid on maze.
+
+    Args:
+        full_ideal_hitting_times: [N, N] full-rank GT hitting time matrix.
+        goal_rocs:   [N] per-goal   Spearman ρ values (learned vs Full Ideal).
+        source_rocs: [N] per-source Spearman ρ values (learned vs Full Ideal).
+        canonical_states: 1-D array of canonical state indices [N].
+        grid_width, grid_height: Grid dimensions.
+        save_dir: Directory in which to save the three PNG files.
+        portals, portal_sources, portal_ends: Optional topology markers.
+    """
+    save_dir = Path(save_dir)
+
+    plot_hitting_time_heatmap(
+        hitting_times=full_ideal_hitting_times,
+        canonical_states=canonical_states,
+        grid_width=grid_width,
+        grid_height=grid_height,
+        title='Full Ideal GT Hitting Times (mean over goals)',
+        save_path=str(save_dir / 'full_ideal_hitting_times.png'),
+        portals=portals,
+        portal_sources=portal_sources,
+        portal_ends=portal_ends,
+    )
+
+    plot_roc_heatmap(
+        roc_values=goal_rocs,
+        canonical_states=canonical_states,
+        grid_width=grid_width,
+        grid_height=grid_height,
+        title='Full Ideal Goal ROC (Spearman ρ, learned vs Full Ideal GT)',
+        save_path=str(save_dir / 'full_ideal_goal_roc.png'),
+        portals=portals,
+        portal_sources=portal_sources,
+        portal_ends=portal_ends,
+    )
+
+    plot_roc_heatmap(
+        roc_values=source_rocs,
+        canonical_states=canonical_states,
+        grid_width=grid_width,
+        grid_height=grid_height,
+        title='Full Ideal Source ROC (Spearman ρ, learned vs Full Ideal GT)',
+        save_path=str(save_dir / 'full_ideal_source_roc.png'),
+        portals=portals,
+        portal_sources=portal_sources,
+        portal_ends=portal_ends,
+    )

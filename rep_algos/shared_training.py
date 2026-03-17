@@ -57,6 +57,8 @@ from src.utils.plotting import (
     visualize_multiple_eigenvectors,
     visualize_source_vs_target_hitting_times,
     plot_roc_heatmap,
+    plot_hitting_time_heatmap,
+    plot_full_ideal_summary,
 )
 from src.utils.laplacian import compute_eigendecomposition
 
@@ -196,6 +198,14 @@ def learn_eigenvectors(args, learner_module, method):
         gt_right_real = jnp.array(np.load(results_dir / "gt_right_real.npy"))
         gt_right_imag = jnp.array(np.load(results_dir / "gt_right_imag.npy"))
 
+        # Load full-rank (all N eigenpairs) eigendecomposition for Full Ideal GT
+        full_eigenvalues_real = jnp.array(np.load(results_dir / "full_eigenvalues_real.npy"))
+        full_eigenvalues_imag = jnp.array(np.load(results_dir / "full_eigenvalues_imag.npy"))
+        full_left_real = jnp.array(np.load(results_dir / "full_left_real.npy"))
+        full_left_imag = jnp.array(np.load(results_dir / "full_left_imag.npy"))
+        full_right_real = jnp.array(np.load(results_dir / "full_right_real.npy"))
+        full_right_imag = jnp.array(np.load(results_dir / "full_right_imag.npy"))
+
         state_coords = jnp.array(np.load(results_dir / "state_coords.npy"))
 
         # Try to load sampling distribution if it exists
@@ -334,6 +344,28 @@ def learn_eigenvectors(args, learner_module, method):
             print("done")
         print("Per-wind GT computation complete.")
 
+    # Full-rank (all N eigenpairs) eigendecomposition for the Full Ideal GT baseline.
+    # Always uses the plain Laplacian L (the environment's canonical Laplacian) so that
+    # the Full Ideal represents exact, un-truncated hitting times for the MDP regardless
+    # of which learning algorithm is being used.
+    if checkpoint_data is None:
+        N_states = laplacian_matrix.shape[0]
+        print(f"\nComputing Full Ideal GT: full-rank ({N_states}) eigendecomposition of L ...")
+        _full_eigendecomp = compute_eigendecomposition(
+            laplacian_matrix,
+            k=None,
+            ascending=True,
+            sym_eig=sym_eig,
+            D=gt_D,
+        )
+        full_eigenvalues_real = _full_eigendecomp['eigenvalues_real']
+        full_eigenvalues_imag = _full_eigendecomp['eigenvalues_imag']
+        full_left_real  = _full_eigendecomp['left_eigenvectors_real']
+        full_left_imag  = _full_eigendecomp['left_eigenvectors_imag']
+        full_right_real = _full_eigendecomp['right_eigenvectors_real']
+        full_right_imag = _full_eigendecomp['right_eigenvectors_imag']
+        print(f"Full Ideal GT eigendecomposition complete ({N_states} eigenpairs).")
+
     # Save data for new runs (skip if resuming)
     if checkpoint_data is None:
         # Save ground truth eigendecomposition and state coords
@@ -344,6 +376,13 @@ def learn_eigenvectors(args, learner_module, method):
         np.save(results_dir / "gt_left_imag.npy", np.array(gt_left_imag))
         np.save(results_dir / "gt_right_real.npy", np.array(gt_right_real))
         np.save(results_dir / "gt_right_imag.npy", np.array(gt_right_imag))
+        # Full-rank eigendecomposition for Full Ideal GT
+        np.save(results_dir / "full_eigenvalues_real.npy", np.array(full_eigenvalues_real))
+        np.save(results_dir / "full_eigenvalues_imag.npy", np.array(full_eigenvalues_imag))
+        np.save(results_dir / "full_left_real.npy",  np.array(full_left_real))
+        np.save(results_dir / "full_left_imag.npy",  np.array(full_left_imag))
+        np.save(results_dir / "full_right_real.npy", np.array(full_right_real))
+        np.save(results_dir / "full_right_imag.npy", np.array(full_right_imag))
         # State coordinates
         np.save(results_dir / "state_coords.npy", np.array(state_coords))
         # Sampling distribution
@@ -824,9 +863,29 @@ def learn_eigenvectors(args, learner_module, method):
                 eigenvalue_type='laplacian',
             )
 
-            # Compute rank-order correlations between GT and learned hitting times
+            # Full Ideal GT hitting times: exact un-truncated baseline using all N
+            # eigenpairs of L.  Eliminates truncation artifacts from the k-pair GT.
+            full_ideal_gt_hitting_times = compute_hitting_times_from_eigenvectors(
+                left_real=full_left_real,
+                left_imag=full_left_imag,
+                right_real=full_right_real,
+                right_imag=full_right_imag,
+                eigenvalues_real=full_eigenvalues_real,
+                eigenvalues_imag=full_eigenvalues_imag,
+                gamma=args.gamma,
+                delta=args.delta,
+                eigenvalue_type='laplacian',
+            )
+
+            # Rank-order correlations between truncated GT and learned hitting times
             _roc_results = compute_hitting_time_rank_correlations(
                 np.array(gt_hitting_times),
+                np.array(hitting_times),
+            )
+
+            # Rank-order correlations between Full Ideal GT and learned hitting times
+            _full_ideal_roc_results = compute_hitting_time_rank_correlations(
+                np.array(full_ideal_gt_hitting_times),
                 np.array(hitting_times),
             )
 
@@ -868,9 +927,13 @@ def learn_eigenvectors(args, learner_module, method):
             )
             metrics_dict['avg_eigenvalue_error'] = float(np.mean(_eig_errors))
 
-            # Rank-order correlations between GT and learned hitting times
+            # Rank-order correlations: truncated GT vs learned
             metrics_dict['avg_goal_roc'] = _roc_results['avg_goal_roc']
             metrics_dict['avg_source_roc'] = _roc_results['avg_source_roc']
+
+            # Rank-order correlations: Full Ideal GT vs learned (no truncation artifacts)
+            metrics_dict['full_ideal_avg_goal_roc'] = _full_ideal_roc_results['avg_goal_roc']
+            metrics_dict['full_ideal_avg_source_roc'] = _full_ideal_roc_results['avg_source_roc']
 
             # Per-wind evaluation (only when random_wind=True)
             if per_wind_gt:
@@ -1188,7 +1251,7 @@ def learn_eigenvectors(args, learner_module, method):
         eigenvalue_type='kernel',
     )
 
-    # Compute ground truth hitting times
+    # Compute ground truth hitting times (truncated, k eigenpairs)
     final_gt_hitting_times = compute_hitting_times_from_eigenvectors(
         left_real=gt_left_real,
         left_imag=gt_left_imag,
@@ -1200,6 +1263,21 @@ def learn_eigenvectors(args, learner_module, method):
         delta=args.delta,
         eigenvalue_type='laplacian',
     )
+
+    # Compute Full Ideal GT hitting times (all N eigenpairs — no truncation)
+    final_full_ideal_gt_hitting_times = compute_hitting_times_from_eigenvectors(
+        left_real=full_left_real,
+        left_imag=full_left_imag,
+        right_real=full_right_real,
+        right_imag=full_right_imag,
+        eigenvalues_real=full_eigenvalues_real,
+        eigenvalues_imag=full_eigenvalues_imag,
+        gamma=args.gamma,
+        delta=args.delta,
+        eigenvalue_type='laplacian',
+    )
+    np.save(results_dir / "full_ideal_gt_hitting_times.npy",
+            np.array(final_full_ideal_gt_hitting_times))
 
     # Select states to visualize (evenly spaced across state space)
     num_states_to_viz = min(6, num_states)
@@ -1239,7 +1317,7 @@ def learn_eigenvectors(args, learner_module, method):
     )
     plt.close()
 
-    # 6. ROC heatmaps
+    # 6. ROC heatmaps (truncated GT vs learned)
     print("Generating rank-order correlation heatmaps...")
     _final_roc = compute_hitting_time_rank_correlations(
         np.array(final_gt_hitting_times),
@@ -1263,6 +1341,25 @@ def learn_eigenvectors(args, learner_module, method):
         grid_height=env.height,
         title='Source Rank-Order Correlation (Spearman ρ)',
         save_path=str(plots_dir / "source_roc_heatmap.png"),
+        portals=door_markers if door_markers else None,
+        portal_sources=portal_sources if portal_sources else None,
+        portal_ends=portal_ends if portal_ends else None,
+    )
+
+    # 7. Full Ideal summary: hitting time heatmap + goal/source ROC heatmaps
+    print("Generating Full Ideal GT summary plots...")
+    _final_full_ideal_roc = compute_hitting_time_rank_correlations(
+        np.array(final_full_ideal_gt_hitting_times),
+        np.array(final_hitting_times),
+    )
+    plot_full_ideal_summary(
+        full_ideal_hitting_times=np.array(final_full_ideal_gt_hitting_times),
+        goal_rocs=_final_full_ideal_roc['goal_rocs'],
+        source_rocs=_final_full_ideal_roc['source_rocs'],
+        canonical_states=np.array(canonical_states),
+        grid_width=env.width,
+        grid_height=env.height,
+        save_dir=str(plots_dir),
         portals=door_markers if door_markers else None,
         portal_sources=portal_sources if portal_sources else None,
         portal_ends=portal_ends if portal_ends else None,
