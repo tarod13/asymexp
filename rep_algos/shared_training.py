@@ -1046,7 +1046,9 @@ def learn_eigenvectors(args, learner_module, method):
                 print(f"  Eigenvalues (kernel): {', '.join(_eig_strs)}")
                 print(f"  Avg eigenvalue error: {metrics_dict['avg_eigenvalue_error']:.4f}, "
                       f"goal_roc={metrics_dict['avg_goal_roc']:.4f}, "
-                      f"source_roc={metrics_dict['avg_source_roc']:.4f}")
+                      f"source_roc={metrics_dict['avg_source_roc']:.4f} | "
+                      f"full_ideal_goal_roc={metrics_dict['full_ideal_avg_goal_roc']:.4f}, "
+                      f"full_ideal_source_roc={metrics_dict['full_ideal_avg_source_roc']:.4f}")
                 print(f"  Batch diversity: unique={unique_states}/{total_states} ({coverage*100:.1f}%), "
                       f"entropy={normalized_entropy:.3f}, max_freq={max_state_freq:.4f}")
         log_time = time.time() - log_start
