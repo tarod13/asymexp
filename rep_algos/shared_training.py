@@ -846,11 +846,11 @@ def learn_eigenvectors(args, learner_module, method):
             # Average eigenvalue error vs GT in kernel (SR) space.
             # GT Laplacian eigenvalues λ_L relate to kernel eigenvalues λ_M via:
             #   λ_M = (1+δ) - λ_L   (since L = (1+δ)I - M shares eigenvectors with M)
-            # GT index 0 is the trivial stationary eigenvalue; non-trivial ones start at 1.
-            # Use min() to guard against GT having fewer non-trivial eigenvalues than k_eig.
-            _n_compare = min(k_eig, len(gt_eigenvalues_real) - 1)
-            _gt_kernel_real = (1.0 + args.delta) - np.array(gt_eigenvalues_real[1:_n_compare + 1])
-            _gt_kernel_imag = -np.array(gt_eigenvalues_imag[1:_n_compare + 1])
+            # Both learned and GT include the trivial eigenvalue at index 0, so compare
+            # index-for-index. Use min() to guard against size differences.
+            _n_compare = min(k_eig, len(gt_eigenvalues_real))
+            _gt_kernel_real = (1.0 + args.delta) - np.array(gt_eigenvalues_real[:_n_compare])
+            _gt_kernel_imag = -np.array(gt_eigenvalues_imag[:_n_compare])
             _eig_errors = np.sqrt(
                 (_eig_real_np[:_n_compare] - _gt_kernel_real) ** 2
                 + (_eig_imag_np[:_n_compare] - _gt_kernel_imag) ** 2
