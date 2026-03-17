@@ -21,14 +21,15 @@ class SharedArgs:
     num_hidden_layers: int = 3
     use_residual: bool = True  # Whether to use residual connections in the network
     use_layernorm: bool = True  # Whether to use LayerNorm in the network
+    num_head_hidden_layers: int = 2  # Number of hidden layers in each head after the shared backbone
 
     # Training
-    learning_rate: float = 3e-4
+    learning_rate: float = 1e-5
     batch_size: int = 256
     num_gradient_steps: int = 100000
     gamma: float = 0.9  # Discount factor for successor representation
     delta: float = 0.1  # Eigenvalue shift parameter: L = (1+δ)I - M (improves numerical stability)
-    ema_learning_rate: float = 0.0001  # EMA update rate for eigenvalue estimates
+    ema_learning_rate: float = 0.0003  # EMA update rate for eigenvalue estimates
 
     # Gradient clipping
     use_global_grad_clip: bool = True  # If True, use global norm clipping (original). If False, clip encoder and lambda separately
@@ -58,6 +59,9 @@ class SharedArgs:
     min_barrier_coefs: float = 0.0      # Minimum allowed barrier_coef (barrier method only)
     max_barrier_coefs: float = 10.0     # Maximum allowed barrier_coef (barrier method only)
     lr_barrier_coefs: float = 0.01      # Step size for barrier_coef external update (barrier method only)
+
+    # Graph loss variants
+    two_sided_graph_loss: bool = False
 
     # Episodic replay buffer
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)

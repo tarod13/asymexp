@@ -74,6 +74,9 @@ def _compute_lyapunov_terms(
     norm_y_sq = ip(y_r, y_r) + ip(y_i, y_i)
     norm_x2_sq = ip(x2_r, x2_r) + ip(x2_i, x2_i)
     norm_y2_sq = ip(y2_r, y2_r) + ip(y2_i, y2_i)
+
+    next_norm_x_sq = ip(next_x_r, next_x_r) + ip(next_x_i, next_x_i)
+    next_norm_x2_sq = ip(next_x2_r, next_x2_r) + ip(next_x2_i, next_x2_i)
     next_norm_y_sq = ip(next_y_r, next_y_r) + ip(next_y_i, next_y_i)
     next_norm_y2_sq = ip(next_y2_r, next_y2_r) + ip(next_y2_i, next_y2_i)
 
@@ -124,25 +127,35 @@ def _compute_lyapunov_terms(
     # Batch 1 — current
     corr_xy_real = multi_ip(x_r, _sg(y_r)) + multi_ip(x_i, _sg(y_i))
     corr_xy_imag = -multi_ip(x_r, _sg(y_i)) + multi_ip(x_i, _sg(y_r))
-    if use_sg_ip:
-        corr_yx_real_b1 = multi_ip(y_r, _sg(x_r)) + multi_ip(y_i, _sg(x_i))
-        corr_yx_imag_b1 = -multi_ip(y_i, _sg(x_r)) + multi_ip(y_r, _sg(x_i))
+    corr_yx_real = multi_ip(y_r, _sg(x_r)) + multi_ip(y_i, _sg(x_i))
+    corr_yx_imag = -multi_ip(y_i, _sg(x_r)) + multi_ip(y_r, _sg(x_i))
 
     # Batch 2 — current
-    cross_xy2_real = multi_ip(x2_r, _sg(y2_r)) + multi_ip(x2_i, _sg(y2_i))
-    cross_xy2_imag = -multi_ip(x2_r, _sg(y2_i)) + multi_ip(x2_i, _sg(y2_r))
-    if use_sg_ip:
-        corr_yx_real_b2 = multi_ip(y2_r, _sg(x2_r)) + multi_ip(y2_i, _sg(x2_i))
-        corr_yx_imag_b2 = -multi_ip(y2_i, _sg(x2_r)) + multi_ip(y2_r, _sg(x2_i))
+    corr_xy2_real = multi_ip(x2_r, _sg(y2_r)) + multi_ip(x2_i, _sg(y2_i))
+    corr_xy2_imag = -multi_ip(x2_r, _sg(y2_i)) + multi_ip(x2_i, _sg(y2_r))
+    corr_yx2_real = multi_ip(y2_r, _sg(x2_r)) + multi_ip(y2_i, _sg(x2_i))
+    corr_yx2_imag = -multi_ip(y2_i, _sg(x2_r)) + multi_ip(y2_r, _sg(x2_i))
+
+    # Batch 1 — next
+    next_corr_xy_real = multi_ip(next_x_r, _sg(next_y_r)) + multi_ip(next_x_i, _sg(next_y_i))
+    next_corr_xy_imag = -multi_ip(next_x_r, _sg(next_y_i)) + multi_ip(next_x_i, _sg(next_y_r))
+    next_corr_yx_real = multi_ip(next_y_r, _sg(next_x_r)) + multi_ip(next_y_i, _sg(next_x_i))
+    next_corr_yx_imag = -multi_ip(next_y_i, _sg(next_x_r)) + multi_ip(next_y_r, _sg(next_x_i))
+
+    # Batch 2 — next
+    next_corr_xy2_real = multi_ip(next_x2_r, _sg(next_y2_r)) + multi_ip(next_x2_i, _sg(next_y2_i))
+    next_corr_xy2_imag = -multi_ip(next_x2_r, _sg(next_y2_i)) + multi_ip(next_x2_i, _sg(next_y2_r))
+    next_corr_yx2_real = multi_ip(next_y2_r, _sg(next_x2_r)) + multi_ip(next_y2_i, _sg(next_x2_i))
+    next_corr_yx2_imag = -multi_ip(next_y2_i, _sg(next_x2_r)) + multi_ip(next_y2_r, _sg(next_x2_i))
 
     # EMA loss for correlations (only for "ema" mode)
     if args.constraint_mode == "ema":
         loss_corr_xy_real = (
-            (jax.lax.stop_gradient(0.5 * (corr_xy_real + cross_xy2_real))
+            (jax.lax.stop_gradient(0.5 * (corr_xy_real + corr_xy2_real))
              - params['corr_xy_real_ema']) ** 2
         ).sum()
         loss_corr_xy_imag = (
-            (jax.lax.stop_gradient(0.5 * (corr_xy_imag + cross_xy2_imag))
+            (jax.lax.stop_gradient(0.5 * (corr_xy_imag + corr_xy2_imag))
              - params['corr_xy_imag_ema']) ** 2
         ).sum()
     else:
@@ -162,12 +175,17 @@ def _compute_lyapunov_terms(
     # 1. x-norm coefficient
     norm_x_error = norm_x_sq - 1
     norm_x2_error = norm_x2_sq - 1
+    next_norm_x_error = next_norm_x_sq - 1
+    next_norm_x2_error = next_norm_x2_sq - 1
     if args.constraint_mode == "ema":
         coef_x_norm = params['norm_x_ema'].reshape(1, -1) - 1
+        next_coef_x_norm = params['norm_x_ema'].reshape(1, -1) - 1
     elif args.constraint_mode == "single_batch":
         coef_x_norm = norm_x_error
+        next_coef_x_norm = next_norm_x_error
     else:  # two_batch, same_episodes
         coef_x_norm = norm_x2_error
+        next_coef_x_norm = next_norm_x2_error
     V_x_norm = coef_x_norm ** 2 / 2
 
     # 2. y-norm coefficient (current and next)
@@ -176,110 +194,85 @@ def _compute_lyapunov_terms(
     next_norm_y_error = next_norm_y_sq - 1
     next_norm_y2_error = next_norm_y2_sq - 1
     if args.constraint_mode == "ema":
-        coef_y_norm_current = params['norm_y_ema'].reshape(1, -1) - 1
-        coef_y_norm_next = params['norm_y_ema'].reshape(1, -1) - 1
+        coef_y_norm = params['norm_y_ema'].reshape(1, -1) - 1
+        next_coef_y_norm = params['norm_y_ema'].reshape(1, -1) - 1
     elif args.constraint_mode == "single_batch":
-        coef_y_norm_current = norm_y_error
-        coef_y_norm_next = next_norm_y_error
+        coef_y_norm = norm_y_error
+        next_coef_y_norm = next_norm_y_error
     else:  # two_batch, same_episodes
-        coef_y_norm_current = norm_y2_error
-        coef_y_norm_next = next_norm_y2_error
-    V_y_norm = coef_y_norm_current ** 2 / 2
+        coef_y_norm = norm_y2_error
+        next_coef_y_norm = next_norm_y2_error
+    V_y_norm = coef_y_norm ** 2 / 2
 
     # 3. xy-phase coefficient (current and next)
     if args.constraint_mode == "ema":
-        coef_xy_phase_current = params['phase_xy_ema'].reshape(1, -1)
-        coef_xy_phase_next = params['phase_xy_ema'].reshape(1, -1)
+        coef_xy_phase = params['phase_xy_ema'].reshape(1, -1)
+        next_coef_xy_phase = params['phase_xy_ema'].reshape(1, -1)
     elif args.constraint_mode == "single_batch":
-        coef_xy_phase_current = phase_xy
-        coef_xy_phase_next = next_phase_xy
+        coef_xy_phase = phase_xy
+        next_coef_xy_phase = next_phase_xy
     else:  # two_batch, same_episodes
-        coef_xy_phase_current = phase_xy2
-        coef_xy_phase_next = next_phase_xy2
-    V_xy_phase = coef_xy_phase_current ** 2 / 2
+        coef_xy_phase = phase_xy2
+        next_coef_xy_phase = next_phase_xy2
+    V_xy_phase = coef_xy_phase ** 2 / 2
 
     # 4. Crossed-term correlation coefficients
     corr_xy_real_lower = jnp.tril(corr_xy_real, k=-1)
     corr_xy_imag_lower = jnp.tril(corr_xy_imag, k=-1)
-    if use_sg_ip:
-        corr_yx_real_lower = jnp.tril(corr_yx_real_b1, k=-1)
-        corr_yx_imag_lower = jnp.tril(corr_yx_imag_b1, k=-1)
-    else:
-        corr_yx_real_lower = jnp.tril(corr_xy_real.T, k=-1)
-        corr_yx_imag_lower = jnp.tril(corr_xy_imag.T, k=-1)
+    corr_yx_real_lower = jnp.tril(corr_yx_real, k=-1)
+    corr_yx_imag_lower = jnp.tril(corr_yx_imag, k=-1)
 
-    corr_xy2_real_lower = jnp.tril(cross_xy2_real, k=-1)
-    corr_xy2_imag_lower = jnp.tril(cross_xy2_imag, k=-1)
-    if use_sg_ip:
-        corr_yx2_real_lower = jnp.tril(corr_yx_real_b2, k=-1)
-        corr_yx2_imag_lower = jnp.tril(corr_yx_imag_b2, k=-1)
-    else:
-        corr_yx2_real_lower = jnp.tril(cross_xy2_real.T, k=-1)
-        corr_yx2_imag_lower = jnp.tril(cross_xy2_imag.T, k=-1)
+    corr_xy2_real_lower = jnp.tril(corr_xy2_real, k=-1)
+    corr_xy2_imag_lower = jnp.tril(corr_xy2_imag, k=-1)
+    corr_yx2_real_lower = jnp.tril(corr_yx2_real, k=-1)
+    corr_yx2_imag_lower = jnp.tril(corr_yx2_imag, k=-1)
 
     # Next-state correlations (batch 1 and 2)
-    next_corr_xy_real = multi_ip(next_x_r, _sg(next_y_r)) + multi_ip(next_x_i, _sg(next_y_i))
-    next_corr_xy_imag = -multi_ip(next_x_r, _sg(next_y_i)) + multi_ip(next_x_i, _sg(next_y_r))
     next_corr_xy_real_lower = jnp.tril(next_corr_xy_real, k=-1)
     next_corr_xy_imag_lower = jnp.tril(next_corr_xy_imag, k=-1)
-    if use_sg_ip:
-        next_corr_yx_real = multi_ip(next_y_r, _sg(next_x_r)) + multi_ip(next_y_i, _sg(next_x_i))
-        next_corr_yx_imag = -multi_ip(next_y_i, _sg(next_x_r)) + multi_ip(next_y_r, _sg(next_x_i))
-        next_corr_yx_real_lower = jnp.tril(next_corr_yx_real, k=-1)
-        next_corr_yx_imag_lower = jnp.tril(next_corr_yx_imag, k=-1)
-    else:
-        next_corr_yx_real_lower = jnp.tril(next_corr_xy_real.T, k=-1)
-        next_corr_yx_imag_lower = jnp.tril(next_corr_xy_imag.T, k=-1)
+    next_corr_yx_real_lower = jnp.tril(next_corr_yx_real, k=-1)
+    next_corr_yx_imag_lower = jnp.tril(next_corr_yx_imag, k=-1)
 
-    next_cross_xy2_real = multi_ip(next_x2_r, _sg(next_y2_r)) + multi_ip(next_x2_i, _sg(next_y2_i))
-    next_cross_xy2_imag = -multi_ip(next_x2_r, _sg(next_y2_i)) + multi_ip(next_x2_i, _sg(next_y2_r))
-    next_corr_xy2_real_lower = jnp.tril(next_cross_xy2_real, k=-1)
-    next_corr_xy2_imag_lower = jnp.tril(next_cross_xy2_imag, k=-1)
-    if use_sg_ip:
-        next_corr_yx2_real = multi_ip(next_y2_r, _sg(next_x2_r)) + multi_ip(next_y2_i, _sg(next_x2_i))
-        next_corr_yx2_imag = -multi_ip(next_y2_i, _sg(next_x2_r)) + multi_ip(next_y2_r, _sg(next_x2_i))
-        next_corr_yx2_real_lower = jnp.tril(next_corr_yx2_real, k=-1)
-        next_corr_yx2_imag_lower = jnp.tril(next_corr_yx2_imag, k=-1)
-    else:
-        next_corr_yx2_real_lower = jnp.tril(next_cross_xy2_real.T, k=-1)
-        next_corr_yx2_imag_lower = jnp.tril(next_cross_xy2_imag.T, k=-1)
+    next_corr_xy2_real_lower = jnp.tril(next_corr_xy2_real, k=-1)
+    next_corr_xy2_imag_lower = jnp.tril(next_corr_xy2_imag, k=-1)
+    next_corr_yx2_real_lower = jnp.tril(next_corr_yx2_real, k=-1)
+    next_corr_yx2_imag_lower = jnp.tril(next_corr_yx2_imag, k=-1)
 
+    # Select which correlation coefficients to use based on constraint_mode.
     if args.constraint_mode == "ema":
-        coef_corr_xy_real_lower_current = jnp.tril(params['corr_xy_real_ema'], k=-1)
-        coef_corr_xy_imag_lower_current = jnp.tril(params['corr_xy_imag_ema'], k=-1)
-        coef_corr_yx_real_lower_current = jnp.tril(params['corr_xy_real_ema'].T, k=-1)
-        coef_corr_yx_imag_lower_current = jnp.tril(params['corr_xy_imag_ema'].T, k=-1)
-        coef_corr_xy_real_lower_next = coef_corr_xy_real_lower_current
-        coef_corr_xy_imag_lower_next = coef_corr_xy_imag_lower_current
-        coef_corr_yx_real_lower_next = coef_corr_yx_real_lower_current
-        coef_corr_yx_imag_lower_next = coef_corr_yx_imag_lower_current
+        coef_corr_xy_real_lower = jnp.tril(params['corr_xy_real_ema'], k=-1)
+        coef_corr_xy_imag_lower = jnp.tril(params['corr_xy_imag_ema'], k=-1)
+        coef_corr_yx_real_lower = jnp.tril(params['corr_xy_real_ema'].T, k=-1)
+        coef_corr_yx_imag_lower = jnp.tril(params['corr_xy_imag_ema'].T, k=-1)
+        next_coef_corr_yx_real_lower = coef_corr_yx_real_lower
+        next_coef_corr_yx_imag_lower = coef_corr_yx_imag_lower
     elif args.constraint_mode == "single_batch":
-        coef_corr_xy_real_lower_current = corr_xy_real_lower
-        coef_corr_xy_imag_lower_current = corr_xy_imag_lower
-        coef_corr_yx_real_lower_current = corr_yx_real_lower
-        coef_corr_yx_imag_lower_current = corr_yx_imag_lower
-        coef_corr_xy_real_lower_next = next_corr_xy_real_lower
-        coef_corr_xy_imag_lower_next = next_corr_xy_imag_lower
-        coef_corr_yx_real_lower_next = next_corr_yx_real_lower
-        coef_corr_yx_imag_lower_next = next_corr_yx_imag_lower
+        coef_corr_xy_real_lower = corr_xy_real_lower
+        coef_corr_xy_imag_lower = corr_xy_imag_lower
+        coef_corr_yx_real_lower = corr_yx_real_lower
+        coef_corr_yx_imag_lower = corr_yx_imag_lower
+        next_coef_corr_xy_real_lower = next_corr_xy_real_lower
+        next_coef_corr_xy_imag_lower = next_corr_xy_imag_lower
+        next_coef_corr_yx_real_lower = next_corr_yx_real_lower
+        next_coef_corr_yx_imag_lower = next_corr_yx_imag_lower
     else:  # two_batch, same_episodes
-        coef_corr_xy_real_lower_current = corr_xy2_real_lower
-        coef_corr_xy_imag_lower_current = corr_xy2_imag_lower
-        coef_corr_yx_real_lower_current = corr_yx2_real_lower
-        coef_corr_yx_imag_lower_current = corr_yx2_imag_lower
-        coef_corr_xy_real_lower_next = next_corr_xy2_real_lower
-        coef_corr_xy_imag_lower_next = next_corr_xy2_imag_lower
-        coef_corr_yx_real_lower_next = next_corr_yx2_real_lower
-        coef_corr_yx_imag_lower_next = next_corr_yx2_imag_lower
+        coef_corr_xy_real_lower = corr_xy2_real_lower
+        coef_corr_xy_imag_lower = corr_xy2_imag_lower
+        coef_corr_yx_real_lower = corr_yx2_real_lower
+        coef_corr_yx_imag_lower = corr_yx2_imag_lower
+        next_coef_corr_xy_real_lower = next_corr_xy2_real_lower
+        next_coef_corr_xy_imag_lower = next_corr_xy2_imag_lower
+        next_coef_corr_yx_real_lower = next_corr_yx2_real_lower
+        next_coef_corr_yx_imag_lower = next_corr_yx2_imag_lower
 
     # Per-(i,j) correlation penalty matrix (shape k×k, lower-tri only).
     # Each entry sums the squared real and imaginary parts of both xy and yx
     # cross-correlations for the same (i,j) pair.
     V_xy_corr_matrix = (
-        coef_corr_xy_real_lower_current ** 2
-        + coef_corr_xy_imag_lower_current ** 2
-        + coef_corr_yx_real_lower_current ** 2
-        + coef_corr_yx_imag_lower_current ** 2
+        coef_corr_xy_real_lower ** 2
+        + coef_corr_xy_imag_lower ** 2
+        + coef_corr_yx_real_lower ** 2
+        + coef_corr_yx_imag_lower ** 2
     ) / 2
     V_xy_corr = jnp.sum(V_xy_corr_matrix, -1).reshape(1, -1)
 
@@ -290,39 +283,52 @@ def _compute_lyapunov_terms(
 
     nabla_x_r_V = (
         2 * coef_x_norm * x_r
-        + (-coef_xy_phase_current * y_i)
-        + 2 * jnp.einsum('jk,ik->ij', coef_corr_xy_real_lower_current, y_r)
-        + (-2 * jnp.einsum('jk,ik->ij', coef_corr_xy_imag_lower_current, y_i))
+        + (-coef_xy_phase * y_i)
+        + 2 * jnp.einsum('jk,ik->ij', coef_corr_xy_real_lower, y_r)
+        + (-2 * jnp.einsum('jk,ik->ij', coef_corr_xy_imag_lower, y_i))
     )
     nabla_x_i_V = (
         2 * coef_x_norm * x_i
-        + coef_xy_phase_current * y_r
-        + 2 * jnp.einsum('jk,ik->ij', coef_corr_xy_real_lower_current, y_i)
-        + 2 * jnp.einsum('jk,ik->ij', coef_corr_xy_imag_lower_current, y_r)
+        + coef_xy_phase * y_r
+        + 2 * jnp.einsum('jk,ik->ij', coef_corr_xy_real_lower, y_i)
+        + 2 * jnp.einsum('jk,ik->ij', coef_corr_xy_imag_lower, y_r)
     )
     nabla_y_r_V = (
-        2 * coef_y_norm_current * y_r
-        + coef_xy_phase_current * x_i
-        + 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower_current, x_r)
-        + 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower_current, x_i)
+        2 * coef_y_norm * y_r
+        + coef_xy_phase * x_i
+        + 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower, x_r)
+        + 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower, x_i)
     )
     nabla_y_i_V = (
-        2 * coef_y_norm_current * y_i
-        + (-coef_xy_phase_current * x_r)
-        + 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower_current, x_i)
-        + (-2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower_current, x_r))
+        2 * coef_y_norm * y_i
+        + (-coef_xy_phase * x_r)
+        + 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower, x_i)
+        + (-2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower, x_r))
+    )
+
+    next_nabla_x_r_V = (
+        2 * next_coef_x_norm * next_x_r
+        + (-next_coef_xy_phase * next_y_i)
+        + 2 * jnp.einsum('jk,ik->ij', next_coef_corr_xy_real_lower, next_y_r)
+        + 2 * jnp.einsum('jk,ik->ij', next_coef_corr_xy_imag_lower, next_y_i)
+    )
+    next_nabla_x_i_V = (
+        2 * next_coef_x_norm * next_x_i
+        + next_coef_xy_phase * next_y_r
+        + 2 * jnp.einsum('jk,ik->ij', next_coef_corr_xy_real_lower, next_y_i)
+        + (-2 * jnp.einsum('jk,ik->ij', next_coef_corr_xy_imag_lower, next_y_r))
     )
     next_nabla_y_r_V = (
-        2 * coef_y_norm_next * next_y_r
-        + coef_xy_phase_next * next_x_i
-        + 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower_next, next_x_r)
-        + 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower_next, next_x_i)
+        2 * next_coef_y_norm * next_y_r
+        + next_coef_xy_phase * next_x_i
+        + 2 * jnp.einsum('jk,ik->ij', next_coef_corr_yx_real_lower, next_x_r)
+        + 2 * jnp.einsum('jk,ik->ij', next_coef_corr_yx_imag_lower, next_x_i)
     )
     next_nabla_y_i_V = (
-        2 * coef_y_norm_next * next_y_i
-        + (-coef_xy_phase_next * next_x_r)
-        + 2 * jnp.einsum('jk,ik->ij', coef_corr_yx_real_lower_next, next_x_i)
-        + (-2 * jnp.einsum('jk,ik->ij', coef_corr_yx_imag_lower_next, next_x_r))
+        2 * next_coef_y_norm * next_y_i
+        + (-next_coef_xy_phase * next_x_r)
+        + 2 * jnp.einsum('jk,ik->ij', next_coef_corr_yx_real_lower, next_x_i)
+        + (-2 * jnp.einsum('jk,ik->ij', next_coef_corr_yx_imag_lower, next_x_r))
     )
 
     nabla_V = {
@@ -330,6 +336,8 @@ def _compute_lyapunov_terms(
         'x_i': nabla_x_i_V,
         'y_r': nabla_y_r_V,
         'y_i': nabla_y_i_V,
+        'next_x_r': next_nabla_x_r_V,
+        'next_x_i': next_nabla_x_i_V,
         'next_y_r': next_nabla_y_r_V,
         'next_y_i': next_nabla_y_i_V,
     }
@@ -344,12 +352,12 @@ def _compute_lyapunov_terms(
         # Raw (unsquared) constraint errors — used by complex_allo dual loss.
         # Already computed above; zero extra cost.
         'c_x_norm':       coef_x_norm,                        # shape (1, k)
-        'c_y_norm':       coef_y_norm_current,                # shape (1, k)
-        'c_xy_phase':     coef_xy_phase_current,              # shape (1, k)
-        'c_xy_corr_real': coef_corr_xy_real_lower_current,    # shape (k, k)
-        'c_xy_corr_imag': coef_corr_xy_imag_lower_current,    # shape (k, k)
-        'c_yx_corr_real': coef_corr_yx_real_lower_current,    # shape (k, k)
-        'c_yx_corr_imag': coef_corr_yx_imag_lower_current,    # shape (k, k)
+        'c_y_norm':       coef_y_norm,                # shape (1, k)
+        'c_xy_phase':     coef_xy_phase,              # shape (1, k)
+        'c_xy_corr_real': coef_corr_xy_real_lower,    # shape (k, k)
+        'c_xy_corr_imag': coef_corr_xy_imag_lower,    # shape (k, k)
+        'c_yx_corr_real': coef_corr_yx_real_lower,    # shape (k, k)
+        'c_yx_corr_imag': coef_corr_yx_imag_lower,    # shape (k, k)
     }
 
     return V, nabla_V, constraint_estimator_loss, V_components
@@ -373,7 +381,7 @@ def _make_clf_enforcement_fn(args):
     """
     lambda_x = args.lambda_x
 
-    def clf_enforcement(V, nabla_V, f_vectors, features, params, ip, sg, V_components):
+    def clf_enforcement(V, nabla_V, f_vectors, features, params, ip, sg, V_components, two_sided_graph_loss):
         """
         Args:
             V:            shape (1, k)
@@ -398,11 +406,15 @@ def _make_clf_enforcement_fn(args):
         nabla_x_i_V = nabla_V['x_i']
         nabla_y_r_V = nabla_V['y_r']
         nabla_y_i_V = nabla_V['y_i']
+        next_nabla_x_r_V = nabla_V['next_x_r']
+        next_nabla_x_i_V = nabla_V['next_x_i']
         next_nabla_y_r_V = nabla_V['next_y_r']
         next_nabla_y_i_V = nabla_V['next_y_i']
 
-        f_x_real = f_vectors['x_real']
-        f_x_imag = f_vectors['x_imag']
+        f_x_0_real = f_vectors['x_0_real']
+        f_x_0_imag = f_vectors['x_0_imag']
+        f_x_res_real = f_vectors['x_res_real']
+        f_x_res_imag = f_vectors['x_res_imag']
         f_y_0_real = f_vectors['y_0_real']
         f_y_0_imag = f_vectors['y_0_imag']
         f_y_res_real = f_vectors['y_res_real']
@@ -417,14 +429,28 @@ def _make_clf_enforcement_fn(args):
         )
 
         # f · ∇V  (Lie derivative of V along the dynamics residual)
-        f_dot_nabla_V = (
-            ip(f_x_real, nabla_x_r_V)
-            + ip(f_x_imag, nabla_x_i_V)
-            + ip(f_y_0_real, next_nabla_y_r_V)
-            + ip(f_y_res_real, nabla_y_r_V)
-            + ip(f_y_0_imag, next_nabla_y_i_V)
-            + ip(f_y_res_imag, nabla_y_i_V)
-        )
+        if two_sided_graph_loss:
+            f_dot_nabla_V = (
+                ip(f_x_0_real, next_nabla_x_r_V)
+                + ip(f_x_0_imag, next_nabla_x_i_V)
+                + ip(f_x_res_real, nabla_x_r_V)
+                + ip(f_x_res_imag, nabla_x_i_V)
+                + ip(f_y_0_real, nabla_y_r_V)
+                + ip(f_y_0_imag, nabla_y_i_V)
+                + ip(f_y_res_real, nabla_y_r_V)
+                + ip(f_y_res_imag, nabla_y_i_V)
+            )
+        else:
+            f_dot_nabla_V = (
+                ip(f_x_0_real, nabla_x_r_V)
+                + ip(f_x_0_imag, nabla_x_i_V)
+                + ip(f_x_res_real, nabla_x_r_V)
+                + ip(f_x_res_imag, nabla_x_i_V)
+                + ip(f_y_0_real, next_nabla_y_r_V)
+                + ip(f_y_0_imag, next_nabla_y_i_V)
+                + ip(f_y_res_real, nabla_y_r_V)                
+                + ip(f_y_res_imag, nabla_y_i_V)
+            )
 
         clf_num = f_dot_nabla_V + lambda_x * V
         barrier = jnp.maximum(0, clf_num) / (norm_nabla_V_sq + 1e-8)
@@ -464,7 +490,7 @@ def _make_barrier_enforcement_fn(args):
     the optimizer never updates it.  It is instead updated externally after
     each gradient step (see _external_barrier_update).
     """
-    def barrier_enforcement(V, nabla_V, f_vectors, features, params, ip, sg, V_components):
+    def barrier_enforcement(V, nabla_V, f_vectors, features, params, ip, sg, V_components, two_sided_graph_loss):
         """
         Args:
             V:      shape (1, k)
@@ -502,7 +528,7 @@ def _make_granular_barrier_enforcement_fn(args):
     the optimizer never updates it.  It is instead updated externally after
     each gradient step (see _external_granular_barrier_update).
     """
-    def granular_barrier_enforcement(V, nabla_V, f_vectors, features, params, ip, sg, V_components):
+    def granular_barrier_enforcement(V, nabla_V, f_vectors, features, params, ip, sg, V_components, two_sided_graph_loss):
         """
         Args:
             V:            shape (1, k) — total Lyapunov value per eigenvector
@@ -564,7 +590,7 @@ def _make_complex_allo_enforcement_fn(args):
     bi-orthogonality inner product — breaking ordering symmetries and making
     ordered eigenvectors the stable equilibrium.
     """
-    def complex_allo_enforcement(V, nabla_V, f_vectors, features, params, ip, sg, V_components):
+    def complex_allo_enforcement(V, nabla_V, f_vectors, features, params, ip, sg, V_components, two_sided_graph_loss):
         """
         Args:
             V:            shape (1, k) — per-eigenvector Lyapunov values
@@ -1096,21 +1122,44 @@ def create_update_function(encoder, args):
             # ----------------------------------------------------------------
             # 5. Graph Loss (Dynamics) + Chirality
             # ----------------------------------------------------------------
-            f_x_real = - next_x_r + ema_lambda_x_r * x_r - ema_lambda_x_i * x_i
-            f_x_imag = - next_x_i + ema_lambda_x_i * x_r + ema_lambda_x_r * x_i
+            two_sided_graph_loss = getattr(args, 'two_sided_graph_loss', False)
+            if two_sided_graph_loss:
+                f_x_0_real = y_r
+                f_x_0_imag = y_i
+                f_x_res_real = -(ema_lambda_y_r * y_r + ema_lambda_y_i * y_i)
+                f_x_res_imag = -(-ema_lambda_y_i * y_r + ema_lambda_y_r * y_i)
 
-            f_y_0_real = - y_r
-            f_y_0_imag = - y_i
-            f_y_res_real = ema_lambda_y_r * y_r + ema_lambda_y_i * y_i
-            f_y_res_imag = -ema_lambda_y_i * y_r + ema_lambda_y_r * y_i
+                f_y_0_real = next_x_r
+                f_y_0_imag = next_x_i
+                f_y_res_real = -(ema_lambda_x_r * x_r - ema_lambda_x_i * x_i)
+                f_y_res_imag = -(ema_lambda_x_i * x_r + ema_lambda_x_r * x_i)
 
-            graph_loss_x_real = ip(x_r, sg(f_x_real))
-            graph_loss_x_imag = ip(x_i, sg(f_x_imag))
-            graph_loss_x = graph_loss_x_real + graph_loss_x_imag
+                graph_loss_x_real = -(ip(next_x_r, sg(f_x_0_real)) + ip(x_r, sg(f_x_res_real)))
+                graph_loss_x_imag = -(ip(next_x_i, sg(f_x_0_imag)) + ip(x_i, sg(f_x_res_imag)))
+                graph_loss_x = graph_loss_x_real + graph_loss_x_imag
 
-            graph_loss_y_real = ip(next_y_r, sg(f_y_0_real)) + ip(y_r, sg(f_y_res_real))
-            graph_loss_y_imag = ip(next_y_i, sg(f_y_0_imag)) + ip(y_i, sg(f_y_res_imag))
-            graph_loss_y = graph_loss_y_real + graph_loss_y_imag
+                graph_loss_y_real = -(ip(y_r, sg(f_y_0_real)) + ip(y_r, sg(f_y_res_real)))
+                graph_loss_y_imag = -(ip(y_i, sg(f_y_0_imag)) + ip(y_i, sg(f_y_res_imag)))
+                graph_loss_y = graph_loss_y_real + graph_loss_y_imag
+
+            else:
+                f_x_0_real = next_x_r
+                f_x_0_imag = next_x_i
+                f_x_res_real = -(ema_lambda_x_r * x_r - ema_lambda_x_i * x_i)
+                f_x_res_imag = -(ema_lambda_x_i * x_r + ema_lambda_x_r * x_i)
+
+                f_y_0_real = y_r
+                f_y_0_imag = y_i
+                f_y_res_real = -(ema_lambda_y_r * y_r + ema_lambda_y_i * y_i)
+                f_y_res_imag = -(-ema_lambda_y_i * y_r + ema_lambda_y_r * y_i)
+
+                graph_loss_x_real = -(ip(x_r, sg(f_x_0_real)) + ip(x_r, sg(f_x_res_real)))
+                graph_loss_x_imag = -(ip(x_i, sg(f_x_0_imag)) + ip(x_i, sg(f_x_res_imag)))
+                graph_loss_x = graph_loss_x_real + graph_loss_x_imag
+
+                graph_loss_y_real = -(ip(next_y_r, sg(f_y_0_real)) + ip(y_r, sg(f_y_res_real)))
+                graph_loss_y_imag = -(ip(next_y_i, sg(f_y_0_imag)) + ip(y_i, sg(f_y_res_imag)))
+                graph_loss_y = graph_loss_y_real + graph_loss_y_imag
 
             if args.norm_graph_loss:
                 # Divide each per-eigenvector component by its 2-norm to normalise the loss
@@ -1130,8 +1179,10 @@ def create_update_function(encoder, args):
             # 6. Constraint Enforcement (pluggable strategy)
             # ----------------------------------------------------------------
             f_vectors = {
-                'x_real':   f_x_real,
-                'x_imag':   f_x_imag,
+                'x_0_real':   f_x_0_real,
+                'x_0_imag':   f_x_0_imag,
+                'x_res_real': f_x_res_real,
+                'x_res_imag': f_x_res_imag,
                 'y_0_real': f_y_0_real,
                 'y_0_imag': f_y_0_imag,
                 'y_res_real': f_y_res_real,
@@ -1140,7 +1191,7 @@ def create_update_function(encoder, args):
             features = {'x_r': x_r, 'x_i': x_i, 'y_r': y_r, 'y_i': y_i}
 
             enforcement_loss, enforcement_aux = _enforce_constraints(
-                V, nabla_V, f_vectors, features, params, ip, sg, V_components,
+                V, nabla_V, f_vectors, features, params, ip, sg, V_components, two_sided_graph_loss,
             )
 
             # ----------------------------------------------------------------
@@ -1289,14 +1340,3 @@ def get_eigenvalues(params):
         lambda_imag = 0.5 * (params['lambda_x_imag'] + params['lambda_y_imag'])
         return lambda_real, lambda_imag
 
-
-# Entry point for running this learner directly
-if __name__ == "__main__":
-    import tyro
-    from src.config.ded_clf import Args
-    from rep_algos.shared_training import learn_eigenvectors
-    import rep_algos.clf_learner as clf_learner
-
-    args = tyro.cli(Args)
-    args.exp_name = "clf"
-    learn_eigenvectors(args, clf_learner)

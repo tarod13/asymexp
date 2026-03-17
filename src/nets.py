@@ -7,6 +7,8 @@ class CoordinateEncoder(nn.Module):
     # New ablation flags
     use_residual: bool = True
     use_layernorm: bool = True
+    # Additional params for heads
+    num_head_hidden_layers: int = 2
 
     @nn.compact
     def __call__(self, xy_coords):
@@ -36,12 +38,14 @@ class CoordinateEncoder(nn.Module):
         def make_head_prediction(input_x, name):
             h = input_x
             
-            # Conditional Normalization for heads
-            if self.use_layernorm:
-                h = nn.LayerNorm()(h)
+            for l in range(self.num_head_hidden_layers):
+                # Conditional Pre-LayerNorm
+                if self.use_layernorm:
+                    h = nn.LayerNorm()(h)
+                    
+                h = nn.Dense(self.hidden_dim, name=f'{name}_hidden_{l}')(h)
+                h = nn.relu(h)
                 
-            h = nn.Dense(self.hidden_dim, name=f'{name}_hidden')(h)
-            h = nn.relu(h)
             return nn.Dense(self.num_eigenvector_pairs, name=name)(h)
 
         features_dict = {

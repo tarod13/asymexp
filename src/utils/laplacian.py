@@ -256,7 +256,7 @@ def compute_eigendecomposition(
     # are the left eigenvectors of L in the D-weighted inner product.
     if D is not None:
         d = jnp.diag(D)
-        D_inv = jnp.diag(1.0 / d)
+        D_inv = jnp.diag(1.0 / d.clip(min=1e-12))  # Avoid division by zero
         adjoint_matrix = D_inv @ transition_matrix.T @ D
     else:
         adjoint_matrix = transition_matrix.T
@@ -269,7 +269,7 @@ def compute_eigendecomposition(
     # preventing large-norm vectors from dominating the argmax.
     # D-norm:  ||w||_D = sqrt( w^H D w ).  When D is None this reduces to the
     # standard Euclidean norm.
-    if d is not None:
+    if D is not None:
         # einsum computes diag of (left^H diag(d) left), i.e. per-column D-norms²
         norms = jnp.sqrt(
             jnp.einsum('i,ij,ij->j', d, jnp.conj(left_eigenvectors), left_eigenvectors).real
@@ -282,7 +282,7 @@ def compute_eigendecomposition(
     # Match each right eigenvector to the best adjoint eigenvector via the
     # D-weighted inner product of the *normalized* adjoint columns.
     # cross_products[i, j] ≈ (w_i / ||w_i||_D)^H D r_j.
-    if d is not None:
+    if D is not None:
         cross_products_norm = jnp.einsum(
             'ij,i,ik->jk', jnp.conj(left_normalized), d, right_eigenvectors
         )
@@ -298,7 +298,7 @@ def compute_eigendecomposition(
     # Reorder the *un-normalized* adjoint eigenvectors to align with the right
     # eigenvectors, then apply biorthogonality normalization using the
     # D-weighted inner product of the original (un-normalized) vectors.
-    left_eigenvectors = left_eigenvectors[:, best_left_indices]
+    left_eigenvectors = left_normalized[:, best_left_indices]
 
     if d is not None:
         dot_products = jnp.einsum(
