@@ -1,0 +1,16 @@
+X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X
+X, , , , , , , , ,X,X, , , , , , ,X,X, , ,X
+X, , , , , , , , ,X,X, , , , , , ,X,X, , ,X
+X, ,PR:134PL:134PU:134PD:134,X,X,X,X, , ,X,X, , ,X,X, , ,X,X, , ,X
+X, , ,X,X,X,X, , ,X,X, , ,X,X, , ,X,X, , ,X
+X, , ,X,X,X,X, , ,X,X, , ,X,X, , ,X,X, , ,X
+X, , ,X,X,X,X, , ,X,X, , ,X,X, , ,X,X, , ,X
+X, , , , , , , , ,X,X, , ,X,X, , ,X,X, , ,X
+X, , , , , , , , ,X,X, , ,X,X, , ,X,X, , ,X
+X,X,X, , ,X,X,X,X,X,X, , , , , , , , , , ,X
+X,X,X, , ,X,X,X,X,X,X, , , , , , , , , , ,X
+X,X,X, , ,X,X, , , , , , ,X,X, , , , ,X,X,X
+X,X,X, , ,X,X, , , , , , ,X,X, , , , ,X,X,X
+X, , , , , , , , , , ,X,X, , ,X,X, , , , ,X
+X, , , , , , , , , , ,X,X, , ,X,X, , , , ,X
+X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X

@@ -1136,7 +1136,7 @@ def create_update_function(encoder, args):
 
                 if getattr(args, 'use_clf_symmetry_weights', False):
                     k = f_x_0_real.shape[-1]
-                    weights = jnp.linspace(1.0, 1.0 / k, k)
+                    weights = jnp.linspace(k, 1.0, k)
                     f_x_0_real   = f_x_0_real   * weights
                     f_x_0_imag   = f_x_0_imag   * weights
                     f_x_res_real = f_x_res_real  * weights
@@ -1167,7 +1167,7 @@ def create_update_function(encoder, args):
 
                 if getattr(args, 'use_clf_symmetry_weights', False):
                     k = f_x_0_real.shape[-1]
-                    weights = jnp.linspace(1.0, 1.0 / k, k)
+                    weights = jnp.linspace(k, 1.0, k)
                     f_x_0_real   = f_x_0_real   * weights
                     f_x_0_imag   = f_x_0_imag   * weights
                     f_x_res_real = f_x_res_real  * weights
