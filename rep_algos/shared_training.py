@@ -311,6 +311,22 @@ def learn_eigenvectors(args, learner_module, method):
     print(f"Ground truth right eigenvectors shape: {gt_right_real.shape}")
     print(f"Ground truth left eigenvectors shape: {gt_left_real.shape}")
 
+    # For hitting-time computations the formula requires standard biorthonormal
+    # left eigenvectors satisfying Ψ^H Φ = I.  When sampling_mode='none' with
+    # constraint_enforcement_method='clf', the stored gt_left_* satisfy the
+    # D-weighted condition Ψ_D^H D Φ = I instead.  Converting via Ψ_std = D Ψ_D
+    # (multiply each row i by sampling_probs[i]) restores Ψ_std^H Φ = I.
+    # For all other configurations gt_left already satisfies the standard condition.
+    if (args.sampling_mode == "none"
+            and args.constraint_enforcement_method == "clf"
+            and sampling_probs is not None):
+        _d = sampling_probs[:, None]  # [num_states, 1]
+        gt_left_real_ht = _d * gt_left_real
+        gt_left_imag_ht = _d * gt_left_imag
+    else:
+        gt_left_real_ht = gt_left_real
+        gt_left_imag_ht = gt_left_imag
+
     # Per-wind ground truth (only for random_wind training)
     # Each entry: (wind_value, eigendecomp_dict, sampling_probs)
     # Computed without a replay buffer to keep memory usage low.
@@ -852,8 +868,8 @@ def learn_eigenvectors(args, learner_module, method):
                 eigenvalue_type='kernel',
             )
             gt_hitting_times = compute_hitting_times_from_eigenvectors(
-                left_real=gt_left_real,
-                left_imag=gt_left_imag,
+                left_real=gt_left_real_ht,
+                left_imag=gt_left_imag_ht,
                 right_real=gt_right_real,
                 right_imag=gt_right_imag,
                 eigenvalues_real=gt_eigenvalues_real,
@@ -1255,8 +1271,8 @@ def learn_eigenvectors(args, learner_module, method):
 
     # Compute ground truth hitting times (truncated, k eigenpairs)
     final_gt_hitting_times = compute_hitting_times_from_eigenvectors(
-        left_real=gt_left_real,
-        left_imag=gt_left_imag,
+        left_real=gt_left_real_ht,
+        left_imag=gt_left_imag_ht,
         right_real=gt_right_real,
         right_imag=gt_right_imag,
         eigenvalues_real=gt_eigenvalues_real,
