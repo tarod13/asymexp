@@ -1802,7 +1802,6 @@ def plot_hitting_time_heatmap(
 
 
 def plot_full_ideal_summary(
-    full_ideal_hitting_times: np.ndarray,
     goal_rocs: np.ndarray,
     source_rocs: np.ndarray,
     canonical_states: np.ndarray,
@@ -1814,33 +1813,22 @@ def plot_full_ideal_summary(
     portal_ends: Optional[Set[int]] = None,
 ) -> None:
     """
-    Generate and save the three Full Ideal summary plots:
-      1. Full Ideal GT hitting time heatmap (mean over goals).
-      2. Goal ROC heatmap  – per-goal  Spearman ρ overlaid on maze.
-      3. Source ROC heatmap – per-source Spearman ρ overlaid on maze.
+    Generate and save the two Full Ideal ROC heatmaps:
+      1. Goal ROC heatmap  – per-goal  Spearman ρ overlaid on maze.
+      2. Source ROC heatmap – per-source Spearman ρ overlaid on maze.
+
+    The Full Ideal GT hitting time visualization is produced separately via
+    visualize_source_vs_target_hitting_times (same format as the truncated GT).
 
     Args:
-        full_ideal_hitting_times: [N, N] full-rank GT hitting time matrix.
         goal_rocs:   [N] per-goal   Spearman ρ values (learned vs Full Ideal).
         source_rocs: [N] per-source Spearman ρ values (learned vs Full Ideal).
         canonical_states: 1-D array of canonical state indices [N].
         grid_width, grid_height: Grid dimensions.
-        save_dir: Directory in which to save the three PNG files.
+        save_dir: Directory in which to save the PNG files.
         portals, portal_sources, portal_ends: Optional topology markers.
     """
     save_dir = Path(save_dir)
-
-    plot_hitting_time_heatmap(
-        hitting_times=full_ideal_hitting_times,
-        canonical_states=canonical_states,
-        grid_width=grid_width,
-        grid_height=grid_height,
-        title='Full Ideal GT Hitting Times (mean over goals)',
-        save_path=str(save_dir / 'full_ideal_hitting_times.png'),
-        portals=portals,
-        portal_sources=portal_sources,
-        portal_ends=portal_ends,
-    )
 
     plot_roc_heatmap(
         roc_values=goal_rocs,

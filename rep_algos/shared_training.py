@@ -1302,7 +1302,7 @@ def learn_eigenvectors(args, learner_module, method):
     )
     plt.close()
 
-    # Visualize ground truth hitting times
+    # Visualize ground truth hitting times (truncated, k eigenpairs)
     visualize_source_vs_target_hitting_times(
         state_indices=viz_state_indices,
         hitting_time_matrix=np.array(final_gt_hitting_times),
@@ -1314,6 +1314,23 @@ def learn_eigenvectors(args, learner_module, method):
         portal_ends=portal_ends if portal_ends else None,
         ncols=min(6, num_states_to_viz),
         save_path=str(plots_dir / "hitting_times_ground_truth.png"),
+        log_scale=False,
+        shared_colorbar=True,
+    )
+    plt.close()
+
+    # Visualize Full Ideal GT hitting times (all N eigenpairs — no truncation)
+    visualize_source_vs_target_hitting_times(
+        state_indices=viz_state_indices,
+        hitting_time_matrix=np.array(final_full_ideal_gt_hitting_times),
+        canonical_states=np.array(canonical_states),
+        grid_width=env.width,
+        grid_height=env.height,
+        portals=door_markers if door_markers else None,
+        portal_sources=portal_sources if portal_sources else None,
+        portal_ends=portal_ends if portal_ends else None,
+        ncols=min(6, num_states_to_viz),
+        save_path=str(plots_dir / "hitting_times_full_ideal.png"),
         log_scale=False,
         shared_colorbar=True,
     )
@@ -1348,14 +1365,13 @@ def learn_eigenvectors(args, learner_module, method):
         portal_ends=portal_ends if portal_ends else None,
     )
 
-    # 7. Full Ideal summary: hitting time heatmap + goal/source ROC heatmaps
-    print("Generating Full Ideal GT summary plots...")
+    # 7. Full Ideal ROC heatmaps (goal and source)
+    print("Generating Full Ideal GT ROC heatmaps...")
     _final_full_ideal_roc = compute_hitting_time_rank_correlations(
         np.array(final_full_ideal_gt_hitting_times),
         np.array(final_hitting_times),
     )
     plot_full_ideal_summary(
-        full_ideal_hitting_times=np.array(final_full_ideal_gt_hitting_times),
         goal_rocs=_final_full_ideal_roc['goal_rocs'],
         source_rocs=_final_full_ideal_roc['source_rocs'],
         canonical_states=np.array(canonical_states),
