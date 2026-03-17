@@ -83,11 +83,25 @@ def get_env_transition_markers(env) -> dict:
                 if (source_full, forward_action) not in markers:
                     markers[(source_full, forward_action)] = state_full
 
-    if env.has_portals:
-        for (source_full, action), dest_full in env.portals.items():
-            markers[(int(source_full), int(action))] = int(dest_full)
-
     return markers
+
+
+def get_portal_tile_sets(env):
+    """
+    Return the sets of flat state indices for portal source and end tiles.
+
+    Returns:
+        portal_sources: set of state indices that have at least one outgoing portal
+        portal_ends:    set of state indices that are portal destinations (E{id} tiles)
+    """
+    portal_sources = set()
+    portal_ends = set()
+    if env.has_portals:
+        for (source_full, _), (dests, _) in env.portals.items():
+            portal_sources.add(int(source_full))
+            for d in dests:
+                portal_ends.add(int(d))
+    return portal_sources, portal_ends
 
 
 def get_canonical_free_states(env):

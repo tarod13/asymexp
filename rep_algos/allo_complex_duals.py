@@ -839,6 +839,8 @@ def plot_eigenvector_comparison(
     grid_height: int,
     save_dir: str,
     door_markers: dict = None,
+    portal_sources=None,
+    portal_ends=None,
 ):
     """
     Create comparison plots between ground truth and learned eigenvectors.
@@ -856,7 +858,9 @@ def plot_eigenvector_comparison(
         canonical_states: Array of canonical state indices
         grid_width, grid_height: Grid dimensions
         save_dir: Directory to save plots
-        door_markers: Optional door/portal markers for visualization
+        door_markers: Optional door markers (arrows) for visualization
+        portal_sources: Optional set of portal source state indices (colored orange)
+        portal_ends: Optional set of portal end state indices (colored teal)
     """
     from pathlib import Path
     save_dir = Path(save_dir)
@@ -893,7 +897,7 @@ def plot_eigenvector_comparison(
             ax.set_yticks(np.arange(grid_height) - 0.5, minor=True)
             ax.grid(which="minor", color="gray", linestyle='-', linewidth=0.5, alpha=0.3)
 
-            # Add door markers if provided
+            # Add door markers (arrows) if provided
             if door_markers:
                 for (state, action), next_state in door_markers.items():
                     y = state // grid_width
@@ -905,6 +909,22 @@ def plot_eigenvector_comparison(
                     ax.arrow(x, y, dx * 0.3, dy * 0.3,
                             head_width=0.2, head_length=0.15,
                             fc='green', ec='green', linewidth=2, alpha=0.7)
+
+            # Add portal tile overlays
+            for state in (portal_sources or []):
+                py, px = divmod(state, grid_width)
+                ax.add_patch(plt.Rectangle(
+                    (px - 0.5, py - 0.5), 1, 1,
+                    facecolor='orange', edgecolor='darkorange',
+                    alpha=0.4, linewidth=1.5, zorder=9,
+                ))
+            for state in (portal_ends or []):
+                py, px = divmod(state, grid_width)
+                ax.add_patch(plt.Rectangle(
+                    (px - 0.5, py - 0.5), 1, 1,
+                    facecolor='cyan', edgecolor='darkcyan',
+                    alpha=0.4, linewidth=1.5, zorder=9,
+                ))
 
             ax.set_title(f'{title}', fontsize=12)
             ax.set_xlabel('X')
@@ -1820,9 +1840,10 @@ def learn_eigenvectors(args):
     start_time = time.time()
     num_states = state_coords.shape[0]
 
-    # Build transition markers (doors or portals) for visualization
-    from src.utils.envs import get_env_transition_markers
+    # Build transition markers for visualization
+    from src.utils.envs import get_env_transition_markers, get_portal_tile_sets
     door_markers = get_env_transition_markers(data_env)
+    portal_sources, portal_ends = get_portal_tile_sets(data_env)
 
     # Save visualization metadata for new runs (skip if resuming)
     if checkpoint_data is None:
@@ -1831,6 +1852,8 @@ def learn_eigenvectors(args):
             'grid_width': env.width,
             'grid_height': env.height,
             'door_markers': door_markers,
+            'portal_sources': portal_sources,
+            'portal_ends': portal_ends,
             'num_eigenvectors': args.num_eigenvector_pairs,
             'gamma': args.gamma,
             'delta': float(args.delta),
@@ -1859,6 +1882,8 @@ def learn_eigenvectors(args):
                 grid_width=env.width,
                 grid_height=env.height,
                 portals=door_markers if door_markers else None,
+                portal_sources=portal_sources if portal_sources else None,
+                portal_ends=portal_ends if portal_ends else None,
                 eigenvector_type='right',
                 component='real',
                 ncols=min(4, args.num_eigenvector_pairs),
@@ -1876,6 +1901,8 @@ def learn_eigenvectors(args):
                 grid_width=env.width,
                 grid_height=env.height,
                 portals=door_markers if door_markers else None,
+                portal_sources=portal_sources if portal_sources else None,
+                portal_ends=portal_ends if portal_ends else None,
                 eigenvector_type='right',
                 component='imag',
                 ncols=min(4, args.num_eigenvector_pairs),
@@ -1893,6 +1920,8 @@ def learn_eigenvectors(args):
                 grid_width=env.width,
                 grid_height=env.height,
                 portals=door_markers if door_markers else None,
+                portal_sources=portal_sources if portal_sources else None,
+                portal_ends=portal_ends if portal_ends else None,
                 eigenvector_type='left',
                 component='real',
                 ncols=min(4, args.num_eigenvector_pairs),
@@ -1910,6 +1939,8 @@ def learn_eigenvectors(args):
                 grid_width=env.width,
                 grid_height=env.height,
                 portals=door_markers if door_markers else None,
+                portal_sources=portal_sources if portal_sources else None,
+                portal_ends=portal_ends if portal_ends else None,
                 eigenvector_type='left',
                 component='imag',
                 ncols=min(4, args.num_eigenvector_pairs),
@@ -2114,6 +2145,8 @@ def learn_eigenvectors(args):
                     grid_height=env.height,
                     save_dir=str(plots_dir),
                     door_markers=door_markers if door_markers else None,
+                    portal_sources=portal_sources if portal_sources else None,
+                    portal_ends=portal_ends if portal_ends else None,
                 )
 
             else:
@@ -2218,6 +2251,8 @@ def learn_eigenvectors(args):
         grid_height=env.height,
         save_dir=str(plots_dir),
         door_markers=door_markers if door_markers else None,
+        portal_sources=portal_sources if portal_sources else None,
+        portal_ends=portal_ends if portal_ends else None,
     )
 
     print("\n" + "="*60)

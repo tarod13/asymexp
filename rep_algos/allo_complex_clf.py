@@ -598,9 +598,10 @@ def learn_eigenvectors(args):
     start_time = time.time()
     num_states = state_coords.shape[0]
 
-    # Build transition markers (doors or portals) for visualization
-    from src.utils.envs import get_env_transition_markers
+    # Build transition markers for visualization
+    from src.utils.envs import get_env_transition_markers, get_portal_tile_sets
     door_markers = get_env_transition_markers(data_env)
+    portal_sources, portal_ends = get_portal_tile_sets(data_env)
 
     # Save visualization metadata for new runs (skip if resuming)
     if checkpoint_data is None:
@@ -609,6 +610,8 @@ def learn_eigenvectors(args):
             'grid_width': env.width,
             'grid_height': env.height,
             'door_markers': door_markers,
+            'portal_sources': portal_sources,
+            'portal_ends': portal_ends,
             'num_eigenvectors': args.num_eigenvector_pairs,
             'gamma': args.gamma,
             'delta': float(args.delta),
@@ -637,6 +640,8 @@ def learn_eigenvectors(args):
                 grid_width=env.width,
                 grid_height=env.height,
                 portals=door_markers if door_markers else None,
+                portal_sources=portal_sources if portal_sources else None,
+                portal_ends=portal_ends if portal_ends else None,
                 eigenvector_type='right',
                 component='real',
                 ncols=min(4, args.num_eigenvector_pairs),
@@ -654,6 +659,8 @@ def learn_eigenvectors(args):
                 grid_width=env.width,
                 grid_height=env.height,
                 portals=door_markers if door_markers else None,
+                portal_sources=portal_sources if portal_sources else None,
+                portal_ends=portal_ends if portal_ends else None,
                 eigenvector_type='right',
                 component='imag',
                 ncols=min(4, args.num_eigenvector_pairs),
@@ -671,6 +678,8 @@ def learn_eigenvectors(args):
                 grid_width=env.width,
                 grid_height=env.height,
                 portals=door_markers if door_markers else None,
+                portal_sources=portal_sources if portal_sources else None,
+                portal_ends=portal_ends if portal_ends else None,
                 eigenvector_type='left',
                 component='real',
                 ncols=min(4, args.num_eigenvector_pairs),
@@ -688,6 +697,8 @@ def learn_eigenvectors(args):
                 grid_width=env.width,
                 grid_height=env.height,
                 portals=door_markers if door_markers else None,
+                portal_sources=portal_sources if portal_sources else None,
+                portal_ends=portal_ends if portal_ends else None,
                 eigenvector_type='left',
                 component='imag',
                 ncols=min(4, args.num_eigenvector_pairs),
@@ -913,6 +924,8 @@ def learn_eigenvectors(args):
                     grid_height=env.height,
                     save_dir=str(plots_dir),
                     door_markers=door_markers if door_markers else None,
+                    portal_sources=portal_sources if portal_sources else None,
+                    portal_ends=portal_ends if portal_ends else None,
                 )
 
             else:
@@ -1017,6 +1030,8 @@ def learn_eigenvectors(args):
         grid_height=env.height,
         save_dir=str(plots_dir),
         door_markers=door_markers if door_markers else None,
+        portal_sources=portal_sources if portal_sources else None,
+        portal_ends=portal_ends if portal_ends else None,
     )
 
     # 5. Hitting times visualization (Ground Truth vs Learned)
@@ -1060,6 +1075,8 @@ def learn_eigenvectors(args):
         grid_width=env.width,
         grid_height=env.height,
         portals=door_markers if door_markers else None,
+        portal_sources=portal_sources if portal_sources else None,
+        portal_ends=portal_ends if portal_ends else None,
         ncols=min(6, num_states_to_viz),
         save_path=str(plots_dir / "hitting_times_learned.png"),
         log_scale=True,
@@ -1075,6 +1092,8 @@ def learn_eigenvectors(args):
         grid_width=env.width,
         grid_height=env.height,
         portals=door_markers if door_markers else None,
+        portal_sources=portal_sources if portal_sources else None,
+        portal_ends=portal_ends if portal_ends else None,
         ncols=min(6, num_states_to_viz),
         save_path=str(plots_dir / "hitting_times_ground_truth.png"),
         log_scale=True,
