@@ -2,6 +2,7 @@ from typing import Dict, Tuple
 import numpy as np
 import jax
 import jax.numpy as jnp
+from scipy.stats import spearmanr
 
 def compute_complex_cosine_similarities_with_conjugate_skipping(
     learned_real: jnp.ndarray,
@@ -721,3 +722,55 @@ def compute_hitting_times_batched(
     )(batched_eigendecomposition)
 
     return hitting_times, hitting_times_imaginary_error
+
+
+def compute_hitting_time_rank_correlations(
+    gt_hitting_times: np.ndarray,
+    learned_hitting_times: np.ndarray,
+) -> Dict[str, object]:
+    """
+    Compute Spearman rank-order correlations between GT and learned hitting times.
+
+    Goal ROC: for a fixed goal j, correlate H_GT[:,j] vs H_learned[:,j] across
+    all sources.  Measures how well the model ranks sources by proximity to j.
+
+    Source ROC: for a fixed source i, correlate H_GT[i,:] vs H_learned[i,:] across
+    all goals.  Measures how well the model ranks goals by proximity from i.
+
+    Args:
+        gt_hitting_times:      [num_states, num_states] ground-truth matrix
+        learned_hitting_times: [num_states, num_states] estimated matrix
+
+    Returns:
+        dict with keys:
+            'goal_rocs':      np.ndarray [num_states] — per-goal Spearman ρ
+            'source_rocs':    np.ndarray [num_states] — per-source Spearman ρ
+            'avg_goal_roc':   float
+            'avg_source_roc': float
+    """
+    num_states = gt_hitting_times.shape[0]
+
+    goal_rocs = np.full(num_states, np.nan)
+    source_rocs = np.full(num_states, np.nan)
+
+    for j in range(num_states):
+        gt_col = gt_hitting_times[:, j]
+        learned_col = learned_hitting_times[:, j]
+        if np.std(gt_col) > 0 and np.std(learned_col) > 0:
+            goal_rocs[j] = spearmanr(gt_col, learned_col).statistic
+
+    for i in range(num_states):
+        gt_row = gt_hitting_times[i, :]
+        learned_row = learned_hitting_times[i, :]
+        if np.std(gt_row) > 0 and np.std(learned_row) > 0:
+            source_rocs[i] = spearmanr(gt_row, learned_row).statistic
+
+    avg_goal_roc = float(np.nanmean(goal_rocs))
+    avg_source_roc = float(np.nanmean(source_rocs))
+
+    return {
+        'goal_rocs': goal_rocs,
+        'source_rocs': source_rocs,
+        'avg_goal_roc': avg_goal_roc,
+        'avg_source_roc': avg_source_roc,
+    }

@@ -91,17 +91,36 @@ def plot_learning_curves_one(metrics_history: list, save_path: str):
         axes[1, 2].grid(True, alpha=0.3)
 
     # Row 3: Eigenvalue estimates and cosine similarities
-    # Plot 7: Eigenvalue estimates (real and imaginary)
-    axes[2, 0].set_title('Eigenvalue Estimates')
-    if 'lambda_x_real' in metrics_history[0]:
-        axes[2, 0].plot(steps, [m['lambda_x_real'] for m in metrics_history], label='λ_x (real)', linestyle='-')
-        axes[2, 0].plot(steps, [m['lambda_x_imag'] for m in metrics_history], label='λ_x (imag)', linestyle='--')
-    if 'lambda_y_real' in metrics_history[0]:
-        axes[2, 0].plot(steps, [m['lambda_y_real'] for m in metrics_history], label='λ_y (real)', linestyle='-', alpha=0.7)
-        axes[2, 0].plot(steps, [m['lambda_y_imag'] for m in metrics_history], label='λ_y (imag)', linestyle='--', alpha=0.7)
+    # Plot 7: Eigenvalue estimates (real and imaginary) — keyed as eigenvalue_{k}_real/imag
+    axes[2, 0].set_title('Eigenvalue Estimates (kernel/SR space)')
+    _eig_indices = sorted(set(
+        int(key.split('_')[1])
+        for m in metrics_history[:1]
+        for key in m
+        if key.startswith('eigenvalue_') and key.endswith('_real')
+    ))
+    _colors = plt.cm.tab10.colors
+    for _ki in _eig_indices:
+        _c = _colors[_ki % len(_colors)]
+        axes[2, 0].plot(
+            steps, [m.get(f'eigenvalue_{_ki}_real', float('nan')) for m in metrics_history],
+            label=f'λ_{_ki} (real)', linestyle='-', color=_c,
+        )
+        axes[2, 0].plot(
+            steps, [m.get(f'eigenvalue_{_ki}_imag', float('nan')) for m in metrics_history],
+            label=f'λ_{_ki} (imag)', linestyle='--', color=_c, alpha=0.7,
+        )
+    if 'avg_eigenvalue_error' in metrics_history[0]:
+        ax2 = axes[2, 0].twinx()
+        ax2.plot(
+            steps, [m.get('avg_eigenvalue_error', float('nan')) for m in metrics_history],
+            label='Avg error', color='black', linestyle=':', linewidth=1.5,
+        )
+        ax2.set_ylabel('Avg |λ error|', fontsize=8)
+        ax2.legend(fontsize=7, loc='upper right')
     axes[2, 0].set_xlabel('Gradient Step')
     axes[2, 0].set_ylabel('Eigenvalue')
-    axes[2, 0].legend(fontsize=8)
+    axes[2, 0].legend(fontsize=7, loc='upper left')
     axes[2, 0].grid(True, alpha=0.3)
 
     # Plot 8: Cosine similarities
@@ -329,29 +348,46 @@ def plot_auxiliary_metrics(metrics_history: list, save_path: str):
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.suptitle('Auxiliary Metrics Evolution', fontsize=14)
 
-    # Plot 1: Eigenvalue estimates (real part)
+    # Plot 1: Eigenvalue estimates (real part) — keyed as eigenvalue_{k}_real
     ax = axes[0, 0]
-    if 'lambda_x_real' in metrics_history[0]:
-        ax.plot(steps, [m['lambda_x_real'] for m in metrics_history], label='λ_x (real)', color='blue')
-    if 'lambda_y_real' in metrics_history[0]:
-        ax.plot(steps, [m['lambda_y_real'] for m in metrics_history], label='λ_y (real)', color='red')
+    _eig_indices = sorted(set(
+        int(key.split('_')[1])
+        for m in metrics_history[:1]
+        for key in m
+        if key.startswith('eigenvalue_') and key.endswith('_real')
+    ))
+    _colors = plt.cm.tab10.colors
+    for _ki in _eig_indices:
+        ax.plot(
+            steps, [m.get(f'eigenvalue_{_ki}_real', float('nan')) for m in metrics_history],
+            label=f'λ_{_ki} (real)', color=_colors[_ki % len(_colors)],
+        )
     ax.set_xlabel('Gradient Step')
     ax.set_ylabel('Eigenvalue (Real Part)')
-    ax.set_title('Eigenvalue Estimates - Real Part')
-    ax.legend()
+    ax.set_title('Eigenvalue Estimates - Real Part (kernel/SR)')
+    ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
-    # Plot 2: Eigenvalue estimates (imaginary part)
+    # Plot 2: Eigenvalue estimates (imaginary part) + average eigenvalue error
     ax = axes[0, 1]
-    if 'lambda_x_imag' in metrics_history[0]:
-        ax.plot(steps, [m['lambda_x_imag'] for m in metrics_history], label='λ_x (imag)', color='blue')
-    if 'lambda_y_imag' in metrics_history[0]:
-        ax.plot(steps, [m['lambda_y_imag'] for m in metrics_history], label='λ_y (imag)', color='red')
+    for _ki in _eig_indices:
+        ax.plot(
+            steps, [m.get(f'eigenvalue_{_ki}_imag', float('nan')) for m in metrics_history],
+            label=f'λ_{_ki} (imag)', color=_colors[_ki % len(_colors)],
+        )
     ax.set_xlabel('Gradient Step')
     ax.set_ylabel('Eigenvalue (Imag Part)')
-    ax.set_title('Eigenvalue Estimates - Imaginary Part')
-    ax.legend()
+    ax.set_title('Eigenvalue Estimates - Imag Part (kernel/SR)')
+    ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
+    if 'avg_eigenvalue_error' in metrics_history[0]:
+        ax2 = ax.twinx()
+        ax2.plot(
+            steps, [m.get('avg_eigenvalue_error', float('nan')) for m in metrics_history],
+            label='Avg |λ error|', color='black', linestyle=':', linewidth=1.5,
+        )
+        ax2.set_ylabel('Avg |λ error|', fontsize=8)
+        ax2.legend(fontsize=7, loc='upper right')
 
     # Plot 3: Squared norms
     ax = axes[1, 0]
@@ -1618,3 +1654,47 @@ def plot_sampling_distribution(
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"Sampling distribution visualization saved to {save_path}")
+
+
+def plot_roc_heatmap(
+    roc_values: np.ndarray,
+    canonical_states: np.ndarray,
+    grid_width: int,
+    grid_height: int,
+    title: str,
+    save_path: str,
+    portals: Optional[Dict[Tuple[int, int], int]] = None,
+) -> None:
+    """
+    Plot a per-state Spearman ROC value overlaid onto the maze topology.
+
+    Args:
+        roc_values:       1-D array [num_states] of Spearman ρ values (may contain NaN
+                          for states where correlation was undefined).
+        canonical_states: [num_states, 2] (row, col) grid coordinates.
+        grid_width:       Width of the grid in cells.
+        grid_height:      Height of the grid in cells.
+        title:            Plot title (e.g. 'Goal ROC' or 'Source ROC').
+        save_path:        File path for the saved figure.
+        portals:          Optional dict of portal/door markers (same format used by
+                          visualize_eigenvector_on_grid).
+    """
+    fig, ax = plt.subplots(figsize=(7, 6))
+    visualize_eigenvector_on_grid(
+        eigenvector_idx=0,
+        eigenvector_values=np.array(roc_values, dtype=float),
+        canonical_states=canonical_states,
+        grid_width=grid_width,
+        grid_height=grid_height,
+        portals=portals,
+        title=title,
+        ax=ax,
+        cmap='RdBu_r',
+        show_colorbar=True,
+        vmin=-1.0,
+        vmax=1.0,
+    )
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"ROC heatmap saved to {save_path}")

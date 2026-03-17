@@ -47,6 +47,7 @@ from src.utils.metrics import (
     compute_complex_cosine_similarities_with_normalization,
     compute_hitting_times_from_eigenvectors,
     normalize_eigenvectors_for_comparison,
+    compute_hitting_time_rank_correlations,
 )
 from src.utils.plotting import (
     plot_learning_curves_one,
@@ -55,6 +56,7 @@ from src.utils.plotting import (
     plot_auxiliary_metrics,
     visualize_multiple_eigenvectors,
     visualize_source_vs_target_hitting_times,
+    plot_roc_heatmap,
 )
 from src.utils.laplacian import compute_eigendecomposition
 
@@ -811,6 +813,12 @@ def learn_eigenvectors(args, learner_module, method):
                 eigenvalue_type='laplacian',
             )
 
+            # Compute rank-order correlations between GT and learned hitting times
+            _roc_results = compute_hitting_time_rank_correlations(
+                np.array(gt_hitting_times),
+                np.array(hitting_times),
+            )
+
             # Store metrics
             elapsed_time = time.time() - start_time
             steps_completed = gradient_step - start_step
@@ -825,6 +833,31 @@ def learn_eigenvectors(args, learner_module, method):
             # Add cosine similarities to metrics (both left and right)
             for k, v in cosine_sims.items():
                 metrics_dict[k] = v
+
+            # Log learned eigenvalues (kernel/SR space) with stable keys for plotting.
+            # _eig_real/_eig_imag are kernel eigenvalues λ_M of M = (1-γ)P·SR_γ.
+            _eig_real_np = np.array(_eig_real)
+            _eig_imag_np = np.array(_eig_imag)
+            k_eig = len(_eig_real_np)
+            for _ki in range(k_eig):
+                metrics_dict[f'eigenvalue_{_ki}_real'] = float(_eig_real_np[_ki])
+                metrics_dict[f'eigenvalue_{_ki}_imag'] = float(_eig_imag_np[_ki])
+
+            # Average eigenvalue error vs GT in kernel (SR) space.
+            # GT Laplacian eigenvalues λ_L relate to kernel eigenvalues λ_M via:
+            #   λ_M = (1+δ) - λ_L   (since L = (1+δ)I - M shares eigenvectors with M)
+            # Skip index 0 (trivial stationary eigenvalue); compare indices 1..k.
+            _gt_kernel_real = (1.0 + args.delta) - np.array(gt_eigenvalues_real[1:k_eig + 1])
+            _gt_kernel_imag = -np.array(gt_eigenvalues_imag[1:k_eig + 1])
+            _eig_errors = np.sqrt(
+                (_eig_real_np - _gt_kernel_real) ** 2
+                + (_eig_imag_np - _gt_kernel_imag) ** 2
+            )
+            metrics_dict['avg_eigenvalue_error'] = float(np.mean(_eig_errors))
+
+            # Rank-order correlations between GT and learned hitting times
+            metrics_dict['avg_goal_roc'] = _roc_results['avg_goal_roc']
+            metrics_dict['avg_source_roc'] = _roc_results['avg_source_roc']
 
             # Per-wind evaluation (only when random_wind=True)
             if per_wind_gt:
@@ -1175,6 +1208,31 @@ def learn_eigenvectors(args, learner_module, method):
     )
     plt.close()
 
+    # 6. ROC heatmaps
+    print("Generating rank-order correlation heatmaps...")
+    _final_roc = compute_hitting_time_rank_correlations(
+        np.array(final_gt_hitting_times),
+        np.array(final_hitting_times),
+    )
+    plot_roc_heatmap(
+        roc_values=_final_roc['goal_rocs'],
+        canonical_states=np.array(canonical_states),
+        grid_width=env.width,
+        grid_height=env.height,
+        title='Goal Rank-Order Correlation (Spearman ρ)',
+        save_path=str(plots_dir / "goal_roc_heatmap.png"),
+        portals=door_markers if door_markers else None,
+    )
+    plot_roc_heatmap(
+        roc_values=_final_roc['source_rocs'],
+        canonical_states=np.array(canonical_states),
+        grid_width=env.width,
+        grid_height=env.height,
+        title='Source Rank-Order Correlation (Spearman ρ)',
+        save_path=str(plots_dir / "source_roc_heatmap.png"),
+        portals=door_markers if door_markers else None,
+    )
+
     print("\n" + "="*60)
     print("Visualization complete!")
     print("="*60)
@@ -1194,6 +1252,8 @@ def learn_eigenvectors(args, learner_module, method):
         print(f"  - comparison_left_imag_i.png: Left eigenvector i (imag) comparison (i=0..{args.num_eigenvector_pairs-1})")
     print("  - hitting_times_learned.png: Hitting times from learned eigenvectors")
     print("  - hitting_times_ground_truth.png: Hitting times from ground truth eigenvectors")
+    print("  - goal_roc_heatmap.png: Per-goal Spearman rank-order correlation heatmap")
+    print("  - source_roc_heatmap.png: Per-source Spearman rank-order correlation heatmap")
 
     print(f"\nAll results saved to: {results_dir}")
 
