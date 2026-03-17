@@ -84,8 +84,9 @@ def get_env_transition_markers(env) -> dict:
                     markers[(source_full, forward_action)] = state_full
 
     if env.has_portals:
-        for (source_full, action), dest_full in env.portals.items():
-            markers[(int(source_full), int(action))] = int(dest_full)
+        for (source_full, action), (dests, probs) in env.portals.items():
+            best = dests[probs.index(max(probs))]
+            markers[(int(source_full), int(action))] = int(best)
 
     return markers
 
