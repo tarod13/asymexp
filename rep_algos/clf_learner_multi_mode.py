@@ -1134,6 +1134,18 @@ def create_update_function(encoder, args):
                 f_y_res_real = -(ema_lambda_x_r * x_r - ema_lambda_x_i * x_i)
                 f_y_res_imag = -(ema_lambda_x_i * x_r + ema_lambda_x_r * x_i)
 
+                if getattr(args, 'use_clf_symmetry_weights', False):
+                    k = f_x_0_real.shape[-1]
+                    weights = jnp.linspace(1.0, 1.0 / k, k)
+                    f_x_0_real   = f_x_0_real   * weights
+                    f_x_0_imag   = f_x_0_imag   * weights
+                    f_x_res_real = f_x_res_real  * weights
+                    f_x_res_imag = f_x_res_imag  * weights
+                    f_y_0_real   = f_y_0_real    * weights
+                    f_y_0_imag   = f_y_0_imag    * weights
+                    f_y_res_real = f_y_res_real   * weights
+                    f_y_res_imag = f_y_res_imag   * weights
+
                 graph_loss_x_real = -(ip(next_x_r, sg(f_x_0_real)) + ip(x_r, sg(f_x_res_real)))
                 graph_loss_x_imag = -(ip(next_x_i, sg(f_x_0_imag)) + ip(x_i, sg(f_x_res_imag)))
                 graph_loss_x = graph_loss_x_real + graph_loss_x_imag
@@ -1152,6 +1164,18 @@ def create_update_function(encoder, args):
                 f_y_0_imag = y_i
                 f_y_res_real = -(ema_lambda_y_r * y_r + ema_lambda_y_i * y_i)
                 f_y_res_imag = -(-ema_lambda_y_i * y_r + ema_lambda_y_r * y_i)
+
+                if getattr(args, 'use_clf_symmetry_weights', False):
+                    k = f_x_0_real.shape[-1]
+                    weights = jnp.linspace(1.0, 1.0 / k, k)
+                    f_x_0_real   = f_x_0_real   * weights
+                    f_x_0_imag   = f_x_0_imag   * weights
+                    f_x_res_real = f_x_res_real  * weights
+                    f_x_res_imag = f_x_res_imag  * weights
+                    f_y_0_real   = f_y_0_real    * weights
+                    f_y_0_imag   = f_y_0_imag    * weights
+                    f_y_res_real = f_y_res_real   * weights
+                    f_y_res_imag = f_y_res_imag   * weights
 
                 graph_loss_x_real = -(ip(x_r, sg(f_x_0_real)) + ip(x_r, sg(f_x_res_real)))
                 graph_loss_x_imag = -(ip(x_i, sg(f_x_0_imag)) + ip(x_i, sg(f_x_res_imag)))

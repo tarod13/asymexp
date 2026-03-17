@@ -13,3 +13,4 @@ class ClfArgs(SharedArgs):
     eigenvalue_estimation_method: str = 'average'  # How to estimate eigenvalue targets: 'separate' (independent x/y EMA), 'average' (shared averaged EMA), 'two_sided' (bi-orthogonal complex division)
     normalize_eigenvalue_targets: bool = False  # Normalize Rayleigh quotient targets by state norms before EMA update
     use_sg_ip: bool = True  # Apply stop_gradient to smaller-indexed eigenvector in bi-orthogonality inner products to break symmetry
+    use_clf_symmetry_weights: bool = False  # Scale f vectors by monotonically decreasing weights [1, 1/k] to break permutation symmetry across eigenvector pairs
