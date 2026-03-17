@@ -7,20 +7,20 @@ from typing import Dict, Optional, Set, Tuple, List
 
 
 def _draw_portal_tile_overlays(ax, portal_sources, portal_ends, grid_width):
-    """Overlay colored tiles on portal source (orange) and end (teal) states."""
+    """Overlay colored circles on portal source (blue) and end (orange) states."""
     for state in (portal_sources or []):
         y, x = divmod(state, grid_width)
-        ax.add_patch(mpatches.Rectangle(
-            (x - 0.5, y - 0.5), 1, 1,
-            facecolor='orange', edgecolor='darkorange',
-            alpha=0.4, linewidth=1.5, zorder=9,
+        ax.add_patch(mpatches.Circle(
+            (x, y), radius=0.4,
+            facecolor='royalblue', edgecolor='navy',
+            alpha=0.5, linewidth=1.5, zorder=9,
         ))
     for state in (portal_ends or []):
         y, x = divmod(state, grid_width)
-        ax.add_patch(mpatches.Rectangle(
-            (x - 0.5, y - 0.5), 1, 1,
-            facecolor='cyan', edgecolor='darkcyan',
-            alpha=0.4, linewidth=1.5, zorder=9,
+        ax.add_patch(mpatches.Circle(
+            (x, y), radius=0.4,
+            facecolor='orange', edgecolor='darkorange',
+            alpha=0.5, linewidth=1.5, zorder=9,
         ))
 
 

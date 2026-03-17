@@ -913,17 +913,17 @@ def plot_eigenvector_comparison(
             # Add portal tile overlays
             for state in (portal_sources or []):
                 py, px = divmod(state, grid_width)
-                ax.add_patch(plt.Rectangle(
-                    (px - 0.5, py - 0.5), 1, 1,
-                    facecolor='orange', edgecolor='darkorange',
-                    alpha=0.4, linewidth=1.5, zorder=9,
+                ax.add_patch(plt.Circle(
+                    (px, py), radius=0.4,
+                    facecolor='royalblue', edgecolor='navy',
+                    alpha=0.5, linewidth=1.5, zorder=9,
                 ))
             for state in (portal_ends or []):
                 py, px = divmod(state, grid_width)
-                ax.add_patch(plt.Rectangle(
-                    (px - 0.5, py - 0.5), 1, 1,
-                    facecolor='cyan', edgecolor='darkcyan',
-                    alpha=0.4, linewidth=1.5, zorder=9,
+                ax.add_patch(plt.Circle(
+                    (px, py), radius=0.4,
+                    facecolor='orange', edgecolor='darkorange',
+                    alpha=0.5, linewidth=1.5, zorder=9,
                 ))
 
             ax.set_title(f'{title}', fontsize=12)
