@@ -2,6 +2,8 @@ import jax
 import jax.numpy as jnp
 from typing import NamedTuple, Any
 
+MAX_PORTAL_DESTS = 4  # Fixed number of destination slots per portal (JAX static-shape requirement)
+
 
 # Define the environment state for GridWorld
 class GridWorldState(NamedTuple):
@@ -41,9 +43,10 @@ class GridWorldEnv:
                 transition succeeds.  0 = fully blocked (hard door), 1 = fully
                 reversible (no effect).  Agent stays in place when the sampled
                 uniform exceeds the probability.
-            portals: Dict mapping (state_idx, action) -> dest_state_idx.
-                Portals override normal physics and teleport the agent.
-                Portals are checked before doors.
+            portals: Dict mapping (state_idx, action) -> (list[dest_state_idx], list[norm_prob]).
+                Portals override normal physics and stochastically teleport the agent.
+                Portals are checked before doors. Probabilities must sum to 1.0.
+                Each destination list is padded to MAX_PORTAL_DESTS slots for JAX.
         """
         self.width = width
         self.height = height
@@ -99,14 +102,23 @@ class GridWorldEnv:
         self.portals = portals if portals is not None else {}
         if len(self.portals) > 0:
             portal_keys = list(self.portals.keys())
+            dest_padded = []
+            prob_padded = []
+            for k in portal_keys:
+                dests, probs = self.portals[k]
+                n = len(dests)
+                dest_padded.append(dests + [dests[0]] * (MAX_PORTAL_DESTS - n))
+                prob_padded.append(probs + [0.0] * (MAX_PORTAL_DESTS - n))
             self.portal_states       = jnp.array([k[0] for k in portal_keys], dtype=self.dtype)
             self.portal_actions      = jnp.array([k[1] for k in portal_keys], dtype=self.dtype)
-            self.portal_destinations = jnp.array(list(self.portals.values()),  dtype=self.dtype)
+            self.portal_destinations = jnp.array(dest_padded, dtype=self.dtype)    # (num_portals, MAX_PORTAL_DESTS)
+            self.portal_probs        = jnp.array(prob_padded, dtype=jnp.float32)   # (num_portals, MAX_PORTAL_DESTS)
             self.has_portals = True
         else:
             self.portal_states       = jnp.array([], dtype=self.dtype)
             self.portal_actions      = jnp.array([], dtype=self.dtype)
-            self.portal_destinations = jnp.array([], dtype=self.dtype)
+            self.portal_destinations = jnp.zeros((0, MAX_PORTAL_DESTS), dtype=self.dtype)
+            self.portal_probs        = jnp.zeros((0, MAX_PORTAL_DESTS), dtype=jnp.float32)
             self.has_portals = False
 
         # Precompute valid start positions (positions that are not obstacles or goal)
@@ -182,7 +194,7 @@ class GridWorldEnv:
         steps    = state.steps
         current_state_idx = self.get_state_representation(state)
 
-        key, door_key = jax.random.split(key)
+        key, door_key, portal_key = jax.random.split(key, 3)
 
         def _step_impl(args):
             pos, st, csidx = args
@@ -233,10 +245,15 @@ class GridWorldEnv:
                 def check_portal(i):
                     return (self.portal_states[i] == csidx) & (self.portal_actions[i] == action)
 
-                matches     = jax.vmap(check_portal)(jnp.arange(len(self.portal_states)))
+                matches      = jax.vmap(check_portal)(jnp.arange(len(self.portal_states)))
                 portal_match = jnp.any(matches)
                 portal_idx   = jnp.argmax(matches)
-                portal_dest  = self._state_idx_to_position(self.portal_destinations[portal_idx])
+                dest_flat    = jax.random.choice(
+                    portal_key,
+                    self.portal_destinations[portal_idx],
+                    p=self.portal_probs[portal_idx],
+                )
+                portal_dest  = self._state_idx_to_position(dest_flat)
 
                 return jax.lax.cond(
                     portal_match,

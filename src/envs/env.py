@@ -39,10 +39,16 @@ def create_environment_from_text(text_content=None, file_name=None, file_path=No
           - e.g., 'DD' = hard door Down, 'DD:0.3' = door Down with 30% reversal chance
           - 'DDL:0.5' = doors Down and Left, both with 50% reversal chance
           - Actions: U (up), D (down), L (left), R (right)
-        - 'P{action}:{dest}' for portals (non-adjacent teleports from this tile)
-          - Source is always the tile's own position; one token per direction
-          - e.g., 'PU:12' = going Up from this tile teleports to state 12
-          - 'PU:12PD:5' = two portals from this tile (Up->12, Down->5)
+        - 'E{id}' for portal ends (destinations), e.g. 'E1', 'E2'
+          - The id is an arbitrary positive integer label
+          - Multiple end tiles can share different ids
+        - 'P{action}:{id1}@{w1}_{id2}@{w2}...' for portal sources
+          - Action char: U/D/L/R
+          - Destinations reference E{id} labels; weights are optional floats
+          - Weights are automatically normalized to sum to 1.0
+          - Shorthand: 'PU:1' (single dest, weight defaults to 1.0)
+          - e.g. 'PU:1@0.8_2@0.2' = Up teleports to E1 (80%) or E2 (20%)
+          - Multiple portals per tile: 'PU:1PD:2' = Up->E1, Down->E2
         - Multiple elements can be combined in a tile: 'X', 'DD', 'DDLR', etc.
 
     Returns:
@@ -120,11 +126,25 @@ def _parse_comma_format(lines, windy=False, **env_kwargs):
     start_pos = None
     goal_pos = None
     asymmetric_transitions = {}  # (state_idx, action) -> reversal_prob
-    portals = {}  # (source_state_idx, action) -> dest_state_idx
+    portals = {}  # (source_state_idx, action) -> (list[dest_state_idx], list[norm_prob])
 
     action_map = {'U': 0, 'R': 1, 'D': 2, 'L': 3}
     action_effects_map = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}
     reverse_action_map = {0: 2, 1: 3, 2: 0, 3: 1}
+
+    # --- Pass 1: locate all portal end (destination) tiles ---
+    end_positions = {}  # end_id (int) -> flat state index
+    end_pattern = r'E(\d+)'
+    for y, row in enumerate(grid):
+        for x, tile in enumerate(row):
+            for match in re.finditer(end_pattern, tile):
+                end_id = int(match.group(1))
+                end_positions[end_id] = y * width + x
+
+    # --- Pass 2: parse all tile features ---
+    portal_source_pattern = r'P([UDLR]):((?:\d+(?:@[\d.]+)?_?)+)'
+    dest_token_pattern = r'(\d+)(?:@([\d.]+))?'
+    door_pattern = r'D([UDLR]+)(?::([0-9]*\.?[0-9]+))?'
 
     for y, row in enumerate(grid):
         for x, tile in enumerate(row):
@@ -136,7 +156,6 @@ def _parse_comma_format(lines, windy=False, **env_kwargs):
                 goal_pos = (x, y)
 
             # Door format: D{actions} or D{actions}:{prob}
-            door_pattern = r'D([UDLR]+)(?::([0-9]*\.?[0-9]+))?'
             for match in re.finditer(door_pattern, tile):
                 actions_str = match.group(1)
                 reversal_prob = float(match.group(2)) if match.group(2) is not None else 0.0
@@ -151,14 +170,27 @@ def _parse_comma_format(lines, windy=False, **env_kwargs):
                         reverse_action = reverse_action_map[action]
                         asymmetric_transitions[(dest_state, reverse_action)] = reversal_prob
 
-            # Portal format: P{action}:{dest}
+            # Portal source format: P{action}:{id1}@{w1}_{id2}@{w2}...
             source_state = y * width + x
-            portal_pattern = r'P([UDLR]):(\d+)'
-            for match in re.finditer(portal_pattern, tile):
-                action_char = match.group(1)
-                dest_state = int(match.group(2))
-                action = action_map[action_char]
-                portals[(source_state, action)] = dest_state
+            for match in re.finditer(portal_source_pattern, tile):
+                action = action_map[match.group(1)]
+                dest_tokens = match.group(2).rstrip('_').split('_')
+
+                dest_states = []
+                raw_weights = []
+                for token in dest_tokens:
+                    m = re.fullmatch(dest_token_pattern, token)
+                    if m is None:
+                        raise ValueError(f"Invalid portal destination token '{token}' in tile '{tile}'")
+                    end_id = int(m.group(1))
+                    if end_id not in end_positions:
+                        raise ValueError(f"Portal references unknown end id E{end_id} (no E{end_id} tile found)")
+                    dest_states.append(end_positions[end_id])
+                    raw_weights.append(float(m.group(2)) if m.group(2) is not None else 1.0)
+
+                total = sum(raw_weights)
+                norm_probs = [w / total for w in raw_weights]
+                portals[(source_state, action)] = (dest_states, norm_probs)
 
     env_class = WindyGridWorldEnv if windy else GridWorldEnv
     return env_class(
