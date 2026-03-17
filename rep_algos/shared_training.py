@@ -963,6 +963,16 @@ def learn_eigenvectors(args, learner_module, method):
                         if k.startswith('rank/')
                     ]
                     print(f"  Eff. rank: {', '.join(rank_strs)}")
+                _eig_strs = [
+                    f"λ_{_ki}={metrics_dict[f'eigenvalue_{_ki}_real']:.4f}"
+                    + (f"+{metrics_dict[f'eigenvalue_{_ki}_imag']:.4f}j"
+                       if abs(metrics_dict[f'eigenvalue_{_ki}_imag']) > 1e-6 else "")
+                    for _ki in range(k_eig)
+                ]
+                print(f"  Eigenvalues (kernel): {', '.join(_eig_strs)}")
+                print(f"  Avg eigenvalue error: {metrics_dict['avg_eigenvalue_error']:.4f}, "
+                      f"goal_roc={metrics_dict['avg_goal_roc']:.4f}, "
+                      f"source_roc={metrics_dict['avg_source_roc']:.4f}")
                 print(f"  Batch diversity: unique={unique_states}/{total_states} ({coverage*100:.1f}%), "
                       f"entropy={normalized_entropy:.3f}, max_freq={max_state_freq:.4f}")
         log_time = time.time() - log_start
