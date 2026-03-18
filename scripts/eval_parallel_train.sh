@@ -25,16 +25,31 @@
 #SBATCH --error=logs/par_eval_train_%a.err
 
 mkdir -p logs
-mkdir -p results/eval_manifest
+
+# ---------------------------------------------------------------------------
+# Path overrides — exported by run_full_pipeline.sh; fall back to defaults.
+# ---------------------------------------------------------------------------
+PIPELINE_RESULTS_DIR="${PIPELINE_RESULTS_DIR:-./results/parallel_clf_eval}"
+PIPELINE_MANIFEST_DIR="${PIPELINE_MANIFEST_DIR:-./results/eval_manifest}"
+PIPELINE_EXP_NAME="${PIPELINE_EXP_NAME:-parallel_clf_eval}"
+PIPELINE_SEED="${PIPELINE_SEED:-42}"
+
+mkdir -p "$PIPELINE_MANIFEST_DIR"
 
 # ---------------------------------------------------------------------------
 # Environment table  (index 0-5)
+# If PIPELINE_ENV_LIST is exported by the master script, use it; otherwise
+# fall back to the default set of six environments.
 # ---------------------------------------------------------------------------
-ENV_FILES=(
-    "GridRoom-4"  "GridRoom-4-Doors"  
-    "GridRoom-1"  "GridRoom-1-Portals"
-    "GridMaze-OGBench"  "GridMaze-OGBench-Portals"
-)
+if [ -n "${PIPELINE_ENV_LIST:-}" ]; then
+    read -ra ENV_FILES <<< "$PIPELINE_ENV_LIST"
+else
+    ENV_FILES=(
+        "GridRoom-4"  "GridRoom-4-Doors"
+        "GridRoom-1"  "GridRoom-1-Portals"
+        "GridMaze-OGBench"  "GridMaze-OGBench-Portals"
+    )
+fi
 
 ENV_FILE=${ENV_FILES[$SLURM_ARRAY_TASK_ID]}
 ENV_NAME=$ENV_FILE
@@ -66,10 +81,10 @@ python train.py clf \
     --num_eigenvector_pairs 8 \
     --learning_rate        0.00001 \
     --ema_learning_rate    0.0003 \
-    --exp_name             parallel_clf_eval \
+    --exp_name             "$PIPELINE_EXP_NAME" \
     --exp_number           1 \
-    --seed                 42 \
-    --results_dir          ./results/parallel_clf_eval \
+    --seed                 "$PIPELINE_SEED" \
+    --results_dir          "$PIPELINE_RESULTS_DIR" \
     --no-plot_during_training \
     --save_model
 
@@ -79,7 +94,7 @@ python train.py clf \
 #   ./results/parallel_clf_eval/{env_file_name}/{env_file_name}__parallel_clf_eval__0__42__*/
 # We take the most recent one in case of reruns.
 # ---------------------------------------------------------------------------
-RESULTS_DIR=$(ls -td "./results/parallel_clf_eval/${ENV_FILE}/${ENV_FILE}__parallel_clf_eval__0__42__"*/ 2>/dev/null | head -1)
+RESULTS_DIR=$(ls -td "${PIPELINE_RESULTS_DIR}/${ENV_FILE}/${ENV_FILE}__${PIPELINE_EXP_NAME}__0__${PIPELINE_SEED}__"*/ 2>/dev/null | head -1)
 
 if [ -z "$RESULTS_DIR" ]; then
     echo "ERROR: Could not find results directory for $ENV_NAME" >&2
@@ -88,10 +103,10 @@ fi
 
 # Strip trailing slash for consistency
 RESULTS_DIR="${RESULTS_DIR%/}"
-echo "$RESULTS_DIR" > "./results/eval_manifest/${ENV_NAME}.txt"
+echo "$RESULTS_DIR" > "${PIPELINE_MANIFEST_DIR}/${ENV_NAME}.txt"
 
 echo "========================================"
 echo "Training complete for: $ENV_NAME"
 echo "Results saved to     : $RESULTS_DIR"
-echo "Manifest written to  : ./results/eval_manifest/${ENV_NAME}.txt"
+echo "Manifest written to  : ${PIPELINE_MANIFEST_DIR}/${ENV_NAME}.txt"
 echo "========================================"

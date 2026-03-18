@@ -51,9 +51,14 @@ export JAX_PLATFORM_NAME=cpu
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 # ---------------------------------------------------------------------------
+# Path overrides — exported by run_full_pipeline.sh; fall back to defaults.
+# ---------------------------------------------------------------------------
+MANIFEST_DIR="${PIPELINE_MANIFEST_DIR:-./results/eval_manifest}"
+PLOTS_DIR="${PIPELINE_PLOTS_DIR:-./results/parallel_eval_plots}"
+
+# ---------------------------------------------------------------------------
 # Sanity check: at least one manifest file exists
 # ---------------------------------------------------------------------------
-MANIFEST_DIR="./results/eval_manifest"
 if [ ! -d "$MANIFEST_DIR" ] || [ -z "$(ls -A $MANIFEST_DIR/*.txt 2>/dev/null)" ]; then
     echo "ERROR: No manifest files found in $MANIFEST_DIR" >&2
     echo "Make sure the training array job (eval_parallel_train.sh) completed successfully." >&2
@@ -67,12 +72,12 @@ ls "$MANIFEST_DIR"/*.txt
 # Run plotting
 # ---------------------------------------------------------------------------
 python plot_parallel_eval.py \
-    --manifest-dir  ./results/eval_manifest \
-    --output-dir    ./results/parallel_eval_plots \
+    --manifest-dir  "$MANIFEST_DIR" \
+    --output-dir    "$PLOTS_DIR" \
     --subplot-size  2.2 \
     --dpi           150
 
 echo "========================================"
 echo "Plotting complete."
-echo "Figures saved to: ./results/parallel_eval_plots/"
+echo "Figures saved to: $PLOTS_DIR/"
 echo "========================================"
