@@ -630,10 +630,16 @@ def compute_hitting_times_from_eigenvectors(
     # matrices the eigensolver may return the stationary eigenvector with negative
     # sign, making left[:,0] = π/α with α < 0.  Dividing by sum(left[:,0]) = 1/α
     # gives π regardless of the sign of α.
-    stationary = jnp.abs(left[:, 0]) / jnp.sum(jnp.abs(left[:, 0]))
+    inv_stationary = jnp.sum(jnp.abs(left[:, 0])) / jnp.abs(left[:, 0]).clip(1e-8)  # [num_states]
 
     # Effective horizon weights: 1/(1-λ_P) for k >= 1
-    mode_weights = 1.0 / (1.0 - eigenvalues[1:])  # [num_eigenvectors-1]
+    clipped_eigenvalues = jnp.where(
+        jnp.abs(eigenvalues[1:]) > 0.9999,
+        0.9999 * eigenvalues[1:] / jnp.abs(eigenvalues[1:]),
+        eigenvalues[1:]
+    )  # Clip to avoid numerical instability when eigenvalues are very close to 1
+    mode_weights = 1.0 / (1.0 - clipped_eigenvalues)  # [num_eigenvectors-1]
+
 
     # Pairwise differences of right eigenvectors: φ_jk - φ_ik
     # pairwise_diff[j, i, k] = right[j, k] - right[i, k]
@@ -647,12 +653,17 @@ def compute_hitting_times_from_eigenvectors(
     # For biorthogonal learned eigenvectors this corrects the spectral expansion
     # coefficients so the formula is exact regardless of per-mode scaling.
     inner_products = jnp.einsum('jk,jk->k', jnp.conj(left[:, 1:]), right[:, 1:])
+    clipped_inner_products = jnp.where(
+        jnp.abs(inner_products) < 1e-8,
+        jnp.where(inner_products == 0, 1e-8 + 0j, 1e-8 * inner_products / jnp.abs(inner_products)),  # Avoid division by zero for exactly zero inner products
+        inner_products
+    )  # Avoid division by zero for modes with very small inner product
 
     # h(i,j) = Σ_k [mode_weights[k] / ⟨ψ_.k, φ_.k⟩] * (1/π_j) * ψ_jk * (φ_jk - φ_ik)
     hitting_times = jnp.real(jnp.einsum(
         'k,j,jk,jik->ij',
-        mode_weights / inner_products,
-        1.0 / stationary,
+        mode_weights / clipped_inner_products,
+        inv_stationary,
         jnp.conj(left[:, 1:]),
         pairwise_diff,
     ))  # [num_states, num_states]
