@@ -676,9 +676,9 @@ def plot_results(
             ax.set_ylabel(ylabel, fontsize=10)
             ax.grid(True, linewidth=0.4, alpha=0.5)
 
-        # Eval: mean and std over seeds
-        eval_mean = eval_sr.mean(axis=1)   # [chunks]
-        eval_std  = eval_sr.std(axis=1)    # [chunks]
+        # Eval: mean and std over seeds (NaN-safe for seeds with fewer evaluations)
+        eval_mean = np.nanmean(eval_sr, axis=1)   # [chunks]
+        eval_std  = np.nanstd(eval_sr,  axis=1)   # [chunks]
         axes[2].plot(eval_ep, eval_mean, label=label, color=c,
                      linewidth=1.5, marker="o", markersize=4)
         axes[2].fill_between(eval_ep, eval_mean - eval_std, eval_mean + eval_std,

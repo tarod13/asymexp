@@ -97,20 +97,30 @@ def main() -> None:
         eval_sr_list = [seed_dict[si]["eval_sr"]  for si in sorted_idx]
         eval_ep      = seed_dict[sorted_idx[0]]["eval_episodes"]
 
-        # Sanity-check that eval_episodes arrays are consistent across seeds.
-        for si in sorted_idx[1:]:
-            if not np.array_equal(seed_dict[si]["eval_episodes"], eval_ep):
+        # Find the longest eval_episodes array to use as the reference x-axis,
+        # and pad shorter seeds' eval_sr with NaN rows so all have the same length.
+        all_eval_ep = [seed_dict[si]["eval_episodes"] for si in sorted_idx]
+        max_evals   = max(len(ep) for ep in all_eval_ep)
+        eval_ep     = all_eval_ep[np.argmax([len(ep) for ep in all_eval_ep])]
+
+        padded_eval_sr = []
+        for si, arr in zip(sorted_idx, eval_sr_list):
+            n = arr.shape[0]
+            if n < max_evals:
                 print(
-                    f"WARNING: eval_episodes mismatch at seed_idx={si} for '{cond_name}'. "
-                    "Using the first seed's eval_episodes.",
+                    f"WARNING: seed_idx={si} for '{cond_name}' has {n} evaluations "
+                    f"vs {max_evals} for others. Padding with NaN.",
                     file=sys.stderr,
                 )
+                pad = np.full((max_evals - n, arr.shape[1]), np.nan)
+                arr = np.concatenate([arr, pad], axis=0)
+            padded_eval_sr.append(arr)
 
         results[cond_name] = dict(
-            steps         = np.concatenate(steps_list,   axis=0),  # [num_seeds, num_ep]
-            reached       = np.concatenate(reached_list, axis=0),  # [num_seeds, num_ep]
-            eval_sr       = np.concatenate(eval_sr_list, axis=1),  # [num_chunks, num_seeds]
-            eval_episodes = eval_ep,                                # [num_chunks]
+            steps         = np.concatenate(steps_list,    axis=0),  # [num_seeds, num_ep]
+            reached       = np.concatenate(reached_list,  axis=0),  # [num_seeds, num_ep]
+            eval_sr       = np.concatenate(padded_eval_sr, axis=1), # [max_evals, num_seeds]
+            eval_episodes = eval_ep,                                  # [max_evals]
         )
 
     # ── Plot ─────────────────────────────────────────────────────────────────
