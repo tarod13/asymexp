@@ -2,25 +2,13 @@
 # =============================================================================
 # Combined eigenvector visualization across all environments.
 #
-# This job should be submitted with a dependency on the full training array
-# so that it runs only after all environments have been trained:
+# Usage (standalone):
+#   sbatch scripts/eval_parallel_plot.sh
 #
-#   TRAIN_JID=$(sbatch --parsable scripts/eval_parallel_train.sh)
-#   sbatch --dependency=afterok:${TRAIN_JID} scripts/eval_parallel_plot.sh
-#
-# The easy way to do both at once:
-#   bash scripts/submit_parallel_eval.sh
-#
-# What this script does:
-#   Calls plot_parallel_eval.py which reads the manifest files written by
-#   each training job and produces 16 combined figures (8 learned + 8 ground-
-#   truth), one per component type:
-#     right-real, right-imag, left-real, left-imag,
-#     right-magnitude, right-phase, left-magnitude, left-phase
-#   Each figure has eigenvectors as rows and environments as columns.
-#
-# Output:
-#   ./results/parallel_eval_plots/*.png
+# Usage (from run_full_pipeline.sh):
+#   sbatch --dependency=afterok:<train_jid> \
+#       scripts/eval_parallel_plot.sh \
+#       [--manifest_dir PATH] [--plots_dir PATH]
 # =============================================================================
 
 #SBATCH --job-name=par_eval_plot
@@ -33,15 +21,25 @@
 
 mkdir -p logs
 
+# ── Arguments (all optional; defaults match standalone behaviour) ──────────────
+MANIFEST_DIR="./results/eval_manifest"
+PLOTS_DIR="./results/parallel_eval_plots"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --manifest_dir) MANIFEST_DIR="$2"; shift 2 ;;
+        --plots_dir)    PLOTS_DIR="$2";    shift 2 ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+
 echo "========================================"
 echo "Parallel Eval — Combined Eigenvector Plots"
 echo "Job ID : $SLURM_JOB_ID"
 echo "Node   : $SLURM_NODELIST"
 echo "========================================"
 
-# ---------------------------------------------------------------------------
-# Environment setup
-# ---------------------------------------------------------------------------
+# ── Environment setup ──────────────────────────────────────────────────────────
 module --force purge
 module load StdEnv/2023 gcc/14.3 python/3.11 cuda/12.9 scipy-stack/2024b
 source ~/ENV/bin/activate
@@ -50,16 +48,8 @@ source ~/ENV/bin/activate
 export JAX_PLATFORM_NAME=cpu
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
-# ---------------------------------------------------------------------------
-# Path overrides — exported by run_full_pipeline.sh; fall back to defaults.
-# ---------------------------------------------------------------------------
-MANIFEST_DIR="${PIPELINE_MANIFEST_DIR:-./results/eval_manifest}"
-PLOTS_DIR="${PIPELINE_PLOTS_DIR:-./results/parallel_eval_plots}"
-
-# ---------------------------------------------------------------------------
-# Sanity check: at least one manifest file exists
-# ---------------------------------------------------------------------------
-if [ ! -d "$MANIFEST_DIR" ] || [ -z "$(ls -A $MANIFEST_DIR/*.txt 2>/dev/null)" ]; then
+# ── Sanity check: at least one manifest file exists ───────────────────────────
+if [ ! -d "$MANIFEST_DIR" ] || [ -z "$(ls -A "$MANIFEST_DIR"/*.txt 2>/dev/null)" ]; then
     echo "ERROR: No manifest files found in $MANIFEST_DIR" >&2
     echo "Make sure the training array job (eval_parallel_train.sh) completed successfully." >&2
     exit 1
@@ -68,9 +58,7 @@ fi
 echo "Manifest files found:"
 ls "$MANIFEST_DIR"/*.txt
 
-# ---------------------------------------------------------------------------
-# Run plotting
-# ---------------------------------------------------------------------------
+# ── Run plotting ───────────────────────────────────────────────────────────────
 python plot_parallel_eval.py \
     --manifest-dir  "$MANIFEST_DIR" \
     --output-dir    "$PLOTS_DIR" \
