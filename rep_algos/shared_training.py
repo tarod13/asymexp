@@ -249,7 +249,8 @@ def learn_eigenvectors(args, learner_module, method):
             D = jnp.diag(sampling_probs)
             D_inv = jnp.diag(1.0 / sampling_probs)
             gt_matrix = laplacian_matrix + D_inv @ laplacian_matrix.T @ D
-            print(f"\nALLO: computing {num_gt_eigenvectors} ground truth eigenvectors from L + D^{{-1}}L^T D...")
+            N_states = laplacian_matrix.shape[0]
+            print(f"\nALLO: computing {num_gt_eigenvectors} GT eigenvectors from L + D^{{-1}}L^T D...")
             gt_eigendecomp = compute_eigendecomposition(
                 gt_matrix,
                 k=num_gt_eigenvectors,
@@ -261,49 +262,57 @@ def learn_eigenvectors(args, learner_module, method):
             gt_left_binorm_imag = gt_eigendecomp['left_eigenvectors_imag']
             gt_right_real = gt_eigendecomp['right_eigenvectors_real']
             gt_right_imag = gt_eigendecomp['right_eigenvectors_imag']
-        elif num_gt_eigenvectors != args.num_eigenvector_pairs:
-            print(f"\nComputing {num_gt_eigenvectors} ground truth eigenvectors (learning {args.num_eigenvector_pairs})")
-            if sym_eig:
-                gt_eigendecomp = compute_eigendecomposition(
-                    laplacian_matrix,
-                    k=num_gt_eigenvectors,
-                    ascending=True,
-                    sym_eig=True,
-                )
-            else:
-                print("  Using mpmath high-precision full-rank eigendecomposition...")
-                gt_eigendecomp = compute_gt_eigendecomposition_mpmath(
-                    laplacian_matrix,
-                    num_eigenvector_pairs=num_gt_eigenvectors,
-                    ascending=True,
-                )
-            gt_eigenvalues_real = gt_eigendecomp['eigenvalues_real']
-            gt_eigenvalues_imag = gt_eigendecomp['eigenvalues_imag']
-            gt_left_binorm_real = gt_eigendecomp['left_eigenvectors_real']
-            gt_left_binorm_imag = gt_eigendecomp['left_eigenvectors_imag']
-            gt_right_real = gt_eigendecomp['right_eigenvectors_real']
-            gt_right_imag = gt_eigendecomp['right_eigenvectors_imag']
+            # Full Ideal GT uses the plain Laplacian L (not the symmetrized ALLO matrix)
+            # so that it represents un-truncated hitting times for the underlying MDP.
+            print(f"  Full Ideal GT: full-rank ({N_states}) eigendecomposition of plain L via mpmath...")
+            _full_eigendecomp = compute_gt_eigendecomposition_mpmath(
+                laplacian_matrix,
+                num_eigenvector_pairs=None,
+                ascending=True,
+            )
+            full_eigenvalues_real = _full_eigendecomp['eigenvalues_real']
+            full_eigenvalues_imag = _full_eigendecomp['eigenvalues_imag']
+            full_left_binorm_real = _full_eigendecomp['left_eigenvectors_real']
+            full_left_binorm_imag = _full_eigendecomp['left_eigenvectors_imag']
+            full_right_real = _full_eigendecomp['right_eigenvectors_real']
+            full_right_imag = _full_eigendecomp['right_eigenvectors_imag']
+            print(f"  Full Ideal GT complete ({N_states} eigenpairs).")
         else:
+            # Non-ALLO (or ALLO with sym_eig): compute a single full-rank eigendecomposition
+            # of the plain Laplacian, then slice to num_gt_eigenvectors for the truncated GT.
+            # Both the Full Ideal GT and the truncated GT come from the same single call.
+            N_states = laplacian_matrix.shape[0]
             if sym_eig:
-                gt_eigendecomp = compute_eigendecomposition(
+                print(f"\nComputing full-rank ({N_states}) eigh of L; will truncate to {num_gt_eigenvectors}...")
+                _full_eigendecomp = compute_eigendecomposition(
                     laplacian_matrix,
-                    k=num_gt_eigenvectors,
+                    k=None,
                     ascending=True,
                     sym_eig=True,
                 )
             else:
-                print(f"\nComputing {num_gt_eigenvectors} ground truth eigenvectors via mpmath full-rank eigendecomposition...")
-                gt_eigendecomp = compute_gt_eigendecomposition_mpmath(
+                print(f"\nComputing full-rank ({N_states}) mpmath eigendecomposition of L; "
+                      f"will truncate to {num_gt_eigenvectors}...")
+                _full_eigendecomp = compute_gt_eigendecomposition_mpmath(
                     laplacian_matrix,
-                    num_eigenvector_pairs=num_gt_eigenvectors,
+                    num_eigenvector_pairs=None,
                     ascending=True,
                 )
-            gt_eigenvalues_real = gt_eigendecomp['eigenvalues_real']
-            gt_eigenvalues_imag = gt_eigendecomp['eigenvalues_imag']
-            gt_left_binorm_real = gt_eigendecomp['left_eigenvectors_real']
-            gt_left_binorm_imag = gt_eigendecomp['left_eigenvectors_imag']
-            gt_right_real = gt_eigendecomp['right_eigenvectors_real']
-            gt_right_imag = gt_eigendecomp['right_eigenvectors_imag']
+            # Full Ideal GT (all N eigenpairs)
+            full_eigenvalues_real = _full_eigendecomp['eigenvalues_real']
+            full_eigenvalues_imag = _full_eigendecomp['eigenvalues_imag']
+            full_left_binorm_real = _full_eigendecomp['left_eigenvectors_real']
+            full_left_binorm_imag = _full_eigendecomp['left_eigenvectors_imag']
+            full_right_real = _full_eigendecomp['right_eigenvectors_real']
+            full_right_imag = _full_eigendecomp['right_eigenvectors_imag']
+            # Truncated GT: slice the first num_gt_eigenvectors pairs
+            gt_eigenvalues_real = full_eigenvalues_real[:num_gt_eigenvectors]
+            gt_eigenvalues_imag = full_eigenvalues_imag[:num_gt_eigenvectors]
+            gt_left_binorm_real = full_left_binorm_real[:, :num_gt_eigenvectors]
+            gt_left_binorm_imag = full_left_binorm_imag[:, :num_gt_eigenvectors]
+            gt_right_real = full_right_real[:, :num_gt_eigenvectors]
+            gt_right_imag = full_right_imag[:, :num_gt_eigenvectors]
+            print(f"  Full-rank eigendecomposition complete. Truncated to {num_gt_eigenvectors}.")
 
     print(f"\nState coordinates shape: {state_coords.shape}")
     print(f"Ground truth right eigenvectors shape: {gt_right_real.shape}")
@@ -383,34 +392,6 @@ def learn_eigenvectors(args, learner_module, method):
             per_wind_gt.append((float(w), w_eigendecomp, w_sampling_probs))
             print("done")
         print("Per-wind GT computation complete.")
-
-    # Full-rank (all N eigenpairs) eigendecomposition for the Full Ideal GT baseline.
-    # Always uses the plain Laplacian L (the environment's canonical Laplacian) so that
-    # the Full Ideal represents exact, un-truncated hitting times for the MDP regardless
-    # of which learning algorithm is being used.
-    if checkpoint_data is None:
-        N_states = laplacian_matrix.shape[0]
-        print(f"\nComputing Full Ideal GT: full-rank ({N_states}) eigendecomposition of L ...")
-        if sym_eig:
-            _full_eigendecomp = compute_eigendecomposition(
-                laplacian_matrix,
-                k=None,
-                ascending=True,
-                sym_eig=True,
-            )
-        else:
-            _full_eigendecomp = compute_gt_eigendecomposition_mpmath(
-                laplacian_matrix,
-                num_eigenvector_pairs=None,
-                ascending=True,
-            )
-        full_eigenvalues_real = _full_eigendecomp['eigenvalues_real']
-        full_eigenvalues_imag = _full_eigendecomp['eigenvalues_imag']
-        full_left_binorm_real  = _full_eigendecomp['left_eigenvectors_real']
-        full_left_binorm_imag  = _full_eigendecomp['left_eigenvectors_imag']
-        full_right_real = _full_eigendecomp['right_eigenvectors_real']
-        full_right_imag = _full_eigendecomp['right_eigenvectors_imag']
-        print(f"Full Ideal GT eigendecomposition complete ({N_states} eigenpairs).")
 
     # Derive hitting-times variant for the Full Ideal GT left eigenvectors.
     # Same logic as for the truncated GT: pass conj(full_left_binorm) to the
