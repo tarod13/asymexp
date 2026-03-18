@@ -44,6 +44,7 @@ from src.utils.metrics import (
 from src.utils.plotting import (
     plot_learning_curves_one,
     plot_cosine_similarity_evolution,
+    plot_cosine_similarity_per_eigenvector,
     plot_eigenvector_comparison,
     plot_auxiliary_metrics,
     visualize_multiple_eigenvectors,
@@ -951,23 +952,19 @@ def learn_eigenvectors(args):
             if args.plot_during_training:
                 # Generate comparison plots with latest learned eigenvectors
                 plot_eigenvector_comparison(
-                    learned_left_real=np.array(features_dict['left_real']),
-                    learned_left_imag=np.array(features_dict['left_imag']),
                     learned_right_real=np.array(features_dict['right_real']),
                     learned_right_imag=np.array(features_dict['right_imag']),
-                    gt_left_real=np.array(gt_left_real),
-                    gt_left_imag=np.array(gt_left_imag),
                     gt_right_real=np.array(gt_right_real),
                     gt_right_imag=np.array(gt_right_imag),
-                    normalized_left_real=np.array(normalized_features['left_real']),
-                    normalized_left_imag=np.array(normalized_features['left_imag']),
-                    normalized_right_real=np.array(normalized_features['right_real']),
-                    normalized_right_imag=np.array(normalized_features['right_imag']),
                     canonical_states=np.array(canonical_states),
                     grid_width=env.width,
                     grid_height=env.height,
                     save_dir=str(plots_dir),
-                    door_markers=door_markers if door_markers else None,
+                    learned_left_real=np.array(features_dict['left_real']),
+                    learned_left_imag=np.array(features_dict['left_imag']),
+                    gt_left_real=np.array(gt_left_real),
+                    gt_left_imag=np.array(gt_left_imag),
+                    portals=door_markers if door_markers else None,
                     portal_sources=portal_sources if portal_sources else None,
                     portal_ends=portal_ends if portal_ends else None,
                 )
@@ -1047,33 +1044,38 @@ def learn_eigenvectors(args):
     print("="*60)
 
     # 1. Learning curves
-    plot_learning_curves_one(metrics_history, str(plots_dir / "learning_curves.png"))
+    plot_learning_curves_one(
+        metrics_history,
+        str(plots_dir / "learning_curves.png"),
+        gt_eigenvalues_real=np.array(gt_eigenvalues_real),
+        gt_eigenvalues_imag=np.array(gt_eigenvalues_imag),
+        delta=args.delta,
+    )
 
-    # 2. Cosine similarity evolution
+    # 2. Cosine similarity evolution (average)
     plot_cosine_similarity_evolution(metrics_history, str(plots_dir / "cosine_similarity_evolution.png"))
+
+    # 2b. Cosine similarity evolution — per individual eigenvector
+    plot_cosine_similarity_per_eigenvector(metrics_history, str(plots_dir / "cosine_similarity_per_eigenvector.png"))
 
     # 3. Auxiliary metrics
     plot_auxiliary_metrics(metrics_history, str(plots_dir / "auxiliary_metrics.png"))
 
     # 4. Eigenvector comparison plots (Ground Truth vs Raw Learned vs Normalized)
     plot_eigenvector_comparison(
-        learned_left_real=np.array(final_features_dict['left_real']),
-        learned_left_imag=np.array(final_features_dict['left_imag']),
         learned_right_real=np.array(final_features_dict['right_real']),
         learned_right_imag=np.array(final_features_dict['right_imag']),
-        gt_left_real=np.array(gt_left_real),
-        gt_left_imag=np.array(gt_left_imag),
         gt_right_real=np.array(gt_right_real),
         gt_right_imag=np.array(gt_right_imag),
-        normalized_left_real=np.array(final_normalized_features['left_real']),
-        normalized_left_imag=np.array(final_normalized_features['left_imag']),
-        normalized_right_real=np.array(final_normalized_features['right_real']),
-        normalized_right_imag=np.array(final_normalized_features['right_imag']),
         canonical_states=np.array(canonical_states),
         grid_width=env.width,
         grid_height=env.height,
         save_dir=str(plots_dir),
-        door_markers=door_markers if door_markers else None,
+        learned_left_real=np.array(final_features_dict['left_real']),
+        learned_left_imag=np.array(final_features_dict['left_imag']),
+        gt_left_real=np.array(gt_left_real),
+        gt_left_imag=np.array(gt_left_imag),
+        portals=door_markers if door_markers else None,
         portal_sources=portal_sources if portal_sources else None,
         portal_ends=portal_ends if portal_ends else None,
     )
@@ -1108,7 +1110,7 @@ def learn_eigenvectors(args):
     )
 
     # Select states to visualize (evenly spaced across state space)
-    num_states_to_viz = min(6, num_states)
+    num_states_to_viz = min(args.hitting_times_nrow_pairs * args.hitting_times_ncols, num_states)
     viz_state_indices = np.linspace(0, num_states - 1, num_states_to_viz, dtype=int).tolist()
 
     # Visualize learned hitting times
@@ -1121,10 +1123,10 @@ def learn_eigenvectors(args):
         portals=door_markers if door_markers else None,
         portal_sources=portal_sources if portal_sources else None,
         portal_ends=portal_ends if portal_ends else None,
-        ncols=min(6, num_states_to_viz),
+        ncols=args.hitting_times_ncols,
         save_path=str(plots_dir / "hitting_times_learned.png"),
-        log_scale=True,
-        shared_colorbar=True,
+        log_scale=args.hitting_times_log_scale,
+        shared_colorbar=False,
     )
     plt.close()
 
@@ -1138,10 +1140,10 @@ def learn_eigenvectors(args):
         portals=door_markers if door_markers else None,
         portal_sources=portal_sources if portal_sources else None,
         portal_ends=portal_ends if portal_ends else None,
-        ncols=min(6, num_states_to_viz),
+        ncols=args.hitting_times_ncols,
         save_path=str(plots_dir / "hitting_times_ground_truth.png"),
-        log_scale=True,
-        shared_colorbar=True,
+        log_scale=args.hitting_times_log_scale,
+        shared_colorbar=False,
     )
     plt.close()
 

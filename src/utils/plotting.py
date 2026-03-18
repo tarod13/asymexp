@@ -7,39 +7,104 @@ from typing import Dict, Optional, Set, Tuple, List
 
 
 def _draw_portal_tile_overlays(ax, portal_sources, portal_ends, grid_width):
-    """Overlay colored circles on portal source (blue) and end (orange) states."""
+    """Overlay colored circles on portal source (blue) and end (orange) states.
+
+    Colors match the classic Portal game aesthetic:
+      - Portal start-states: electric blue (#009FE3 / #005FA3)
+      - Portal end-states:   vivid orange  (#FF6600 / #CC4400)
+
+    Drawn at high zorder so they always render above the heatmap.
+    """
     for state in (portal_sources or []):
         y, x = divmod(state, grid_width)
         ax.add_patch(mpatches.Circle(
             (x, y), radius=0.4,
-            facecolor='royalblue', edgecolor='navy',
-            alpha=0.5, linewidth=1.5, zorder=9,
+            facecolor='#009FE3', edgecolor='#005FA3',
+            alpha=0.6, linewidth=1.5, zorder=15,
         ))
     for state in (portal_ends or []):
         y, x = divmod(state, grid_width)
         ax.add_patch(mpatches.Circle(
             (x, y), radius=0.4,
-            facecolor='orange', edgecolor='darkorange',
-            alpha=0.5, linewidth=1.5, zorder=9,
+            facecolor='#FF6600', edgecolor='#CC4400',
+            alpha=0.6, linewidth=1.5, zorder=15,
         ))
 
 
 
-def plot_learning_curves_one(metrics_history: list, save_path: str):
+def _draw_door_markers(ax, portals, grid_width):
+    """Draw black rect + white triangle on each portal/door cell edge."""
+    if not portals:
+        return
+    rect_thickness = 0.15
+    rect_width = 0.7
+    for (source_idx, action), dest_idx in portals.items():
+        sy = source_idx // grid_width
+        sx = source_idx % grid_width
+        m = 0.02
+        if action == 0:  # Up
+            rx, ry = sx - rect_width / 2, sy - 0.5 - rect_thickness / 2
+            rw, rh = rect_width, rect_thickness
+            tri = mpatches.Polygon([
+                (sx, sy - 0.5 - rect_thickness / 2 + m),
+                (sx - (rect_thickness - 2*m) / 2, sy - 0.5 + rect_thickness / 2 - m),
+                (sx + (rect_thickness - 2*m) / 2, sy - 0.5 + rect_thickness / 2 - m),
+            ], facecolor='white', edgecolor='none', zorder=11)
+        elif action == 1:  # Right
+            rx, ry = sx + 0.5 - rect_thickness / 2, sy - rect_width / 2
+            rw, rh = rect_thickness, rect_width
+            tri = mpatches.Polygon([
+                (sx + 0.5 + rect_thickness / 2 - m, sy),
+                (sx + 0.5 - rect_thickness / 2 + m, sy - (rect_thickness - 2*m) / 2),
+                (sx + 0.5 - rect_thickness / 2 + m, sy + (rect_thickness - 2*m) / 2),
+            ], facecolor='white', edgecolor='none', zorder=11)
+        elif action == 2:  # Down
+            rx, ry = sx - rect_width / 2, sy + 0.5 - rect_thickness / 2
+            rw, rh = rect_width, rect_thickness
+            tri = mpatches.Polygon([
+                (sx, sy + 0.5 + rect_thickness / 2 - m),
+                (sx - (rect_thickness - 2*m) / 2, sy + 0.5 - rect_thickness / 2 + m),
+                (sx + (rect_thickness - 2*m) / 2, sy + 0.5 - rect_thickness / 2 + m),
+            ], facecolor='white', edgecolor='none', zorder=11)
+        else:  # Left
+            rx, ry = sx - 0.5 - rect_thickness / 2, sy - rect_width / 2
+            rw, rh = rect_thickness, rect_width
+            tri = mpatches.Polygon([
+                (sx - 0.5 - rect_thickness / 2 + m, sy),
+                (sx - 0.5 + rect_thickness / 2 - m, sy - (rect_thickness - 2*m) / 2),
+                (sx - 0.5 + rect_thickness / 2 - m, sy + (rect_thickness - 2*m) / 2),
+            ], facecolor='white', edgecolor='none', zorder=11)
+        ax.add_patch(mpatches.Rectangle((rx, ry), rw, rh, linewidth=0, edgecolor='none', facecolor='black', zorder=10))
+        ax.add_patch(tri)
+
+
+def plot_learning_curves_one(
+    metrics_history: list,
+    save_path: str,
+    gt_eigenvalues_real=None,
+    gt_eigenvalues_imag=None,
+    delta: float = 0.0,
+):
     """
     Plot comprehensive learning curves for single-eigenvector training.
 
-    Visualizes losses, Lyapunov functions, eigenvalue estimates, and other metrics.
+    Visualizes losses, Lyapunov functions, eigenvalue estimates, ROC metrics,
+    and cosine similarities.
 
     Args:
         metrics_history: List of metric dictionaries from training
         save_path: Path to save the plot
+        gt_eigenvalues_real: GT Laplacian eigenvalue real parts — used to draw
+            horizontal reference lines in the eigenvalue subplot (converted to
+            kernel space: λ_M = (1+δ) − λ_L).
+        gt_eigenvalues_imag: GT Laplacian eigenvalue imaginary parts.
+        delta: Discount parameter used in the kernel transformation.
     """
     if not metrics_history:
         print("Warning: metrics_history is empty, skipping learning curves plot")
         return
 
-    fig, axes = plt.subplots(3, 3, figsize=(16, 14))
+    fig, axes = plt.subplots(4, 3, figsize=(16, 18))
     fig.suptitle('Training Metrics (CLF-Based Complex Eigenvector Learning)', fontsize=16)
 
     steps = [m['gradient_step'] for m in metrics_history]
@@ -128,6 +193,16 @@ def plot_learning_curves_one(metrics_history: list, save_path: str):
             steps, [m.get(f'eigenvalue_{_ki}_imag', float('nan')) for m in metrics_history],
             label=f'λ_{_ki} (imag)', linestyle='--', color=_c, alpha=0.7,
         )
+    # GT reference lines: convert Laplacian → kernel space (λ_M = (1+δ) − λ_L)
+    if gt_eigenvalues_real is not None:
+        _gt_r = np.asarray(gt_eigenvalues_real)
+        _gt_i = np.asarray(gt_eigenvalues_imag) if gt_eigenvalues_imag is not None else np.zeros_like(_gt_r)
+        for _ki in range(min(len(_gt_r), len(_eig_indices) if _eig_indices else len(_gt_r))):
+            _c = _colors[_ki % len(_colors)]
+            _ref_real = float((1.0 + delta) - _gt_r[_ki])
+            _ref_imag = float(-_gt_i[_ki])
+            axes[2, 0].axhline(_ref_real, color=_c, linestyle='-',  linewidth=1.0, alpha=0.4)
+            axes[2, 0].axhline(_ref_imag, color=_c, linestyle='--', linewidth=1.0, alpha=0.4)
     if any('avg_eigenvalue_error' in m for m in metrics_history):
         ax2 = axes[2, 0].twinx()
         ax2.plot(
@@ -164,6 +239,34 @@ def plot_learning_curves_one(metrics_history: list, save_path: str):
     axes[2, 2].set_ylabel('Loss')
     axes[2, 2].legend(fontsize=8)
     axes[2, 2].grid(True, alpha=0.3)
+
+    # Row 4: ROC metrics
+    # Plot 10: Hitting-time rank-order correlations (goal and source)
+    _roc_keys = {
+        'avg_goal_roc':              ('Goal ROC (trunc. GT)',       'blue',   '-'),
+        'avg_source_roc':            ('Source ROC (trunc. GT)',      'red',    '-'),
+        'full_ideal_avg_goal_roc':   ('Goal ROC (full ideal GT)',    'blue',   '--'),
+        'full_ideal_avg_source_roc': ('Source ROC (full ideal GT)',  'red',    '--'),
+    }
+    _has_roc = any(k in metrics_history[0] for k in _roc_keys)
+    if _has_roc:
+        for _key, (_lbl, _col, _ls) in _roc_keys.items():
+            if _key in metrics_history[0]:
+                axes[3, 0].plot(
+                    steps, [m.get(_key, float('nan')) for m in metrics_history],
+                    label=_lbl, color=_col, linestyle=_ls, linewidth=1.8,
+                )
+        axes[3, 0].set_xlabel('Gradient Step')
+        axes[3, 0].set_ylabel('Spearman ρ')
+        axes[3, 0].set_title('Hitting-Time Rank Correlations')
+        axes[3, 0].set_ylim([-0.05, 1.05])
+        axes[3, 0].legend(fontsize=8)
+        axes[3, 0].grid(True, alpha=0.3)
+    else:
+        axes[3, 0].set_visible(False)
+
+    axes[3, 1].set_visible(False)
+    axes[3, 2].set_visible(False)
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -220,13 +323,295 @@ def plot_cosine_similarity_evolution(metrics_history: list, save_path: str):
     print(f"Cosine similarity evolution plot saved to {save_path}")
 
 
+def plot_cosine_similarity_per_eigenvector(metrics_history: list, save_path: str):
+    """Plot the per-eigenvector cosine similarity evolution for right and left separately.
+
+    Creates a figure with two side-by-side panels (right φ | left ψ).  Each
+    panel shows one thin line per eigenvector (colour-coded by index) plus a
+    bold dashed line for the overall average.
+
+    Args:
+        metrics_history: List of metric dicts from training.
+        save_path: Path to save the PNG.
+    """
+    if not metrics_history:
+        print("Warning: metrics_history is empty, skipping per-eigenvector cosine plot")
+        return
+
+    steps = [m['gradient_step'] for m in metrics_history]
+
+    # Detect how many individual similarity keys exist for each side
+    def _collect_per_eig(prefix):
+        indices = sorted(set(
+            int(k[len(prefix):])
+            for m in metrics_history
+            for k in m
+            if k.startswith(prefix) and k[len(prefix):].isdigit()
+        ))
+        return indices
+
+    right_indices = _collect_per_eig('right_cosine_sim_')
+    left_indices  = _collect_per_eig('left_cosine_sim_')
+
+    has_right = bool(right_indices)
+    has_left  = bool(left_indices)
+
+    if not has_right and not has_left:
+        print("Warning: no per-eigenvector cosine similarity keys found, skipping plot")
+        return
+
+    ncols = (1 if has_right else 0) + (1 if has_left else 0)
+    fig, axes_row = plt.subplots(1, ncols, figsize=(7 * ncols, 6), squeeze=False)
+    axes_row = axes_row[0]
+    col = 0
+
+    palette = plt.cm.tab10.colors
+
+    for side, indices, avg_key, sym, ax in [
+        ('Right (φ)', right_indices, 'right_cosine_sim_avg', 'φ', axes_row[col] if has_right else None),
+        ('Left (ψ)',  left_indices,  'left_cosine_sim_avg',  'ψ', axes_row[col + (1 if has_right else 0)] if has_left else None),
+    ]:
+        if ax is None:
+            continue
+        for idx in indices:
+            key = f'{avg_key[:avg_key.rfind("_avg")]}_{idx}'
+            vals = [m.get(key, float('nan')) for m in metrics_history]
+            ax.plot(steps, vals, color=palette[idx % len(palette)],
+                    linewidth=1.0, alpha=0.75, label=f'{sym}{idx}')
+        if avg_key in metrics_history[0]:
+            avg_vals = [m[avg_key] for m in metrics_history]
+            ax.plot(steps, avg_vals, color='black', linewidth=2.2,
+                    linestyle='--', label='Average', zorder=10)
+        ax.set_xlabel('Gradient Step', fontsize=11)
+        ax.set_ylabel('|Cosine Similarity|', fontsize=11)
+        ax.set_title(f'{side} — Per-Eigenvector Cosine Similarity', fontsize=12)
+        ax.set_ylim([-0.05, 1.05])
+        ax.legend(fontsize=8, ncol=max(1, len(indices) // 8 + 1), loc='lower right')
+        ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Per-eigenvector cosine similarity plot saved to {save_path}")
+
+
+def _plot_eigvec_grid(
+    data_real: np.ndarray,
+    data_imag: np.ndarray,
+    canonical_states: np.ndarray,
+    grid_width: int,
+    grid_height: int,
+    title: str,
+    portals=None,
+    portal_sources=None,
+    portal_ends=None,
+    wall_color: str = 'gray',
+    max_cols: int = 12,
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """4 rows (Real, Imaginary, Magnitude, Phase) × up to max_cols columns (one per eigenvector).
+
+    Each subplot has its own colorbar. Row labels on the left; column titles on top.
+    """
+    import matplotlib.cm as cm
+    from pathlib import Path
+
+    num_eigenvectors = min(data_real.shape[1], max_cols)
+    row_labels = ['Real', 'Imaginary', 'Magnitude', 'Phase']
+    cmaps     = ['RdBu_r', 'RdBu_r', 'viridis', 'hsv']
+
+    magnitude = np.sqrt(data_real ** 2 + data_imag ** 2)
+    phase     = np.arctan2(data_imag, data_real)
+    components = [data_real, data_imag, magnitude, phase]
+
+    fig, axes = plt.subplots(4, num_eigenvectors, figsize=(num_eigenvectors * 2.5, 4 * 2.5))
+    if num_eigenvectors == 1:
+        axes = axes.reshape(4, 1)
+
+    for row_idx, (comp_data, cmap_name, row_label) in enumerate(zip(components, cmaps, row_labels)):
+        current_cmap = cm.get_cmap(cmap_name).copy()
+        current_cmap.set_bad(color=wall_color)
+
+        for col_idx in range(num_eigenvectors):
+            ax = axes[row_idx, col_idx]
+            vals = comp_data[:, col_idx]
+
+            grid = np.full((grid_height, grid_width), np.nan)
+            for canon_idx, full_state_idx in enumerate(canonical_states):
+                y = int(full_state_idx) // grid_width
+                x = int(full_state_idx) % grid_width
+                grid[y, x] = float(vals[canon_idx])
+
+            if cmap_name == 'RdBu_r':
+                vabs = max(abs(np.nanmin(grid)), abs(np.nanmax(grid))) if not np.all(np.isnan(grid)) else 1.0
+                vmin, vmax = -vabs, vabs
+            elif cmap_name == 'hsv':
+                vmin, vmax = -np.pi, np.pi
+            else:  # viridis / magnitude
+                vmin = 0.0
+                vmax = float(np.nanmax(grid)) if not np.all(np.isnan(grid)) else 1.0
+
+            im = ax.imshow(
+                grid, cmap=current_cmap, origin='upper', interpolation='nearest',
+                extent=[-0.5, grid_width - 0.5, grid_height - 0.5, -0.5],
+                vmin=vmin, vmax=vmax,
+            )
+
+            for i in range(grid_height + 1):
+                ax.axhline(i - 0.5, color='gray', linewidth=0.3, alpha=0.3)
+            for j in range(grid_width + 1):
+                ax.axvline(j - 0.5, color='gray', linewidth=0.3, alpha=0.3)
+
+            _draw_door_markers(ax, portals, grid_width)
+            _draw_portal_tile_overlays(ax, portal_sources, portal_ends, grid_width)
+
+            ax.set_xlim(-0.5, grid_width - 0.5)
+            ax.set_ylim(grid_height - 0.5, -0.5)
+            ax.set_aspect('equal')
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+            if row_idx == 0:
+                ax.set_title(f'φ{col_idx}', fontsize=9)
+            if col_idx == 0:
+                ax.set_ylabel(row_label, fontsize=9)
+
+    fig.suptitle(title, fontsize=13, fontweight='bold')
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  Saved {Path(save_path).name}")
+
+    return fig
+
+
+def _plot_eigvec_magnitude_comparison(
+    learned_real: np.ndarray,
+    learned_imag: np.ndarray,
+    gt_real: np.ndarray,
+    gt_imag: np.ndarray,
+    canonical_states: np.ndarray,
+    grid_width: int,
+    grid_height: int,
+    title: str,
+    portals=None,
+    portal_sources=None,
+    portal_ends=None,
+    wall_color: str = 'gray',
+    max_cols: int = 6,
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """Row-pairs (Learned magnitude, GT magnitude) × up to max_cols columns.
+
+    Shared color scale per eigenvector pair. Subtle dashed separator between row-pairs.
+    """
+    import matplotlib.cm as cm
+    from pathlib import Path
+
+    num_eigenvectors = learned_real.shape[1]
+    ncols = min(num_eigenvectors, max_cols)
+    num_pairs = (num_eigenvectors + ncols - 1) // ncols
+    nrows = num_pairs * 2
+
+    learned_mag = np.sqrt(learned_real ** 2 + learned_imag ** 2)
+    gt_mag      = np.sqrt(gt_real      ** 2 + gt_imag      ** 2)
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 2.5, nrows * 2.5))
+    if nrows == 1 and ncols == 1:
+        axes = np.array([[axes]])
+    elif nrows == 1:
+        axes = axes.reshape(1, -1)
+    elif ncols == 1:
+        axes = axes.reshape(-1, 1)
+
+    cmap = cm.get_cmap('viridis').copy()
+    cmap.set_bad(color=wall_color)
+
+    for idx in range(num_eigenvectors):
+        pair_row = idx // ncols
+        col_idx  = idx  % ncols
+        ax_l = axes[pair_row * 2,     col_idx]
+        ax_g = axes[pair_row * 2 + 1, col_idx]
+
+        def make_grid(vals):
+            g = np.full((grid_height, grid_width), np.nan)
+            for ci, fsi in enumerate(canonical_states):
+                y = int(fsi) // grid_width
+                x = int(fsi) % grid_width
+                g[y, x] = float(vals[ci])
+            return g
+
+        gl = make_grid(learned_mag[:, idx])
+        gg = make_grid(gt_mag[:, idx])
+
+        for ax, grid, row_label in ((ax_l, gl, 'Learned'), (ax_g, gg, 'GT')):
+            vmax = float(np.nanmax(grid)) if not np.all(np.isnan(grid)) else 1.0
+            im = ax.imshow(
+                grid, cmap=cmap, origin='upper', interpolation='nearest',
+                extent=[-0.5, grid_width - 0.5, grid_height - 0.5, -0.5],
+                vmin=0.0, vmax=vmax,
+            )
+            for i in range(grid_height + 1):
+                ax.axhline(i - 0.5, color='gray', linewidth=0.3, alpha=0.3)
+            for j in range(grid_width + 1):
+                ax.axvline(j - 0.5, color='gray', linewidth=0.3, alpha=0.3)
+
+            _draw_door_markers(ax, portals, grid_width)
+            _draw_portal_tile_overlays(ax, portal_sources, portal_ends, grid_width)
+
+            ax.set_xlim(-0.5, grid_width - 0.5)
+            ax.set_ylim(grid_height - 0.5, -0.5)
+            ax.set_aspect('equal')
+            ax.set_xticks([])
+            ax.set_yticks([])
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+            if col_idx == 0:
+                ax.set_ylabel(row_label, fontsize=9)
+
+        # Column title on top row of first pair only
+        if pair_row == 0:
+            ax_l.set_title(f'φ{idx}', fontsize=9)
+
+    # Hide unused axes in the last (possibly incomplete) pair row
+    for idx in range(num_eigenvectors, num_pairs * ncols):
+        pair_row = idx // ncols
+        col_idx  = idx  % ncols
+        axes[pair_row * 2,     col_idx].axis('off')
+        axes[pair_row * 2 + 1, col_idx].axis('off')
+
+    plt.tight_layout()
+
+    # Subtle dashed separators between row-pairs
+    if num_pairs > 1:
+        for r in range(num_pairs - 1):
+            y_bottom = axes[r * 2 + 1, 0].get_position().y0
+            y_top    = axes[r * 2 + 2, 0].get_position().y1
+            fig.add_artist(plt.Line2D(
+                [0.01, 0.99], [(y_bottom + y_top) / 2] * 2,
+                transform=fig.transFigure,
+                color='gray', linewidth=0.8, linestyle='--', alpha=0.4,
+            ))
+
+    fig.suptitle(title, fontsize=13, fontweight='bold')
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  Saved {Path(save_path).name}")
+
+    return fig
+
+
 def plot_eigenvector_comparison(
     learned_right_real: np.ndarray,
     learned_right_imag: np.ndarray,
     gt_right_real: np.ndarray,
     gt_right_imag: np.ndarray,
-    normalized_right_real: np.ndarray,
-    normalized_right_imag: np.ndarray,
     canonical_states: np.ndarray,
     grid_width: int,
     grid_height: int,
@@ -235,122 +620,97 @@ def plot_eigenvector_comparison(
     learned_left_imag: np.ndarray = None,
     gt_left_real: np.ndarray = None,
     gt_left_imag: np.ndarray = None,
-    normalized_left_real: np.ndarray = None,
-    normalized_left_imag: np.ndarray = None,
-    door_markers: dict = None,
+    portals: dict = None,
     portal_sources: Optional[Set[int]] = None,
     portal_ends: Optional[Set[int]] = None,
+    wall_color: str = 'gray',
 ):
-    """
-    Create comparison plots between ground truth and learned eigenvectors.
+    """Eigenvector overview and magnitude-comparison plots.
 
-    Generates separate plots for each eigenvector pair:
-    - Right eigenvector (real and imaginary parts)
-    - Left eigenvector (real and imaginary parts)
+    Produces up to six PNG files in save_dir:
 
-    Each plot shows: Ground Truth | Raw Learned | Normalized Learned
+    Overview (4 rows × up to 12 cols each):
+      eigvec_learned_right.png   — learned right eigenvectors  (φ)
+      eigvec_gt_right.png        — GT right eigenvectors       (φ)
+      eigvec_learned_left.png    — learned left eigenvectors   (ψ)  [if left data provided]
+      eigvec_gt_left.png         — GT left eigenvectors        (ψ)  [if left data provided]
+
+    Rows: Real | Imaginary | Magnitude | Phase
+
+    Magnitude comparison (row-pairs × up to 6 cols each):
+      eigvec_magnitude_comparison_right.png  — learned vs GT right magnitude
+      eigvec_magnitude_comparison_left.png   — learned vs GT left magnitude  [if left data provided]
 
     Args:
-        learned_*: Raw learned eigenvector components [num_states, num_eigenvector_pairs]
-        gt_*: Ground truth eigenvector components [num_states, num_eigenvector_pairs]
-        normalized_*: Normalized learned eigenvector components [num_states, num_eigenvector_pairs]
-        canonical_states: Array of canonical state indices
+        learned_right_real / learned_right_imag: [num_states, num_eigvecs]
+        gt_right_real      / gt_right_imag:      [num_states, num_eigvecs]
+        learned_left_real  / learned_left_imag:  [num_states, num_eigvecs] or None
+        gt_left_real       / gt_left_imag:       [num_states, num_eigvecs] or None
+        canonical_states: Array mapping canonical index → full grid index
         grid_width, grid_height: Grid dimensions
-        save_dir: Directory to save plots
-        door_markers: Optional door markers (arrows) for visualization
-        portal_sources: Optional set of portal source state indices (colored orange)
-        portal_ends: Optional set of portal end state indices (colored teal)
+        save_dir: Directory to save PNG files
+        portals: Door/portal dict {(source_idx, action): dest_idx}
+        portal_sources: Set of portal-source state indices (blue overlay)
+        portal_ends:    Set of portal-end   state indices (orange overlay)
+        wall_color: Color for NaN (wall) cells
     """
     from pathlib import Path
     save_dir = Path(save_dir)
-
-    # Get number of eigenvector pairs
-    num_eigenvector_pairs = learned_right_real.shape[1]
-
-    # Helper function to create a comparison plot
-    def create_comparison_plot(gt_vals, learned_vals, normalized_vals, title_prefix, save_name):
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-
-        # Create value grids
-        for ax, vals, title in zip(axes, [gt_vals, learned_vals, normalized_vals],
-                                   ['Ground Truth', 'Raw Learned', 'Normalized Learned']):
-            # Create grid with NaN for obstacles
-            grid_values = np.full((grid_height, grid_width), np.nan)
-
-            for canon_idx, full_state_idx in enumerate(canonical_states):
-                y = int(full_state_idx) // grid_width
-                x = int(full_state_idx) % grid_width
-                grid_values[y, x] = float(vals[canon_idx])
-
-            # Plot heatmap
-            vmax = max(abs(np.nanmin(grid_values)), abs(np.nanmax(grid_values)))
-            vmin = -vmax
-            im = ax.imshow(grid_values, cmap='RdBu_r', interpolation='nearest',
-                          origin='upper', vmin=vmin, vmax=vmax)
-
-            # Add colorbar
-            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-
-            # Add grid lines
-            ax.set_xticks(np.arange(grid_width) - 0.5, minor=True)
-            ax.set_yticks(np.arange(grid_height) - 0.5, minor=True)
-            ax.grid(which="minor", color="gray", linestyle='-', linewidth=0.5, alpha=0.3)
-
-            # Add door markers (arrows) if provided
-            if door_markers:
-                for (state, action), next_state in door_markers.items():
-                    y = state // grid_width
-                    x = state % grid_width
-                    next_y = next_state // grid_width
-                    next_x = next_state % grid_width
-                    dx = next_x - x
-                    dy = next_y - y
-                    ax.arrow(x, y, dx * 0.3, dy * 0.3,
-                            head_width=0.2, head_length=0.15,
-                            fc='green', ec='green', linewidth=2, alpha=0.7)
-
-            _draw_portal_tile_overlays(ax, portal_sources, portal_ends, grid_width)
-
-            ax.set_title(f'{title}', fontsize=12)
-            ax.set_xlabel('X')
-            ax.set_ylabel('Y')
-
-        fig.suptitle(f'{title_prefix}', fontsize=14, fontweight='bold')
-        plt.tight_layout()
-        plt.savefig(save_dir / save_name, dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"  Saved {save_name}")
-
     print("Generating eigenvector comparison plots...")
 
-    # Generate plots for each eigenvector pair
-    for i in range(num_eigenvector_pairs):
-        suffix = f"_{i}" if num_eigenvector_pairs > 1 else ""
+    shared = dict(
+        canonical_states=canonical_states,
+        grid_width=grid_width,
+        grid_height=grid_height,
+        portals=portals,
+        portal_sources=portal_sources,
+        portal_ends=portal_ends,
+        wall_color=wall_color,
+    )
 
-        # Right eigenvector - Real part
-        create_comparison_plot(
-            gt_right_real[:, i], learned_right_real[:, i], normalized_right_real[:, i],
-            f'Right Eigenvector {i} (φ) - Real Part', f'comparison_right_real{suffix}.png'
+    # --- Overview plots (4 rows: Real, Imaginary, Magnitude, Phase) ---
+    _plot_eigvec_grid(
+        data_real=learned_right_real, data_imag=learned_right_imag,
+        title='Learned Right Eigenvectors (φ)',
+        save_path=str(save_dir / 'eigvec_learned_right.png'),
+        **shared,
+    )
+    _plot_eigvec_grid(
+        data_real=gt_right_real, data_imag=gt_right_imag,
+        title='GT Right Eigenvectors (φ)',
+        save_path=str(save_dir / 'eigvec_gt_right.png'),
+        **shared,
+    )
+
+    # --- Magnitude comparison: right ---
+    _plot_eigvec_magnitude_comparison(
+        learned_real=learned_right_real, learned_imag=learned_right_imag,
+        gt_real=gt_right_real, gt_imag=gt_right_imag,
+        title='Right Eigenvector Magnitude — Learned vs GT',
+        save_path=str(save_dir / 'eigvec_magnitude_comparison_right.png'),
+        **shared,
+    )
+
+    if learned_left_real is not None:
+        _plot_eigvec_grid(
+            data_real=learned_left_real, data_imag=learned_left_imag,
+            title='Learned Left Eigenvectors (ψ)',
+            save_path=str(save_dir / 'eigvec_learned_left.png'),
+            **shared,
         )
-
-        # Right eigenvector - Imaginary part
-        create_comparison_plot(
-            gt_right_imag[:, i], learned_right_imag[:, i], normalized_right_imag[:, i],
-            f'Right Eigenvector {i} (φ) - Imaginary Part', f'comparison_right_imag{suffix}.png'
+        _plot_eigvec_grid(
+            data_real=gt_left_real, data_imag=gt_left_imag,
+            title='GT Left Eigenvectors (ψ)',
+            save_path=str(save_dir / 'eigvec_gt_left.png'),
+            **shared,
         )
-
-        if learned_left_real is not None:
-            # Left eigenvector - Real part
-            create_comparison_plot(
-                gt_left_real[:, i], learned_left_real[:, i], normalized_left_real[:, i],
-                f'Left Eigenvector {i} (ψ) - Real Part', f'comparison_left_real{suffix}.png'
-            )
-
-            # Left eigenvector - Imaginary part
-            create_comparison_plot(
-                gt_left_imag[:, i], learned_left_imag[:, i], normalized_left_imag[:, i],
-                f'Left Eigenvector {i} (ψ) - Imaginary Part', f'comparison_left_imag{suffix}.png'
-            )
+        _plot_eigvec_magnitude_comparison(
+            learned_real=learned_left_real, learned_imag=learned_left_imag,
+            gt_real=gt_left_real, gt_imag=gt_left_imag,
+            title='Left Eigenvector Magnitude — Learned vs GT',
+            save_path=str(save_dir / 'eigvec_magnitude_comparison_left.png'),
+            **shared,
+        )
 
     print("Eigenvector comparison plots complete.")
 
@@ -846,15 +1206,22 @@ def visualize_source_vs_target_hitting_times(
     portals: Optional[Dict[Tuple[int, int], int]] = None,
     portal_sources: Optional[Set[int]] = None,
     portal_ends: Optional[Set[int]] = None,
-    ncols: int = 5,
+    ncols: int = 6,
     figsize: Optional[Tuple[int, int]] = None,
     wall_color: str = 'gray',
     save_path: Optional[str] = None,
-    log_scale: bool = False,
-    shared_colorbar: bool = True,
+    log_scale: bool = True,
+    shared_colorbar: bool = False,
 ) -> plt.Figure:
     """
-    Visualize hitting times for states acting as Targets (columns) vs Sources (rows).
+    Visualize hitting times for states acting as Targets (goal) vs Sources (start).
+
+    Layout: (num_logical_rows × 2) physical rows × ncols columns, where each
+    logical row-pair shows ncols states with:
+      - Top row of pair:    Target view — hitting times TO each state (state as goal)
+      - Bottom row of pair: Source view — hitting times FROM each state (state as start)
+
+    A subtle dashed separator is drawn between consecutive row-pairs.
 
     Args:
         state_indices: List of state indices to visualize
@@ -863,13 +1230,13 @@ def visualize_source_vs_target_hitting_times(
         grid_width: Grid width
         grid_height: Grid height
         portals: Portal/Door dict
-        ncols: Number of states per row
+        ncols: Number of states per logical row-pair
         figsize: Figure size
         wall_color: Color for walls
         save_path: Path to save
         log_scale: Whether to plot log(values + 1)
-        shared_colorbar: If True, all plots share the same color scale and one colorbar.
-                         If False, each plot is scaled independently with its own colorbar.
+        shared_colorbar: If True, all subplots share one colorbar.
+                         If False (default), each subplot has its own colorbar.
 
     Returns:
         Matplotlib figure
@@ -917,13 +1284,13 @@ def visualize_source_vs_target_hitting_times(
         r_logical = idx // ncols
         c = idx % ncols
 
-        # Row for Target View (Even rows: 0, 2, 4...)
+        # Top row of pair: Target View (Even physical rows: 0, 2, 4...)
         ax_target = axes[r_logical * 2, c]
 
-        # Row for Source View (Odd rows: 1, 3, 5...)
+        # Bottom row of pair: Source View (Odd physical rows: 1, 3, 5...)
         ax_source = axes[r_logical * 2 + 1, c]
 
-        # 1. Target View: Column of H (Time TO state_idx)
+        # Target View: Column of H (Time TO state_idx)
         times_to_state = hitting_time_matrix[:, state_idx]
 
         visualize_hitting_time_on_grid(
@@ -936,7 +1303,7 @@ def visualize_source_vs_target_hitting_times(
             portals=portals,
             portal_sources=portal_sources,
             portal_ends=portal_ends,
-            title=f'State {state_idx}\n(Target View: Times TO here)',
+            title=f'State {state_idx} — Goal\n(Times TO here)',
             ax=ax_target,
             cmap='viridis',
             show_colorbar=not shared_colorbar,
@@ -946,7 +1313,7 @@ def visualize_source_vs_target_hitting_times(
             log_scale=log_scale
         )
 
-        # 2. Source View: Row of H (Time FROM state_idx)
+        # Source View: Row of H (Time FROM state_idx)
         times_from_state = hitting_time_matrix[state_idx, :]
 
         visualize_hitting_time_on_grid(
@@ -959,7 +1326,7 @@ def visualize_source_vs_target_hitting_times(
             portals=portals,
             portal_sources=portal_sources,
             portal_ends=portal_ends,
-            title=f'State {state_idx}\n(Source View: Times FROM here)',
+            title=f'State {state_idx} — Start\n(Times FROM here)',
             ax=ax_source,
             cmap='viridis',
             show_colorbar=not shared_colorbar,
@@ -978,20 +1345,29 @@ def visualize_source_vs_target_hitting_times(
 
     plt.tight_layout()
 
+    # Draw subtle dashed separators between row-pairs (in figure coordinates,
+    # so they must be added after tight_layout has finalised axis positions)
+    if num_logical_rows > 1:
+        for r_logical in range(num_logical_rows - 1):
+            source_row = r_logical * 2 + 1        # bottom physical row of current pair
+            next_target_row = r_logical * 2 + 2   # top physical row of next pair
+            y_bottom = axes[source_row, 0].get_position().y0
+            y_top = axes[next_target_row, 0].get_position().y1
+            y_line = (y_bottom + y_top) / 2
+            fig.add_artist(plt.Line2D(
+                [0.01, 0.99], [y_line, y_line],
+                transform=fig.transFigure,
+                color='gray', linewidth=0.8, linestyle='--', alpha=0.4,
+            ))
+
     # Add global colorbar if shared
     if shared_colorbar:
-        # Adjust the right margin to create space for the colorbar
         fig.subplots_adjust(right=0.9)
-
-        # Add a global colorbar on the right side
-        # Coordinates are [left, bottom, width, height] in figure relative coords
         cax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
-
         sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
         sm.set_array([])
         cbar = plt.colorbar(sm, cax=cax, orientation='vertical')
         cbar.ax.tick_params(labelsize=10)
-
         cbar_label = 'Log(Expected Steps + 1)' if log_scale else 'Expected Steps'
         cbar.set_label(cbar_label, fontsize=12)
 

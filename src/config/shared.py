@@ -81,6 +81,11 @@ class SharedArgs:
     # Diagnostics
     eval_rank: bool = False  # If True, compute effective rank of each Dense kernel at log intervals
 
+    # Visualization
+    hitting_times_ncols: int = 6       # Columns per row-pair in the hitting-times figure
+    hitting_times_nrow_pairs: int = 3  # Row-pairs shown (each pair = target row + source row); default 3 → 6 physical rows
+    hitting_times_log_scale: bool = False  # Plot log(steps + 1) instead of raw steps
+
     # Misc
     seed: int = 42
     exp_name: str | None = None
