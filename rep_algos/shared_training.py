@@ -60,7 +60,7 @@ from src.utils.plotting import (
     plot_hitting_time_heatmap,
     plot_full_ideal_summary,
 )
-from src.utils.laplacian import compute_eigendecomposition
+from src.utils.laplacian import compute_eigendecomposition, compute_gt_eigendecomposition_mpmath
 
 
 def _effective_rank(kernel: np.ndarray) -> float:
@@ -184,6 +184,12 @@ def learn_eigenvectors(args, learner_module, method):
     if checkpoint_data is not None and 'rng_state' in checkpoint_data:
         np.random.set_state(checkpoint_data['rng_state'])
 
+    # Whether to use the mpmath high-precision eigendecomposition for GT.
+    # True for all non-ALLO, non-symmetric cases (where heuristic left/right
+    # pairing would introduce errors). False keeps the existing code paths.
+    sym_eig = getattr(args, 'sym_eig', False)
+    use_mpmath_gt = (method != "allo") and not sym_eig
+
     # Load or create environment and data
     if checkpoint_data is not None:
         # Load saved data from previous run
@@ -193,16 +199,16 @@ def learn_eigenvectors(args, learner_module, method):
         # Load saved eigenvectors and state coordinates (complex)
         gt_eigenvalues_real = jnp.array(np.load(results_dir / "gt_eigenvalues_real.npy"))
         gt_eigenvalues_imag = jnp.array(np.load(results_dir / "gt_eigenvalues_imag.npy"))
-        gt_left_real = jnp.array(np.load(results_dir / "gt_left_real.npy"))
-        gt_left_imag = jnp.array(np.load(results_dir / "gt_left_imag.npy"))
+        gt_left_binorm_real = jnp.array(np.load(results_dir / "gt_left_real.npy"))
+        gt_left_binorm_imag = jnp.array(np.load(results_dir / "gt_left_imag.npy"))
         gt_right_real = jnp.array(np.load(results_dir / "gt_right_real.npy"))
         gt_right_imag = jnp.array(np.load(results_dir / "gt_right_imag.npy"))
 
         # Load full-rank (all N eigenpairs) eigendecomposition for Full Ideal GT
         full_eigenvalues_real = jnp.array(np.load(results_dir / "full_eigenvalues_real.npy"))
         full_eigenvalues_imag = jnp.array(np.load(results_dir / "full_eigenvalues_imag.npy"))
-        full_left_real = jnp.array(np.load(results_dir / "full_left_real.npy"))
-        full_left_imag = jnp.array(np.load(results_dir / "full_left_imag.npy"))
+        full_left_binorm_real = jnp.array(np.load(results_dir / "full_left_real.npy"))
+        full_left_binorm_imag = jnp.array(np.load(results_dir / "full_left_imag.npy"))
         full_right_real = jnp.array(np.load(results_dir / "full_right_real.npy"))
         full_right_imag = jnp.array(np.load(results_dir / "full_right_imag.npy"))
 
@@ -237,19 +243,8 @@ def learn_eigenvectors(args, learner_module, method):
         # For ALLO (without sym_eig), the ground truth is eigenvectors of L + D^{-1}L^T D
         # (self-adjoint w.r.t. the D-weighted inner product, real eigenvalues/eigenvectors).
         # With sym_eig=True, ground truth uses eigh on L directly (matching laplacian_dual_dynamics).
-        # For all other algorithms, the ground truth uses L directly.
-        #
-        # When sampling_mode='none' and constraint_enforcement_method='clf', the network
-        # learns left features under the empirical distribution D rather than the uniform
-        # distribution.  Pass D to compute_eigendecomposition so that left eigenvectors are
-        # derived from the D-adjoint D^{-1}L^T D (with normalized, consistently ordered
-        # pairing) rather than from the plain transpose L^T.
-        sym_eig = getattr(args, 'sym_eig', False)
-        gt_D = (
-            jnp.diag(sampling_probs)
-            if args.sampling_mode == "none" and args.constraint_enforcement_method == "clf"
-            else None
-        )
+        # For all other algorithms, the ground truth uses a single, full-rank, high-precision
+        # mpmath eigendecomposition of L, which is then truncated to num_eigenvector_pairs.
         if method == "allo" and not sym_eig:
             D = jnp.diag(sampling_probs)
             D_inv = jnp.diag(1.0 / sampling_probs)
@@ -262,23 +257,30 @@ def learn_eigenvectors(args, learner_module, method):
             )
             gt_eigenvalues_real = gt_eigendecomp['eigenvalues_real']
             gt_eigenvalues_imag = gt_eigendecomp['eigenvalues_imag']
-            gt_left_real = gt_eigendecomp['left_eigenvectors_real']
-            gt_left_imag = gt_eigendecomp['left_eigenvectors_imag']
+            gt_left_binorm_real = gt_eigendecomp['left_eigenvectors_real']
+            gt_left_binorm_imag = gt_eigendecomp['left_eigenvectors_imag']
             gt_right_real = gt_eigendecomp['right_eigenvectors_real']
             gt_right_imag = gt_eigendecomp['right_eigenvectors_imag']
         elif num_gt_eigenvectors != args.num_eigenvector_pairs:
             print(f"\nComputing {num_gt_eigenvectors} ground truth eigenvectors (learning {args.num_eigenvector_pairs})")
-            gt_eigendecomp = compute_eigendecomposition(
-                laplacian_matrix,
-                k=num_gt_eigenvectors,
-                ascending=True,
-                sym_eig=sym_eig,
-                D=gt_D,
-            )
+            if sym_eig:
+                gt_eigendecomp = compute_eigendecomposition(
+                    laplacian_matrix,
+                    k=num_gt_eigenvectors,
+                    ascending=True,
+                    sym_eig=True,
+                )
+            else:
+                print("  Using mpmath high-precision full-rank eigendecomposition...")
+                gt_eigendecomp = compute_gt_eigendecomposition_mpmath(
+                    laplacian_matrix,
+                    num_eigenvector_pairs=num_gt_eigenvectors,
+                    ascending=True,
+                )
             gt_eigenvalues_real = gt_eigendecomp['eigenvalues_real']
             gt_eigenvalues_imag = gt_eigendecomp['eigenvalues_imag']
-            gt_left_real = gt_eigendecomp['left_eigenvectors_real']
-            gt_left_imag = gt_eigendecomp['left_eigenvectors_imag']
+            gt_left_binorm_real = gt_eigendecomp['left_eigenvectors_real']
+            gt_left_binorm_imag = gt_eigendecomp['left_eigenvectors_imag']
             gt_right_real = gt_eigendecomp['right_eigenvectors_real']
             gt_right_imag = gt_eigendecomp['right_eigenvectors_imag']
         else:
@@ -289,43 +291,52 @@ def learn_eigenvectors(args, learner_module, method):
                     ascending=True,
                     sym_eig=True,
                 )
-            elif gt_D is not None:
-                # Recompute so that left eigenvectors use the D-adjoint; reusing the
-                # cached eigendecomp would silently skip the D-weighted pairing.
-                gt_eigendecomp = compute_eigendecomposition(
-                    laplacian_matrix,
-                    k=num_gt_eigenvectors,
-                    ascending=True,
-                    D=gt_D,
-                )
             else:
-                gt_eigendecomp = eigendecomp
+                print(f"\nComputing {num_gt_eigenvectors} ground truth eigenvectors via mpmath full-rank eigendecomposition...")
+                gt_eigendecomp = compute_gt_eigendecomposition_mpmath(
+                    laplacian_matrix,
+                    num_eigenvector_pairs=num_gt_eigenvectors,
+                    ascending=True,
+                )
             gt_eigenvalues_real = gt_eigendecomp['eigenvalues_real']
             gt_eigenvalues_imag = gt_eigendecomp['eigenvalues_imag']
-            gt_left_real = gt_eigendecomp['left_eigenvectors_real']
-            gt_left_imag = gt_eigendecomp['left_eigenvectors_imag']
+            gt_left_binorm_real = gt_eigendecomp['left_eigenvectors_real']
+            gt_left_binorm_imag = gt_eigendecomp['left_eigenvectors_imag']
             gt_right_real = gt_eigendecomp['right_eigenvectors_real']
             gt_right_imag = gt_eigendecomp['right_eigenvectors_imag']
 
     print(f"\nState coordinates shape: {state_coords.shape}")
     print(f"Ground truth right eigenvectors shape: {gt_right_real.shape}")
-    print(f"Ground truth left eigenvectors shape: {gt_left_real.shape}")
+    print(f"Ground truth left eigenvectors shape: {gt_left_binorm_real.shape}")
 
-    # For hitting-time computations the formula requires standard biorthonormal
-    # left eigenvectors satisfying Ψ^H Φ = I.  When sampling_mode='none' with
-    # constraint_enforcement_method='clf', the stored gt_left_* satisfy the
-    # D-weighted condition Ψ_D^H D Φ = I instead.  Converting via Ψ_std = D Ψ_D
-    # (multiply each row i by sampling_probs[i]) restores Ψ_std^H Φ = I.
-    # For all other configurations gt_left already satisfies the standard condition.
-    if (args.sampling_mode == "none"
-            and args.constraint_enforcement_method == "clf"
-            and sampling_probs is not None):
-        _d = sampling_probs[:, None]  # [num_states, 1]
-        gt_left_real_ht = _d * gt_left_real
-        gt_left_imag_ht = _d * gt_left_imag
+    # Derive the two specialised GT left-eigenvector arrays needed downstream:
+    #
+    #  gt_left_adj  — for cosine-similarity comparison.
+    #                 = conj(D^{-1} @ gt_left_binorm)
+    #                 Gives the eigenvectors of the adjoint operator (D^{-1}L^T D),
+    #                 which is what the network learns to approximate.
+    #
+    #  gt_left_ht   — for hitting-time computation.
+    #                 = conj(gt_left_binorm)
+    #                 Counteracts the internal conjugation applied by
+    #                 compute_hitting_times_from_eigenvectors (line ~649 of metrics.py),
+    #                 so that the formula receives the unmodified bi-normal left vectors.
+    #
+    # For ALLO and sym_eig cases, no transformation is applied (pass-through).
+    if use_mpmath_gt and sampling_probs is not None:
+        _D_inv = 1.0 / jnp.maximum(sampling_probs, 1e-12)          # [N]
+        _binorm_cx = gt_left_binorm_real + 1j * gt_left_binorm_imag  # [N, k]
+        _adj_cx = jnp.conj(_D_inv[:, None] * _binorm_cx)
+        gt_left_adj_real = jnp.real(_adj_cx)
+        gt_left_adj_imag = jnp.imag(_adj_cx)
+        gt_left_ht_real  =  gt_left_binorm_real
+        gt_left_ht_imag  = -gt_left_binorm_imag
     else:
-        gt_left_real_ht = gt_left_real
-        gt_left_imag_ht = gt_left_imag
+        # ALLO / sym_eig: left eigenvectors are already in the correct form.
+        gt_left_adj_real = gt_left_binorm_real
+        gt_left_adj_imag = gt_left_binorm_imag
+        gt_left_ht_real  = gt_left_binorm_real
+        gt_left_ht_imag  = gt_left_binorm_imag
 
     # Per-wind ground truth (only for random_wind training)
     # Each entry: (wind_value, eigendecomp_dict, sampling_probs)
@@ -346,16 +357,29 @@ def learn_eigenvectors(args, learner_module, method):
                 D_inv_w = jnp.diag(1.0 / w_sampling_probs)
                 gt_matrix_w = w_laplacian + D_inv_w @ w_laplacian.T @ D_w
                 w_eigendecomp = compute_eigendecomposition(gt_matrix_w, k=num_gt_eigenvectors, ascending=True)
-            elif method == "allo" and sym_eig:
+            elif sym_eig:
                 w_eigendecomp = compute_eigendecomposition(w_laplacian, k=num_gt_eigenvectors, ascending=True, sym_eig=True)
-            elif gt_D is not None:
-                # none+clf: recompute so left eigenvectors use the per-wind D-adjoint.
-                w_eigendecomp = compute_eigendecomposition(
+            else:
+                # Non-ALLO, non-sym_eig: high-precision mpmath eigendecomposition.
+                w_eigendecomp = compute_gt_eigendecomposition_mpmath(
                     w_laplacian,
-                    k=num_gt_eigenvectors,
+                    num_eigenvector_pairs=num_gt_eigenvectors,
                     ascending=True,
-                    D=jnp.diag(w_sampling_probs),
                 )
+                # Overwrite left eigenvectors with the adjoint variant
+                # conj(D_w^{-1} @ left_binorm) so the per-wind cosine similarity is
+                # consistent with the main GT pipeline (Requirement 3).
+                _w_D_inv = 1.0 / jnp.maximum(w_sampling_probs, 1e-12)
+                _w_binorm_cx = (
+                    w_eigendecomp['left_eigenvectors_real']
+                    + 1j * w_eigendecomp['left_eigenvectors_imag']
+                )
+                _w_adj_cx = jnp.conj(_w_D_inv[:, None] * _w_binorm_cx)
+                w_eigendecomp = {
+                    **w_eigendecomp,
+                    'left_eigenvectors_real': jnp.real(_w_adj_cx),
+                    'left_eigenvectors_imag': jnp.imag(_w_adj_cx),
+                }
             per_wind_gt.append((float(w), w_eigendecomp, w_sampling_probs))
             print("done")
         print("Per-wind GT computation complete.")
@@ -367,20 +391,36 @@ def learn_eigenvectors(args, learner_module, method):
     if checkpoint_data is None:
         N_states = laplacian_matrix.shape[0]
         print(f"\nComputing Full Ideal GT: full-rank ({N_states}) eigendecomposition of L ...")
-        _full_eigendecomp = compute_eigendecomposition(
-            laplacian_matrix,
-            k=None,
-            ascending=True,
-            sym_eig=sym_eig,
-            D=gt_D,
-        )
+        if sym_eig:
+            _full_eigendecomp = compute_eigendecomposition(
+                laplacian_matrix,
+                k=None,
+                ascending=True,
+                sym_eig=True,
+            )
+        else:
+            _full_eigendecomp = compute_gt_eigendecomposition_mpmath(
+                laplacian_matrix,
+                num_eigenvector_pairs=None,
+                ascending=True,
+            )
         full_eigenvalues_real = _full_eigendecomp['eigenvalues_real']
         full_eigenvalues_imag = _full_eigendecomp['eigenvalues_imag']
-        full_left_real  = _full_eigendecomp['left_eigenvectors_real']
-        full_left_imag  = _full_eigendecomp['left_eigenvectors_imag']
+        full_left_binorm_real  = _full_eigendecomp['left_eigenvectors_real']
+        full_left_binorm_imag  = _full_eigendecomp['left_eigenvectors_imag']
         full_right_real = _full_eigendecomp['right_eigenvectors_real']
         full_right_imag = _full_eigendecomp['right_eigenvectors_imag']
         print(f"Full Ideal GT eigendecomposition complete ({N_states} eigenpairs).")
+
+    # Derive hitting-times variant for the Full Ideal GT left eigenvectors.
+    # Same logic as for the truncated GT: pass conj(full_left_binorm) to the
+    # hitting-times function so that its internal conjugation is cancelled.
+    if use_mpmath_gt:
+        full_left_ht_real =  full_left_binorm_real
+        full_left_ht_imag = -full_left_binorm_imag
+    else:
+        full_left_ht_real = full_left_binorm_real
+        full_left_ht_imag = full_left_binorm_imag
 
     # Save data for new runs (skip if resuming)
     if checkpoint_data is None:
@@ -388,15 +428,15 @@ def learn_eigenvectors(args, learner_module, method):
         # Non-symmetric Laplacian: L = I - (1-γ)P·SR_γ (complex eigenvalues and eigenvectors)
         np.save(results_dir / "gt_eigenvalues_real.npy", np.array(gt_eigenvalues_real))
         np.save(results_dir / "gt_eigenvalues_imag.npy", np.array(gt_eigenvalues_imag))
-        np.save(results_dir / "gt_left_real.npy", np.array(gt_left_real))
-        np.save(results_dir / "gt_left_imag.npy", np.array(gt_left_imag))
+        np.save(results_dir / "gt_left_real.npy", np.array(gt_left_binorm_real))
+        np.save(results_dir / "gt_left_imag.npy", np.array(gt_left_binorm_imag))
         np.save(results_dir / "gt_right_real.npy", np.array(gt_right_real))
         np.save(results_dir / "gt_right_imag.npy", np.array(gt_right_imag))
         # Full-rank eigendecomposition for Full Ideal GT
         np.save(results_dir / "full_eigenvalues_real.npy", np.array(full_eigenvalues_real))
         np.save(results_dir / "full_eigenvalues_imag.npy", np.array(full_eigenvalues_imag))
-        np.save(results_dir / "full_left_real.npy",  np.array(full_left_real))
-        np.save(results_dir / "full_left_imag.npy",  np.array(full_left_imag))
+        np.save(results_dir / "full_left_real.npy",  np.array(full_left_binorm_real))
+        np.save(results_dir / "full_left_imag.npy",  np.array(full_left_binorm_imag))
         np.save(results_dir / "full_right_real.npy", np.array(full_right_real))
         np.save(results_dir / "full_right_imag.npy", np.array(full_right_imag))
         # State coordinates
@@ -641,8 +681,8 @@ def learn_eigenvectors(args, learner_module, method):
                 'eigenvalues_imag': gt_eigenvalues_imag,
                 'right_eigenvectors_real': gt_right_real,
                 'right_eigenvectors_imag': gt_right_imag,
-                'left_eigenvectors_real': gt_left_real,
-                'left_eigenvectors_imag': gt_left_imag,
+                'left_eigenvectors_real': gt_left_binorm_real,
+                'left_eigenvectors_imag': gt_left_binorm_imag,
             }
 
             # Visualize right eigenvectors (real part)
@@ -836,14 +876,16 @@ def learn_eigenvectors(args, learner_module, method):
             # Compute learned eigenvectors on all states for cosine similarity
             features_dict = get_features(encoder_state.params)
 
-            # Compute complex cosine similarities with proper normalization
+            # Compute complex cosine similarities with proper normalization.
+            # GT left eigenvectors use the adjoint variant (conj(D^{-1} @ left_binorm))
+            # so the comparison is against the operator the network learns to approximate.
             cosine_sims = compute_complex_cosine_similarities_with_normalization(
                 learned_left_real=features_dict['left_real'],
                 learned_left_imag=features_dict['left_imag'],
                 learned_right_real=features_dict['right_real'],
                 learned_right_imag=features_dict['right_imag'],
-                gt_left_real=gt_left_real,
-                gt_left_imag=gt_left_imag,
+                gt_left_real=gt_left_adj_real,
+                gt_left_imag=gt_left_adj_imag,
                 gt_right_real=gt_right_real,
                 gt_right_imag=gt_right_imag,
                 gt_eigenvalues_real=gt_eigenvalues_real,
@@ -867,9 +909,12 @@ def learn_eigenvectors(args, learner_module, method):
                 delta=args.delta,
                 eigenvalue_type='kernel',
             )
+            # GT hitting times: pass conj(left_binorm) so that the internal
+            # conjugation in compute_hitting_times_from_eigenvectors cancels out,
+            # leaving the formula using the unmodified bi-normal left eigenvectors.
             gt_hitting_times = compute_hitting_times_from_eigenvectors(
-                left_real=gt_left_real_ht,
-                left_imag=gt_left_imag_ht,
+                left_real=gt_left_ht_real,
+                left_imag=gt_left_ht_imag,
                 right_real=gt_right_real,
                 right_imag=gt_right_imag,
                 eigenvalues_real=gt_eigenvalues_real,
@@ -882,8 +927,8 @@ def learn_eigenvectors(args, learner_module, method):
             # Full Ideal GT hitting times: exact un-truncated baseline using all N
             # eigenpairs of L.  Eliminates truncation artifacts from the k-pair GT.
             full_ideal_gt_hitting_times = compute_hitting_times_from_eigenvectors(
-                left_real=full_left_real,
-                left_imag=full_left_imag,
+                left_real=full_left_ht_real,
+                left_imag=full_left_ht_imag,
                 right_real=full_right_real,
                 right_imag=full_right_imag,
                 eigenvalues_real=full_eigenvalues_real,
@@ -1138,8 +1183,8 @@ def learn_eigenvectors(args, learner_module, method):
                     save_dir=str(plots_dir),
                     learned_left_real=np.array(features_dict['left_real']) if method != "allo" else None,
                     learned_left_imag=np.array(features_dict['left_imag']) if method != "allo" else None,
-                    gt_left_real=np.array(gt_left_real) if method != "allo" else None,
-                    gt_left_imag=np.array(gt_left_imag) if method != "allo" else None,
+                    gt_left_real=np.array(gt_left_binorm_real) if method != "allo" else None,
+                    gt_left_imag=np.array(gt_left_binorm_imag) if method != "allo" else None,
                     normalized_left_real=np.array(normalized_features['left_real']) if method != "allo" else None,
                     normalized_left_imag=np.array(normalized_features['left_imag']) if method != "allo" else None,
                     door_markers=door_markers if door_markers else None,
@@ -1185,8 +1230,8 @@ def learn_eigenvectors(args, learner_module, method):
                 'args': vars(args),
                 'gt_eigenvalues_real': np.array(gt_eigenvalues_real),
                 'gt_eigenvalues_imag': np.array(gt_eigenvalues_imag),
-                'gt_left_real': np.array(gt_left_real),
-                'gt_left_imag': np.array(gt_left_imag),
+                'gt_left_real': np.array(gt_left_binorm_real),
+                'gt_left_imag': np.array(gt_left_binorm_imag),
                 'gt_right_real': np.array(gt_right_real),
                 'gt_right_imag': np.array(gt_right_imag),
             }, f)
@@ -1243,8 +1288,8 @@ def learn_eigenvectors(args, learner_module, method):
         save_dir=str(plots_dir),
         learned_left_real=np.array(final_features_dict['left_real']) if method != "allo" else None,
         learned_left_imag=np.array(final_features_dict['left_imag']) if method != "allo" else None,
-        gt_left_real=np.array(gt_left_real) if method != "allo" else None,
-        gt_left_imag=np.array(gt_left_imag) if method != "allo" else None,
+        gt_left_real=np.array(gt_left_binorm_real) if method != "allo" else None,
+        gt_left_imag=np.array(gt_left_binorm_imag) if method != "allo" else None,
         normalized_left_real=np.array(final_normalized_features['left_real']) if method != "allo" else None,
         normalized_left_imag=np.array(final_normalized_features['left_imag']) if method != "allo" else None,
         door_markers=door_markers if door_markers else None,
@@ -1271,8 +1316,8 @@ def learn_eigenvectors(args, learner_module, method):
 
     # Compute ground truth hitting times (truncated, k eigenpairs)
     final_gt_hitting_times = compute_hitting_times_from_eigenvectors(
-        left_real=gt_left_real_ht,
-        left_imag=gt_left_imag_ht,
+        left_real=gt_left_ht_real,
+        left_imag=gt_left_ht_imag,
         right_real=gt_right_real,
         right_imag=gt_right_imag,
         eigenvalues_real=gt_eigenvalues_real,
@@ -1284,8 +1329,8 @@ def learn_eigenvectors(args, learner_module, method):
 
     # Compute Full Ideal GT hitting times (all N eigenpairs — no truncation)
     final_full_ideal_gt_hitting_times = compute_hitting_times_from_eigenvectors(
-        left_real=full_left_real,
-        left_imag=full_left_imag,
+        left_real=full_left_ht_real,
+        left_imag=full_left_ht_imag,
         right_real=full_right_real,
         right_imag=full_right_imag,
         eigenvalues_real=full_eigenvalues_real,
