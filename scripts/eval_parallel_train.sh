@@ -78,7 +78,7 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 python train.py clf \
     --env_file_name        "$ENV_FILE" \
     --num_gradient_steps   100000 \
-    --batch_size           512 \
+    --batch_size           1024 \
     --num_eigenvector_pairs 8 \
     --learning_rate        0.00001 \
     --ema_learning_rate    0.0003 \
