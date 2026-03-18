@@ -44,6 +44,7 @@ fi
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 ACCOUNT="${ACCOUNT:-rrg-machado}"
+ENV=""
 MODEL_DIR=""
 OUTPUT_DIR=""
 NUM_SEEDS=100
@@ -64,6 +65,7 @@ NUM_EIGENVECTORS=8
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --account)            ACCOUNT="$2";            shift 2 ;;
+        --env)                ENV="$2";                shift 2 ;;
         --model_dir)          MODEL_DIR="$2";          shift 2 ;;
         --output_dir)         OUTPUT_DIR="$2";         shift 2 ;;
         --num_seeds)          NUM_SEEDS="$2";          shift 2 ;;
@@ -84,6 +86,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── Validate required arguments ───────────────────────────────────────────────
+if [ -z "$ENV" ]; then
+    echo "ERROR: --env is required." >&2; exit 1
+fi
 if [ -z "$MODEL_DIR" ]; then
     echo "ERROR: --model_dir is required." >&2; exit 1
 fi
@@ -111,7 +116,7 @@ echo "  Num eigenvectors: $NUM_EIGENVECTORS"
 echo "========================================"
 
 # ── Export env vars so child scripts inherit them ─────────────────────────────
-export MODEL_DIR OUTPUT_DIR
+export ENV MODEL_DIR OUTPUT_DIR
 export NUM_SEEDS NUM_METHODS NUM_EPISODES MAX_STEPS
 export SHAPING_COEF GAMMA_RL LR EPSILON LOG_INTERVAL EVAL_SEED NUM_EVAL_EPISODES
 export MIN_GOAL_DISTANCE START_STATE NUM_EIGENVECTORS

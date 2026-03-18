@@ -78,7 +78,6 @@ fi
 
 for MANIFEST_FILE in "$MANIFEST_DIR"/*.txt; do
     ENV=$(basename "$MANIFEST_FILE" .txt)
-    export ENV
     MODEL_DIR=$(cat "$MANIFEST_FILE")
     OUTPUT_DIR="${MODEL_DIR}/reward_shaping"
 
@@ -89,6 +88,7 @@ for MANIFEST_FILE in "$MANIFEST_DIR"/*.txt; do
 
     bash "$SUBMIT_RS" \
         --account           "$ACCOUNT" \
+        --env               "$ENV" \
         --model_dir         "$MODEL_DIR" \
         --output_dir        "$OUTPUT_DIR" \
         --num_seeds         "$NUM_SEEDS" \
