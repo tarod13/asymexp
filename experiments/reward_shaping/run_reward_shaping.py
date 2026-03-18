@@ -62,8 +62,8 @@ sys.path.insert(0, str(REPO_ROOT))
 from src.envs.gridworld import GridWorldState
 from src.utils.envs import create_gridworld_env, get_canonical_free_states, get_env_transition_markers
 from src.utils.metrics import compute_hitting_times_from_eigenvectors
-from src.utils.laplacian import compute_laplacian, compute_eigendecomposition
 from src.utils.plotting import visualize_source_vs_target_hitting_times
+from src.utils.interaction import collect_data_and_compute_eigenvectors
 
 
 # ===========================================================================
@@ -130,85 +130,6 @@ def load_model(model_dir: Path, use_gt: bool = False) -> dict:
         eigenvalues_imag=eig_imag,
         eigenvalue_type=eigenvalue_type,
     )
-
-
-# ===========================================================================
-# Transition table
-# ===========================================================================
-
-def build_transition_table(
-    env,
-    canonical_states: np.ndarray,
-) -> np.ndarray:
-    """
-    Precompute the deterministic transition table next_state[s, a].
-
-    next_state[s, a] = canonical index of the state reached by taking
-    action a from canonical state s.
-
-    Priority order (highest first):
-      1. Portal: teleport to destination state
-      2. Door: blocked transition stays in place
-      3. Normal physics: boundary/obstacle → stay, else move
-
-    Actions: 0=up, 1=right, 2=down, 3=left
-    Coordinate convention: full_idx = y * width + x
-    Action effects: up=(0,-1), right=(+1,0), down=(0,+1), left=(-1,0)
-    """
-    num_canonical = len(canonical_states)
-    full_to_canonical = {int(s): i for i, s in enumerate(canonical_states)}
-
-    # (dx, dy) for actions 0..3
-    action_effects = [(0, -1), (1, 0), (0, 1), (-1, 0)]
-
-    # Blocked transitions (doors)
-    # env.asymmetric_transitions stores (state_full, action) -> prob, where
-    # prob is the probability the transition SUCCEEDS (0 = fully blocked).
-    # The env step blocks exactly (state_full, action), so use the keys directly.
-    blocked: set[tuple[int, int]] = set()
-    if env.has_doors:
-        for (state_full, action), prob in env.asymmetric_transitions.items():
-            if prob == 0.0:  # hard door — deterministically blocked
-                blocked.add((int(state_full), int(action)))
-
-    # Portal overrides: (source_full, action) -> dest_full
-    portals: dict[tuple[int, int], int] = {}
-    if env.has_portals:
-        for (state_full, action), dest_full in env.portals.items():
-            portals[(int(state_full), int(action))] = int(dest_full)
-
-    next_state = np.empty((num_canonical, 4), dtype=np.int32)
-
-    for s_idx in range(num_canonical):
-        full_idx = int(canonical_states[s_idx])
-        y, x = divmod(full_idx, env.width)
-
-        for a, (dx, dy) in enumerate(action_effects):
-            # 1. Portal override
-            if (full_idx, a) in portals:
-                dest_full = portals[(full_idx, a)]
-                next_state[s_idx, a] = full_to_canonical.get(dest_full, s_idx)
-                continue
-
-            # 2. Irreversible door — stay in place
-            if (full_idx, a) in blocked:
-                next_state[s_idx, a] = s_idx
-                continue
-
-            # 3. Normal physics
-            nx, ny = x + dx, y + dy
-            if not (0 <= nx < env.width and 0 <= ny < env.height):
-                next_state[s_idx, a] = s_idx
-                continue
-
-            next_full = ny * env.width + nx
-            if next_full not in full_to_canonical:
-                next_state[s_idx, a] = s_idx
-                continue
-
-            next_state[s_idx, a] = full_to_canonical[next_full]
-
-    return next_state
 
 
 # ===========================================================================
@@ -883,21 +804,19 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
-    # 1. Load pre-trained Laplacian model (complex representation)
+    # 1. Load pre-trained Laplacian model (complex or ground-truth)
     # ------------------------------------------------------------------
-    # When --use_gt, eigenvectors are computed from the environment after it is
-    # built (section 2b), so we skip disk loading here entirely.
     # In single-seed mode skip eigenvectors when not needed (saves memory).
-    _load_complex = (not args.use_gt) and (model_dir is not None) and (
+    _load_complex = (model_dir is not None) and (
         args.method is None or args.method == "complex"
     )
     if _load_complex:
         print(f"\n{'='*60}")
-        print(f"Loading complex representation model from: {model_dir}")
+        print(f"Loading {'ground-truth' if args.use_gt else 'complex representation'} model from: {model_dir}")
         print(f"{'='*60}")
-        model_data = load_model(model_dir)
+        model_data = load_model(model_dir, use_gt=args.use_gt)
         evtype     = model_data["eigenvalue_type"]
-        print(f"  Eigenvector source : learned (normalized)")
+        print(f"  Eigenvector source : {'ground truth (saved during training)' if args.use_gt else 'learned'}")
         print(f"  Eigenvalue type    : {evtype}")
         print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
     else:
@@ -1005,47 +924,6 @@ def main() -> None:
                 eligible_goals = filtered
             print(f"  Min goal distance  : {args.min_goal_distance}"
                   f"  ({len(eligible_goals)}/{num_canonical} eligible goals)")
-
-    # ------------------------------------------------------------------
-    # 2c. Compute ground-truth eigenvectors from the environment (--use_gt)
-    # ------------------------------------------------------------------
-    _need_gt = args.use_gt and (args.method is None or args.method == "complex")
-    if _need_gt:
-        print(f"\n{'='*60}")
-        print("Computing ground-truth eigenvectors from environment ...")
-        print(f"{'='*60}")
-        next_state = build_transition_table(env, canonical_states)
-        N = len(canonical_states)
-        # Uniform random-walk: each of the 4 actions equally likely.
-        # Soft doors (0 < prob < 1) add a stay-in-place mass of 0.25*(1-prob)
-        # on top of the prob-weighted forward mass.
-        P = np.zeros((N, N), dtype=np.float64)
-        asym = env.asymmetric_transitions if env.has_doors else {}
-        for a in range(4):
-            for s in range(N):
-                full_s = int(canonical_states[s])
-                door_prob = asym.get((full_s, a), 1.0)
-                dest = next_state[s, a]
-                P[s, dest] += 0.25 * door_prob
-                P[s, s]    += 0.25 * (1.0 - door_prob)
-        laplacian = compute_laplacian(jnp.array(P), gamma=args.gt_gamma, delta=args.gt_delta)
-        eig = compute_eigendecomposition(laplacian, k=args.num_eigenvectors, ascending=True)
-        model_data = dict(
-            training_args={"gamma": args.gt_gamma, "delta": args.gt_delta},
-            left_real=np.array(eig["left_eigenvectors_real"]),
-            left_imag=np.array(eig["left_eigenvectors_imag"]),
-            right_real=np.array(eig["right_eigenvectors_real"]),
-            right_imag=np.array(eig["right_eigenvectors_imag"]),
-            eigenvalues_real=np.array(eig["eigenvalues_real"]),
-            eigenvalues_imag=np.array(eig["eigenvalues_imag"]),
-            eigenvalue_type="laplacian",
-        )
-        evtype = "laplacian"
-        print(f"  Eigenvector source : ground truth (from environment)")
-        print(f"  Eigenvalue type    : laplacian")
-        print(f"  Eigenvectors (K)   : {args.num_eigenvectors}")
-        print(f"  gt_gamma           : {args.gt_gamma}")
-        print(f"  gt_delta           : {args.gt_delta}")
 
     # ------------------------------------------------------------------
     # 3. Compute hitting times (complex representation)
