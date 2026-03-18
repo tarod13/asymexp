@@ -13,21 +13,21 @@ def _draw_portal_tile_overlays(ax, portal_sources, portal_ends, grid_width):
       - Portal start-states: electric blue (#009FE3 / #005FA3)
       - Portal end-states:   vivid orange  (#FF6600 / #CC4400)
 
-    Drawn fully opaque at high zorder so the heatmap does not bleed through.
+    Drawn at high zorder so they always render above the heatmap.
     """
     for state in (portal_sources or []):
         y, x = divmod(state, grid_width)
         ax.add_patch(mpatches.Circle(
             (x, y), radius=0.4,
             facecolor='#009FE3', edgecolor='#005FA3',
-            alpha=1.0, linewidth=1.5, zorder=15,
+            alpha=0.6, linewidth=1.5, zorder=15,
         ))
     for state in (portal_ends or []):
         y, x = divmod(state, grid_width)
         ax.add_patch(mpatches.Circle(
             (x, y), radius=0.4,
             facecolor='#FF6600', edgecolor='#CC4400',
-            alpha=1.0, linewidth=1.5, zorder=15,
+            alpha=0.6, linewidth=1.5, zorder=15,
         ))
 
 
