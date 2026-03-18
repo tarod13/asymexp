@@ -7,20 +7,25 @@ from typing import Dict, Optional, Set, Tuple, List
 
 
 def _draw_portal_tile_overlays(ax, portal_sources, portal_ends, grid_width):
-    """Overlay colored circles on portal source (blue) and end (orange) states."""
+    """Overlay colored circles on portal source (blue) and end (orange) states.
+
+    Colors match the classic Portal game aesthetic:
+      - Portal start-states: electric blue (#009FE3 / #005FA3)
+      - Portal end-states:   vivid orange  (#FF6600 / #CC4400)
+    """
     for state in (portal_sources or []):
         y, x = divmod(state, grid_width)
         ax.add_patch(mpatches.Circle(
             (x, y), radius=0.4,
-            facecolor='royalblue', edgecolor='navy',
-            alpha=0.5, linewidth=1.5, zorder=9,
+            facecolor='#009FE3', edgecolor='#005FA3',
+            alpha=0.6, linewidth=1.5, zorder=9,
         ))
     for state in (portal_ends or []):
         y, x = divmod(state, grid_width)
         ax.add_patch(mpatches.Circle(
             (x, y), radius=0.4,
-            facecolor='orange', edgecolor='darkorange',
-            alpha=0.5, linewidth=1.5, zorder=9,
+            facecolor='#FF6600', edgecolor='#CC4400',
+            alpha=0.6, linewidth=1.5, zorder=9,
         ))
 
 
@@ -854,7 +859,12 @@ def visualize_source_vs_target_hitting_times(
     shared_colorbar: bool = True,
 ) -> plt.Figure:
     """
-    Visualize hitting times for states acting as Targets (columns) vs Sources (rows).
+    Visualize hitting times for states acting as Targets (goal) vs Sources (start).
+
+    Layout: 6 rows × 2 columns, where each row corresponds to one state and the
+    two columns show:
+      - Left  (col 0): Target view — hitting times TO this state (state as goal)
+      - Right (col 1): Source view — hitting times FROM this state (state as start)
 
     Args:
         state_indices: List of state indices to visualize
@@ -863,7 +873,7 @@ def visualize_source_vs_target_hitting_times(
         grid_width: Grid width
         grid_height: Grid height
         portals: Portal/Door dict
-        ncols: Number of states per row
+        ncols: Ignored (kept for backward-compatible call sites)
         figsize: Figure size
         wall_color: Color for walls
         save_path: Path to save
@@ -876,22 +886,18 @@ def visualize_source_vs_target_hitting_times(
     """
     num_states = len(state_indices)
 
-    # Calculate grid dimensions
-    num_logical_rows = (num_states + ncols - 1) // ncols
-    nrows = num_logical_rows * 2
+    # Layout: one row per state, two columns (target | source)
+    nrows = num_states
+    plot_cols = 2
 
     if figsize is None:
-        figsize = (ncols * 3, nrows * 3)
+        figsize = (plot_cols * 4, nrows * 3)
 
-    fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+    fig, axes = plt.subplots(nrows, plot_cols, figsize=figsize)
 
-    # Reshape axes to be 2D array [nrows, ncols] even if single row/col
-    if nrows == 1 and ncols == 1:
-        axes = np.array([[axes]])
-    elif nrows == 1:
+    # Reshape axes to be 2D array [nrows, 2] even for a single state
+    if nrows == 1:
         axes = axes.reshape(1, -1)
-    elif ncols == 1:
-        axes = axes.reshape(-1, 1)
 
     # Compute global color scales if shared
     # Ensure the matrix is real (conjugate enforcement should handle this,
@@ -914,16 +920,10 @@ def visualize_source_vs_target_hitting_times(
         vmax = max_val
 
     for idx, state_idx in enumerate(state_indices):
-        r_logical = idx // ncols
-        c = idx % ncols
+        ax_target = axes[idx, 0]
+        ax_source = axes[idx, 1]
 
-        # Row for Target View (Even rows: 0, 2, 4...)
-        ax_target = axes[r_logical * 2, c]
-
-        # Row for Source View (Odd rows: 1, 3, 5...)
-        ax_source = axes[r_logical * 2 + 1, c]
-
-        # 1. Target View: Column of H (Time TO state_idx)
+        # Left column: Target View — hitting times TO state_idx (state as goal)
         times_to_state = hitting_time_matrix[:, state_idx]
 
         visualize_hitting_time_on_grid(
@@ -936,7 +936,7 @@ def visualize_source_vs_target_hitting_times(
             portals=portals,
             portal_sources=portal_sources,
             portal_ends=portal_ends,
-            title=f'State {state_idx}\n(Target View: Times TO here)',
+            title=f'State {state_idx} — Goal\n(Times TO here)',
             ax=ax_target,
             cmap='viridis',
             show_colorbar=not shared_colorbar,
@@ -946,7 +946,7 @@ def visualize_source_vs_target_hitting_times(
             log_scale=log_scale
         )
 
-        # 2. Source View: Row of H (Time FROM state_idx)
+        # Right column: Source View — hitting times FROM state_idx (state as start)
         times_from_state = hitting_time_matrix[state_idx, :]
 
         visualize_hitting_time_on_grid(
@@ -959,7 +959,7 @@ def visualize_source_vs_target_hitting_times(
             portals=portals,
             portal_sources=portal_sources,
             portal_ends=portal_ends,
-            title=f'State {state_idx}\n(Source View: Times FROM here)',
+            title=f'State {state_idx} — Start\n(Times FROM here)',
             ax=ax_source,
             cmap='viridis',
             show_colorbar=not shared_colorbar,
@@ -968,13 +968,6 @@ def visualize_source_vs_target_hitting_times(
             vmax=vmax,
             log_scale=log_scale
         )
-
-    # Hide unused axes
-    for idx in range(num_states, num_logical_rows * ncols):
-        r_logical = idx // ncols
-        c = idx % ncols
-        axes[r_logical * 2, c].axis('off')
-        axes[r_logical * 2 + 1, c].axis('off')
 
     plt.tight_layout()
 
