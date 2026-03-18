@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+from scipy import linalg as scipy_linalg
 from typing import Dict, Optional
 
 
@@ -376,30 +377,27 @@ def compute_eigendecomposition(
     }
 
 
-def compute_gt_eigendecomposition_mpmath(
+def compute_gt_eigendecomposition(
     matrix: jnp.ndarray,
     num_eigenvector_pairs: Optional[int] = None,
     ascending: bool = True,
-    precision: int = 50,
 ) -> Dict[str, jnp.ndarray]:
     """
-    High-precision full-rank eigendecomposition using mpmath.
+    Full-rank eigendecomposition using scipy.linalg.eig.
 
-    Performs a single full-rank eigendecomposition of the N×N matrix at mpmath
-    precision, obtains both left and right eigenvectors directly from mpmath.eig
-    (avoiding explicit matrix inversion), sorts all N eigenpairs by eigenvalue
-    magnitude, then optionally truncates to the requested number of pairs.
+    Computes all N left and right eigenpairs in a single scipy.linalg.eig call,
+    sorts by eigenvalue magnitude, then optionally truncates.
 
-    The left eigenvectors returned by mpmath.eig satisfy
-        EL[:, i]^H * A = E[i] * EL[:, i]^H
-    and are stored column-wise (same convention as right eigenvectors).
+    scipy.linalg.eig(A, left=True, right=True) returns (w, vl, vr) where
+    columns of vl / vr are left / right eigenvectors satisfying
+        vl[:, i].conj() @ A = w[i] * vl[:, i].conj()
+        A @ vr[:, i]        = w[i] * vr[:, i]
 
     Args:
         matrix: Square matrix [N, N].
         num_eigenvector_pairs: Number of eigenpairs to keep after sorting.
                                None keeps all N.
         ascending: Sort by |eigenvalue| ascending (True for Laplacians).
-        precision: mpmath decimal precision (default 50 significant digits).
 
     Returns:
         Dict with the same keys as compute_eigendecomposition:
@@ -407,37 +405,18 @@ def compute_gt_eigendecomposition_mpmath(
             eigenvalues_real/imag, right_eigenvectors_real/imag,
             left_eigenvectors_real/imag
     """
-    import mpmath
-
-    mpmath.mp.dps = precision
-
     matrix_np = np.array(matrix, dtype=np.complex128)
-    N = matrix_np.shape[0]
 
-    # Build mpmath matrix from the numpy array.
-    matrix_mp = mpmath.matrix(matrix_np.tolist())
-
-    # Full-rank eigendecomposition.  mpmath.eig(A, left=True, right=True) returns
-    # (E, EL, ER) where columns of EL / ER are left / right eigenvectors.
-    E, EL, ER = mpmath.eig(matrix_mp, left=True, right=True)
-
-    # Convert to numpy complex128.
-    eigenvalues_np = np.array([complex(e) for e in E], dtype=np.complex128)
-    right_np = np.array(
-        [[complex(ER[i, j]) for j in range(N)] for i in range(N)],
-        dtype=np.complex128,
-    )
-    left_np = np.array(
-        [[complex(EL[i, j]) for j in range(N)] for i in range(N)],
-        dtype=np.complex128,
+    eigenvalues_np, left_np, right_np = scipy_linalg.eig(
+        matrix_np, left=True, right=True
     )
 
     # Sort all three arrays by |eigenvalue|.
     magnitudes = np.abs(eigenvalues_np)
     sorted_indices = np.argsort(magnitudes) if ascending else np.argsort(-magnitudes)
     eigenvalues_np = eigenvalues_np[sorted_indices]
-    right_np = right_np[:, sorted_indices]   # reorder columns of R
-    left_np  = left_np[:, sorted_indices]    # reorder columns of EL
+    right_np = right_np[:, sorted_indices]
+    left_np  = left_np[:, sorted_indices]
 
     # Truncate to the requested number of pairs.
     k = num_eigenvector_pairs
@@ -447,7 +426,7 @@ def compute_gt_eigendecomposition_mpmath(
         left_np  = left_np[:, :k]
 
     # Convert to JAX arrays.
-    eigenvalues       = jnp.array(eigenvalues_np)
+    eigenvalues        = jnp.array(eigenvalues_np)
     right_eigenvectors = jnp.array(right_np)
     left_eigenvectors  = jnp.array(left_np)
 

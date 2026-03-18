@@ -60,7 +60,7 @@ from src.utils.plotting import (
     plot_hitting_time_heatmap,
     plot_full_ideal_summary,
 )
-from src.utils.laplacian import compute_eigendecomposition, compute_gt_eigendecomposition_mpmath
+from src.utils.laplacian import compute_eigendecomposition, compute_gt_eigendecomposition
 
 
 def _effective_rank(kernel: np.ndarray) -> float:
@@ -184,11 +184,11 @@ def learn_eigenvectors(args, learner_module, method):
     if checkpoint_data is not None and 'rng_state' in checkpoint_data:
         np.random.set_state(checkpoint_data['rng_state'])
 
-    # Whether to use the mpmath high-precision eigendecomposition for GT.
+    # Whether to use the scipy full-rank eigendecomposition for GT.
     # True for all non-ALLO, non-symmetric cases (where heuristic left/right
     # pairing would introduce errors). False keeps the existing code paths.
     sym_eig = getattr(args, 'sym_eig', False)
-    use_mpmath_gt = (method != "allo") and not sym_eig
+    use_scipy_gt = (method != "allo") and not sym_eig
 
     # Load or create environment and data
     if checkpoint_data is not None:
@@ -243,8 +243,8 @@ def learn_eigenvectors(args, learner_module, method):
         # For ALLO (without sym_eig), the ground truth is eigenvectors of L + D^{-1}L^T D
         # (self-adjoint w.r.t. the D-weighted inner product, real eigenvalues/eigenvectors).
         # With sym_eig=True, ground truth uses eigh on L directly (matching laplacian_dual_dynamics).
-        # For all other algorithms, the ground truth uses a single, full-rank, high-precision
-        # mpmath eigendecomposition of L, which is then truncated to num_eigenvector_pairs.
+        # For all other algorithms, the ground truth uses a single, full-rank
+        # scipy.linalg.eig eigendecomposition of L, truncated to num_eigenvector_pairs.
         if method == "allo" and not sym_eig:
             D = jnp.diag(sampling_probs)
             D_inv = jnp.diag(1.0 / sampling_probs)
@@ -264,8 +264,8 @@ def learn_eigenvectors(args, learner_module, method):
             gt_right_imag = gt_eigendecomp['right_eigenvectors_imag']
             # Full Ideal GT uses the plain Laplacian L (not the symmetrized ALLO matrix)
             # so that it represents un-truncated hitting times for the underlying MDP.
-            print(f"  Full Ideal GT: full-rank ({N_states}) eigendecomposition of plain L via mpmath...")
-            _full_eigendecomp = compute_gt_eigendecomposition_mpmath(
+            print(f"  Full Ideal GT: full-rank ({N_states}) eigendecomposition of plain L via scipy...")
+            _full_eigendecomp = compute_gt_eigendecomposition(
                 laplacian_matrix,
                 num_eigenvector_pairs=None,
                 ascending=True,
@@ -291,9 +291,9 @@ def learn_eigenvectors(args, learner_module, method):
                     sym_eig=True,
                 )
             else:
-                print(f"\nComputing full-rank ({N_states}) mpmath eigendecomposition of L; "
+                print(f"\nComputing full-rank ({N_states}) scipy eigendecomposition of L; "
                       f"will truncate to {num_gt_eigenvectors}...")
-                _full_eigendecomp = compute_gt_eigendecomposition_mpmath(
+                _full_eigendecomp = compute_gt_eigendecomposition(
                     laplacian_matrix,
                     num_eigenvector_pairs=None,
                     ascending=True,
@@ -332,7 +332,7 @@ def learn_eigenvectors(args, learner_module, method):
     #                 so that the formula receives the unmodified bi-normal left vectors.
     #
     # For ALLO and sym_eig cases, no transformation is applied (pass-through).
-    if use_mpmath_gt and sampling_probs is not None:
+    if use_scipy_gt and sampling_probs is not None:
         _D_inv = 1.0 / jnp.maximum(sampling_probs, 1e-12)          # [N]
         _binorm_cx = gt_left_binorm_real + 1j * gt_left_binorm_imag  # [N, k]
         _adj_cx = jnp.conj(_D_inv[:, None] * _binorm_cx)
@@ -369,8 +369,8 @@ def learn_eigenvectors(args, learner_module, method):
             elif sym_eig:
                 w_eigendecomp = compute_eigendecomposition(w_laplacian, k=num_gt_eigenvectors, ascending=True, sym_eig=True)
             else:
-                # Non-ALLO, non-sym_eig: high-precision mpmath eigendecomposition.
-                w_eigendecomp = compute_gt_eigendecomposition_mpmath(
+                # Non-ALLO, non-sym_eig: full-rank scipy eigendecomposition.
+                w_eigendecomp = compute_gt_eigendecomposition(
                     w_laplacian,
                     num_eigenvector_pairs=num_gt_eigenvectors,
                     ascending=True,
@@ -396,7 +396,7 @@ def learn_eigenvectors(args, learner_module, method):
     # Derive hitting-times variant for the Full Ideal GT left eigenvectors.
     # Same logic as for the truncated GT: pass conj(full_left_binorm) to the
     # hitting-times function so that its internal conjugation is cancelled.
-    if use_mpmath_gt:
+    if use_scipy_gt:
         full_left_ht_real =  full_left_binorm_real
         full_left_ht_imag = -full_left_binorm_imag
     else:
