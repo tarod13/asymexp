@@ -1339,7 +1339,7 @@ def learn_eigenvectors(args, learner_module, method):
         portal_ends=portal_ends if portal_ends else None,
         ncols=args.hitting_times_ncols,
         save_path=str(plots_dir / "hitting_times_learned.png"),
-        log_scale=False,
+        log_scale=args.hitting_times_log_scale,
         shared_colorbar=False,
     )
     plt.close()
@@ -1356,7 +1356,7 @@ def learn_eigenvectors(args, learner_module, method):
         portal_ends=portal_ends if portal_ends else None,
         ncols=args.hitting_times_ncols,
         save_path=str(plots_dir / "hitting_times_ground_truth.png"),
-        log_scale=False,
+        log_scale=args.hitting_times_log_scale,
         shared_colorbar=False,
     )
     plt.close()
@@ -1373,7 +1373,7 @@ def learn_eigenvectors(args, learner_module, method):
         portal_ends=portal_ends if portal_ends else None,
         ncols=args.hitting_times_ncols,
         save_path=str(plots_dir / "hitting_times_full_ideal.png"),
-        log_scale=False,
+        log_scale=args.hitting_times_log_scale,
         shared_colorbar=False,
     )
     plt.close()

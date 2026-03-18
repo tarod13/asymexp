@@ -12,20 +12,22 @@ def _draw_portal_tile_overlays(ax, portal_sources, portal_ends, grid_width):
     Colors match the classic Portal game aesthetic:
       - Portal start-states: electric blue (#009FE3 / #005FA3)
       - Portal end-states:   vivid orange  (#FF6600 / #CC4400)
+
+    Drawn fully opaque at high zorder so the heatmap does not bleed through.
     """
     for state in (portal_sources or []):
         y, x = divmod(state, grid_width)
         ax.add_patch(mpatches.Circle(
             (x, y), radius=0.4,
             facecolor='#009FE3', edgecolor='#005FA3',
-            alpha=0.6, linewidth=1.5, zorder=9,
+            alpha=1.0, linewidth=1.5, zorder=15,
         ))
     for state in (portal_ends or []):
         y, x = divmod(state, grid_width)
         ax.add_patch(mpatches.Circle(
             (x, y), radius=0.4,
             facecolor='#FF6600', edgecolor='#CC4400',
-            alpha=0.6, linewidth=1.5, zorder=9,
+            alpha=1.0, linewidth=1.5, zorder=15,
         ))
 
 
@@ -855,7 +857,7 @@ def visualize_source_vs_target_hitting_times(
     figsize: Optional[Tuple[int, int]] = None,
     wall_color: str = 'gray',
     save_path: Optional[str] = None,
-    log_scale: bool = False,
+    log_scale: bool = True,
     shared_colorbar: bool = False,
 ) -> plt.Figure:
     """
