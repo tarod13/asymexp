@@ -100,6 +100,8 @@ fi
 
 # Strip trailing slash for consistency
 TRAIN_OUT="${TRAIN_OUT%/}"
+# Resolve to absolute path so the manifest is portable across jobs
+TRAIN_OUT=$(realpath "$TRAIN_OUT")
 echo "$TRAIN_OUT" > "${MANIFEST_DIR}/${ENV_NAME}.txt"
 
 echo "========================================"
