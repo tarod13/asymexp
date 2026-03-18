@@ -165,23 +165,21 @@ def compute_complex_cosine_similarities(
             # Degenerate eigenspace: for each learned eigenvector u_k in the group,
             # report the norm of its projection onto the ground-truth eigenspace V,
             # normalised by ||u_k||. This is basis-invariant within the eigenspace.
-            u_real = learned_real[:, j:j + multiplicity]   # (n_states, mult)
-            u_imag = learned_imag[:, j:j + multiplicity]
-            v_real = gt_real[:, j:j + multiplicity]        # (n_states, mult)
-            v_imag = gt_imag[:, j:j + multiplicity]
+            u_c = learned_real[:, j:j + multiplicity] + 1j * learned_imag[:, j:j + multiplicity]
+            v_c = gt_real[:, j:j + multiplicity] + 1j * gt_imag[:, j:j + multiplicity]
 
-            # Complex inner products <v_l, u_k> for all pairs (k, l):
-            #   inner_real[k, l] = Re(u_k)^T Re(v_l) + Im(u_k)^T Im(v_l)
-            #   inner_imag[k, l] = Re(u_k)^T Im(v_l) - Im(u_k)^T Re(v_l)
-            inner_real = u_real.T @ v_real + u_imag.T @ v_imag   # (mult, mult)
-            inner_imag = u_real.T @ v_imag - u_imag.T @ v_real   # (mult, mult)
+            # Orthonormalize GT basis so that sum_l |<v_l, u_k>|^2 = ||P_V u_k||^2
+            v_ortho, _ = jnp.linalg.qr(v_c)
 
-            # Squared projection norms: ||P_V u_k||^2 = sum_l |<v_l, u_k>|^2
-            proj_norm = (inner_real ** 2 + inner_imag ** 2).sum(axis=1) ** 0.5  # (mult,)
+            # Complex inner products <v_ortho_l, u_k> for all pairs
+            inner_products = jnp.conj(v_ortho).T @ u_c  # (mult, mult)
+
+            # Projection norms: ||P_V u_k|| = sqrt(sum_l |<v_ortho_l, u_k>|^2)
+            proj_norms = jnp.sqrt(jnp.sum(jnp.abs(inner_products)**2, axis=0))  # (mult,)
 
             # Divide by ||u_k||_C to obtain cosine similarity in [0, 1]
-            u_norms = jnp.sqrt((u_real ** 2 + u_imag ** 2).sum(axis=0))  # (mult,)
-            cos_sims_k = proj_norm / (u_norms + 1e-10)
+            u_norms = jnp.linalg.norm(u_c, axis=0)  # (mult,)
+            cos_sims_k = proj_norms / (u_norms + 1e-10)
 
             for k in range(multiplicity):
                 sim = float(cos_sims_k[k])
@@ -192,25 +190,22 @@ def compute_complex_cosine_similarities(
 
         else:
             # Non-degenerate eigenvalue: use direct comparison.
-            is_real_eigval = float(eigenvalues_imag[j]) < 1e-8
+            is_real_eigval = abs(float(eigenvalues_imag[j])) < 1e-8
             has_enough_components = j + 1 < num_components
             if not is_real_eigval and has_enough_components:
                 # Complex conjugate pair — compare as a 2×2 block.
-                u_real = learned_real[:, j:j + 2]
-                u_imag = learned_imag[:, j:j + 2]
-                v_real = gt_real[:, j:j + 2]
-                v_imag = gt_imag[:, j:j + 2]
+                u_c = learned_real[:, j:j + 2] + 1j * learned_imag[:, j:j + 2]
+                v_c = gt_real[:, j:j + 2] + 1j * gt_imag[:, j:j + 2]
 
-                inner_real = jnp.einsum('ij,ik->jk', u_real, v_real) + jnp.einsum('ij,ik->jk', u_imag, v_imag)
-                inner_imag = jnp.einsum('ij,ik->jk', u_real, v_imag) - jnp.einsum('ij,ik->jk', u_imag, v_real)
+                # Orthonormalize GT conjugate pair basis before projecting
+                v_ortho, _ = jnp.linalg.qr(v_c)
 
-                u_norm = jnp.sqrt(jnp.einsum('ij,ij->j', u_real, u_real) + jnp.einsum('ij,ij->j', u_imag, u_imag)).reshape(-1, 1)
-                v_norm = jnp.sqrt(jnp.einsum('ij,ij->j', v_real, v_real) + jnp.einsum('ij,ij->j', v_imag, v_imag)).reshape(1, -1)
+                inner_products = jnp.conj(v_ortho).T @ u_c  # (2, 2)
 
-                cos_real = inner_real / (u_norm * v_norm + 1e-10)
-                cos_imag = inner_imag / (u_norm * v_norm + 1e-10)
+                proj_norms = jnp.sqrt(jnp.sum(jnp.abs(inner_products)**2, axis=0))  # (2,)
+                u_norms = jnp.linalg.norm(u_c, axis=0)  # (2,)
 
-                abs_cos = (cos_real ** 2 + cos_imag ** 2).sum(axis=1) ** 0.5
+                abs_cos = proj_norms / (u_norms + 1e-10)
 
                 similarities[f'{prefix}cosine_sim_{j}'] = float(abs_cos[0])
                 similarities[f'{prefix}cosine_sim_{j + 1}'] = float(abs_cos[1])
