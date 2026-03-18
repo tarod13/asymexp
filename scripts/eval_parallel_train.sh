@@ -31,8 +31,9 @@ mkdir -p results/eval_manifest
 # Environment table  (index 0-5)
 # ---------------------------------------------------------------------------
 ENV_FILES=(
-    "GridRoom-4-Doors"  "GridRoom-4"  "GridRoom-4-DoorsIm"  "GridRoom-1"
-    "GridRoom-1-Portals-1"  "GridRoom-1-Doors"
+    "GridRoom-4"  "GridRoom-4-Doors"  
+    "GridRoom-1"  "GridRoom-1-Portals"
+    "GridMaze-OGBench"  "GridMaze-OGBench-Portals"
 )
 
 ENV_FILE=${ENV_FILES[$SLURM_ARRAY_TASK_ID]}
@@ -61,33 +62,24 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 python train.py clf \
     --env_file_name        "$ENV_FILE" \
     --num_gradient_steps   100000 \
-    --batch_size           256 \
+    --batch_size           512 \
     --num_eigenvector_pairs 8 \
     --learning_rate        0.00001 \
     --ema_learning_rate    0.0003 \
-    --lambda_x             10.0 \
-    --chirality_factor     0.1 \
-    --gamma                0.9 \
-    --sampling_mode        none \
-    --constraint_mode      single_batch \
-    --use_residual \
-    --use_layernorm \
-    --num_envs             1000 \
-    --num_steps            1000 \
-    --exp_name             parallel_eval \
-    --exp_number           0 \
+    --exp_name             parallel_clf_eval \
+    --exp_number           1 \
     --seed                 42 \
-    --results_dir          ./results/parallel_eval \
+    --results_dir          ./results/parallel_clf_eval \
     --no-plot_during_training \
     --save_model
 
 # ---------------------------------------------------------------------------
 # Find the results directory and write to manifest
 # The directory pattern is:
-#   ./results/parallel_eval/{env_file_name}/{env_file_name}__parallel_eval__0__42__*/
+#   ./results/parallel_clf_eval/{env_file_name}/{env_file_name}__parallel_clf_eval__0__42__*/
 # We take the most recent one in case of reruns.
 # ---------------------------------------------------------------------------
-RESULTS_DIR=$(ls -td "./results/parallel_eval/${ENV_FILE}/${ENV_FILE}__parallel_eval__0__42__"*/ 2>/dev/null | head -1)
+RESULTS_DIR=$(ls -td "./results/parallel_clf_eval/${ENV_FILE}/${ENV_FILE}__parallel_clf_eval__0__42__"*/ 2>/dev/null | head -1)
 
 if [ -z "$RESULTS_DIR" ]; then
     echo "ERROR: Could not find results directory for $ENV_NAME" >&2

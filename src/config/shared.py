@@ -21,7 +21,7 @@ class SharedArgs:
     num_hidden_layers: int = 3
     use_residual: bool = True  # Whether to use residual connections in the network
     use_layernorm: bool = True  # Whether to use LayerNorm in the network
-    num_head_hidden_layers: int = 2  # Number of hidden layers in each head after the shared backbone
+    num_head_hidden_layers: int = 1  # Number of hidden layers in each head after the shared backbone
 
     # Training
     learning_rate: float = 1e-5
