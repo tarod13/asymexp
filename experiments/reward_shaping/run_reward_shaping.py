@@ -1075,7 +1075,7 @@ def main() -> None:
 
         plot_hitting_times_grid(
             hitting_times,
-            np.array(canonical_states),
+            np.array(model_data["canonical_states"]),
             env,
             output_dir / ("hitting_times_gt_plots" if args.use_gt else "hitting_times_complex_plots"),
         )
@@ -1110,7 +1110,7 @@ def main() -> None:
         np.save(output_dir / "hitting_times_allo.npy", allo_hitting_times)
         plot_hitting_times_grid(
             allo_hitting_times,
-            np.array(canonical_states),
+            np.array(allo_model_data["canonical_states"]),
             env,
             output_dir / "hitting_times_allo_plots",
         )
