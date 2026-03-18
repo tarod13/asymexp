@@ -851,20 +851,22 @@ def visualize_source_vs_target_hitting_times(
     portals: Optional[Dict[Tuple[int, int], int]] = None,
     portal_sources: Optional[Set[int]] = None,
     portal_ends: Optional[Set[int]] = None,
-    ncols: int = 5,
+    ncols: int = 6,
     figsize: Optional[Tuple[int, int]] = None,
     wall_color: str = 'gray',
     save_path: Optional[str] = None,
     log_scale: bool = False,
-    shared_colorbar: bool = True,
+    shared_colorbar: bool = False,
 ) -> plt.Figure:
     """
     Visualize hitting times for states acting as Targets (goal) vs Sources (start).
 
-    Layout: 6 rows × 2 columns, where each row corresponds to one state and the
-    two columns show:
-      - Left  (col 0): Target view — hitting times TO this state (state as goal)
-      - Right (col 1): Source view — hitting times FROM this state (state as start)
+    Layout: (num_logical_rows × 2) physical rows × ncols columns, where each
+    logical row-pair shows ncols states with:
+      - Top row of pair:    Target view — hitting times TO each state (state as goal)
+      - Bottom row of pair: Source view — hitting times FROM each state (state as start)
+
+    A subtle dashed separator is drawn between consecutive row-pairs.
 
     Args:
         state_indices: List of state indices to visualize
@@ -873,31 +875,35 @@ def visualize_source_vs_target_hitting_times(
         grid_width: Grid width
         grid_height: Grid height
         portals: Portal/Door dict
-        ncols: Ignored (kept for backward-compatible call sites)
+        ncols: Number of states per logical row-pair
         figsize: Figure size
         wall_color: Color for walls
         save_path: Path to save
         log_scale: Whether to plot log(values + 1)
-        shared_colorbar: If True, all plots share the same color scale and one colorbar.
-                         If False, each plot is scaled independently with its own colorbar.
+        shared_colorbar: If True, all subplots share one colorbar.
+                         If False (default), each subplot has its own colorbar.
 
     Returns:
         Matplotlib figure
     """
     num_states = len(state_indices)
 
-    # Layout: one row per state, two columns (target | source)
-    nrows = num_states
-    plot_cols = 2
+    # Calculate grid dimensions
+    num_logical_rows = (num_states + ncols - 1) // ncols
+    nrows = num_logical_rows * 2
 
     if figsize is None:
-        figsize = (plot_cols * 4, nrows * 3)
+        figsize = (ncols * 3, nrows * 3)
 
-    fig, axes = plt.subplots(nrows, plot_cols, figsize=figsize)
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
 
-    # Reshape axes to be 2D array [nrows, 2] even for a single state
-    if nrows == 1:
+    # Reshape axes to be 2D array [nrows, ncols] even if single row/col
+    if nrows == 1 and ncols == 1:
+        axes = np.array([[axes]])
+    elif nrows == 1:
         axes = axes.reshape(1, -1)
+    elif ncols == 1:
+        axes = axes.reshape(-1, 1)
 
     # Compute global color scales if shared
     # Ensure the matrix is real (conjugate enforcement should handle this,
@@ -920,10 +926,16 @@ def visualize_source_vs_target_hitting_times(
         vmax = max_val
 
     for idx, state_idx in enumerate(state_indices):
-        ax_target = axes[idx, 0]
-        ax_source = axes[idx, 1]
+        r_logical = idx // ncols
+        c = idx % ncols
 
-        # Left column: Target View — hitting times TO state_idx (state as goal)
+        # Top row of pair: Target View (Even physical rows: 0, 2, 4...)
+        ax_target = axes[r_logical * 2, c]
+
+        # Bottom row of pair: Source View (Odd physical rows: 1, 3, 5...)
+        ax_source = axes[r_logical * 2 + 1, c]
+
+        # Target View: Column of H (Time TO state_idx)
         times_to_state = hitting_time_matrix[:, state_idx]
 
         visualize_hitting_time_on_grid(
@@ -946,7 +958,7 @@ def visualize_source_vs_target_hitting_times(
             log_scale=log_scale
         )
 
-        # Right column: Source View — hitting times FROM state_idx (state as start)
+        # Source View: Row of H (Time FROM state_idx)
         times_from_state = hitting_time_matrix[state_idx, :]
 
         visualize_hitting_time_on_grid(
@@ -969,22 +981,38 @@ def visualize_source_vs_target_hitting_times(
             log_scale=log_scale
         )
 
+    # Hide unused axes
+    for idx in range(num_states, num_logical_rows * ncols):
+        r_logical = idx // ncols
+        c = idx % ncols
+        axes[r_logical * 2, c].axis('off')
+        axes[r_logical * 2 + 1, c].axis('off')
+
     plt.tight_layout()
+
+    # Draw subtle dashed separators between row-pairs (in figure coordinates,
+    # so they must be added after tight_layout has finalised axis positions)
+    if num_logical_rows > 1:
+        for r_logical in range(num_logical_rows - 1):
+            source_row = r_logical * 2 + 1        # bottom physical row of current pair
+            next_target_row = r_logical * 2 + 2   # top physical row of next pair
+            y_bottom = axes[source_row, 0].get_position().y0
+            y_top = axes[next_target_row, 0].get_position().y1
+            y_line = (y_bottom + y_top) / 2
+            fig.add_artist(plt.Line2D(
+                [0.01, 0.99], [y_line, y_line],
+                transform=fig.transFigure,
+                color='gray', linewidth=0.8, linestyle='--', alpha=0.4,
+            ))
 
     # Add global colorbar if shared
     if shared_colorbar:
-        # Adjust the right margin to create space for the colorbar
         fig.subplots_adjust(right=0.9)
-
-        # Add a global colorbar on the right side
-        # Coordinates are [left, bottom, width, height] in figure relative coords
         cax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
-
         sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=vmin, vmax=vmax))
         sm.set_array([])
         cbar = plt.colorbar(sm, cax=cax, orientation='vertical')
         cbar.ax.tick_params(labelsize=10)
-
         cbar_label = 'Log(Expected Steps + 1)' if log_scale else 'Expected Steps'
         cbar.set_label(cbar_label, fontsize=12)
 

@@ -1064,7 +1064,7 @@ def learn_eigenvectors(args):
     )
 
     # Select states to visualize (evenly spaced across state space)
-    num_states_to_viz = min(6, num_states)
+    num_states_to_viz = min(args.hitting_times_nrow_pairs * args.hitting_times_ncols, num_states)
     viz_state_indices = np.linspace(0, num_states - 1, num_states_to_viz, dtype=int).tolist()
 
     # Visualize learned hitting times
@@ -1077,10 +1077,10 @@ def learn_eigenvectors(args):
         portals=door_markers if door_markers else None,
         portal_sources=portal_sources if portal_sources else None,
         portal_ends=portal_ends if portal_ends else None,
-        ncols=min(6, num_states_to_viz),
+        ncols=args.hitting_times_ncols,
         save_path=str(plots_dir / "hitting_times_learned.png"),
         log_scale=True,
-        shared_colorbar=True,
+        shared_colorbar=False,
     )
     plt.close()
 
@@ -1094,10 +1094,10 @@ def learn_eigenvectors(args):
         portals=door_markers if door_markers else None,
         portal_sources=portal_sources if portal_sources else None,
         portal_ends=portal_ends if portal_ends else None,
-        ncols=min(6, num_states_to_viz),
+        ncols=args.hitting_times_ncols,
         save_path=str(plots_dir / "hitting_times_ground_truth.png"),
         log_scale=True,
-        shared_colorbar=True,
+        shared_colorbar=False,
     )
     plt.close()
 
