@@ -43,6 +43,7 @@ from src.utils.metrics import (
 from src.utils.plotting import (
     plot_learning_curves_one,
     plot_cosine_similarity_evolution,
+    plot_cosine_similarity_per_eigenvector,
     plot_eigenvector_comparison,
     plot_auxiliary_metrics,
     visualize_multiple_eigenvectors,
@@ -999,10 +1000,19 @@ def learn_eigenvectors(args):
     print("="*60)
 
     # 1. Learning curves
-    plot_learning_curves_one(metrics_history, str(plots_dir / "learning_curves.png"))
+    plot_learning_curves_one(
+        metrics_history,
+        str(plots_dir / "learning_curves.png"),
+        gt_eigenvalues_real=np.array(gt_eigenvalues_real),
+        gt_eigenvalues_imag=np.array(gt_eigenvalues_imag),
+        delta=args.delta,
+    )
 
-    # 2. Cosine similarity evolution
+    # 2. Cosine similarity evolution (average)
     plot_cosine_similarity_evolution(metrics_history, str(plots_dir / "cosine_similarity_evolution.png"))
+
+    # 2b. Cosine similarity evolution — per individual eigenvector
+    plot_cosine_similarity_per_eigenvector(metrics_history, str(plots_dir / "cosine_similarity_per_eigenvector.png"))
 
     # 3. Auxiliary metrics
     plot_auxiliary_metrics(metrics_history, str(plots_dir / "auxiliary_metrics.png"))

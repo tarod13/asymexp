@@ -78,21 +78,33 @@ def _draw_door_markers(ax, portals, grid_width):
         ax.add_patch(tri)
 
 
-def plot_learning_curves_one(metrics_history: list, save_path: str):
+def plot_learning_curves_one(
+    metrics_history: list,
+    save_path: str,
+    gt_eigenvalues_real=None,
+    gt_eigenvalues_imag=None,
+    delta: float = 0.0,
+):
     """
     Plot comprehensive learning curves for single-eigenvector training.
 
-    Visualizes losses, Lyapunov functions, eigenvalue estimates, and other metrics.
+    Visualizes losses, Lyapunov functions, eigenvalue estimates, ROC metrics,
+    and cosine similarities.
 
     Args:
         metrics_history: List of metric dictionaries from training
         save_path: Path to save the plot
+        gt_eigenvalues_real: GT Laplacian eigenvalue real parts — used to draw
+            horizontal reference lines in the eigenvalue subplot (converted to
+            kernel space: λ_M = (1+δ) − λ_L).
+        gt_eigenvalues_imag: GT Laplacian eigenvalue imaginary parts.
+        delta: Discount parameter used in the kernel transformation.
     """
     if not metrics_history:
         print("Warning: metrics_history is empty, skipping learning curves plot")
         return
 
-    fig, axes = plt.subplots(3, 3, figsize=(16, 14))
+    fig, axes = plt.subplots(4, 3, figsize=(16, 18))
     fig.suptitle('Training Metrics (CLF-Based Complex Eigenvector Learning)', fontsize=16)
 
     steps = [m['gradient_step'] for m in metrics_history]
@@ -181,6 +193,16 @@ def plot_learning_curves_one(metrics_history: list, save_path: str):
             steps, [m.get(f'eigenvalue_{_ki}_imag', float('nan')) for m in metrics_history],
             label=f'λ_{_ki} (imag)', linestyle='--', color=_c, alpha=0.7,
         )
+    # GT reference lines: convert Laplacian → kernel space (λ_M = (1+δ) − λ_L)
+    if gt_eigenvalues_real is not None:
+        _gt_r = np.asarray(gt_eigenvalues_real)
+        _gt_i = np.asarray(gt_eigenvalues_imag) if gt_eigenvalues_imag is not None else np.zeros_like(_gt_r)
+        for _ki in range(min(len(_gt_r), len(_eig_indices) if _eig_indices else len(_gt_r))):
+            _c = _colors[_ki % len(_colors)]
+            _ref_real = float((1.0 + delta) - _gt_r[_ki])
+            _ref_imag = float(-_gt_i[_ki])
+            axes[2, 0].axhline(_ref_real, color=_c, linestyle='-',  linewidth=1.0, alpha=0.4)
+            axes[2, 0].axhline(_ref_imag, color=_c, linestyle='--', linewidth=1.0, alpha=0.4)
     if any('avg_eigenvalue_error' in m for m in metrics_history):
         ax2 = axes[2, 0].twinx()
         ax2.plot(
@@ -217,6 +239,34 @@ def plot_learning_curves_one(metrics_history: list, save_path: str):
     axes[2, 2].set_ylabel('Loss')
     axes[2, 2].legend(fontsize=8)
     axes[2, 2].grid(True, alpha=0.3)
+
+    # Row 4: ROC metrics
+    # Plot 10: Hitting-time rank-order correlations (goal and source)
+    _roc_keys = {
+        'avg_goal_roc':              ('Goal ROC (trunc. GT)',       'blue',   '-'),
+        'avg_source_roc':            ('Source ROC (trunc. GT)',      'red',    '-'),
+        'full_ideal_avg_goal_roc':   ('Goal ROC (full ideal GT)',    'blue',   '--'),
+        'full_ideal_avg_source_roc': ('Source ROC (full ideal GT)',  'red',    '--'),
+    }
+    _has_roc = any(k in metrics_history[0] for k in _roc_keys)
+    if _has_roc:
+        for _key, (_lbl, _col, _ls) in _roc_keys.items():
+            if _key in metrics_history[0]:
+                axes[3, 0].plot(
+                    steps, [m.get(_key, float('nan')) for m in metrics_history],
+                    label=_lbl, color=_col, linestyle=_ls, linewidth=1.8,
+                )
+        axes[3, 0].set_xlabel('Gradient Step')
+        axes[3, 0].set_ylabel('Spearman ρ')
+        axes[3, 0].set_title('Hitting-Time Rank Correlations')
+        axes[3, 0].set_ylim([-0.05, 1.05])
+        axes[3, 0].legend(fontsize=8)
+        axes[3, 0].grid(True, alpha=0.3)
+    else:
+        axes[3, 0].set_visible(False)
+
+    axes[3, 1].set_visible(False)
+    axes[3, 2].set_visible(False)
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -271,6 +321,78 @@ def plot_cosine_similarity_evolution(metrics_history: list, save_path: str):
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"Cosine similarity evolution plot saved to {save_path}")
+
+
+def plot_cosine_similarity_per_eigenvector(metrics_history: list, save_path: str):
+    """Plot the per-eigenvector cosine similarity evolution for right and left separately.
+
+    Creates a figure with two side-by-side panels (right φ | left ψ).  Each
+    panel shows one thin line per eigenvector (colour-coded by index) plus a
+    bold dashed line for the overall average.
+
+    Args:
+        metrics_history: List of metric dicts from training.
+        save_path: Path to save the PNG.
+    """
+    if not metrics_history:
+        print("Warning: metrics_history is empty, skipping per-eigenvector cosine plot")
+        return
+
+    steps = [m['gradient_step'] for m in metrics_history]
+
+    # Detect how many individual similarity keys exist for each side
+    def _collect_per_eig(prefix):
+        indices = sorted(set(
+            int(k[len(prefix):])
+            for m in metrics_history
+            for k in m
+            if k.startswith(prefix) and k[len(prefix):].isdigit()
+        ))
+        return indices
+
+    right_indices = _collect_per_eig('right_cosine_sim_')
+    left_indices  = _collect_per_eig('left_cosine_sim_')
+
+    has_right = bool(right_indices)
+    has_left  = bool(left_indices)
+
+    if not has_right and not has_left:
+        print("Warning: no per-eigenvector cosine similarity keys found, skipping plot")
+        return
+
+    ncols = (1 if has_right else 0) + (1 if has_left else 0)
+    fig, axes_row = plt.subplots(1, ncols, figsize=(7 * ncols, 6), squeeze=False)
+    axes_row = axes_row[0]
+    col = 0
+
+    palette = plt.cm.tab10.colors
+
+    for side, indices, avg_key, sym, ax in [
+        ('Right (φ)', right_indices, 'right_cosine_sim_avg', 'φ', axes_row[col] if has_right else None),
+        ('Left (ψ)',  left_indices,  'left_cosine_sim_avg',  'ψ', axes_row[col + (1 if has_right else 0)] if has_left else None),
+    ]:
+        if ax is None:
+            continue
+        for idx in indices:
+            key = f'{avg_key[:avg_key.rfind("_avg")]}_{idx}'
+            vals = [m.get(key, float('nan')) for m in metrics_history]
+            ax.plot(steps, vals, color=palette[idx % len(palette)],
+                    linewidth=1.0, alpha=0.75, label=f'{sym}{idx}')
+        if avg_key in metrics_history[0]:
+            avg_vals = [m[avg_key] for m in metrics_history]
+            ax.plot(steps, avg_vals, color='black', linewidth=2.2,
+                    linestyle='--', label='Average', zorder=10)
+        ax.set_xlabel('Gradient Step', fontsize=11)
+        ax.set_ylabel('|Cosine Similarity|', fontsize=11)
+        ax.set_title(f'{side} — Per-Eigenvector Cosine Similarity', fontsize=12)
+        ax.set_ylim([-0.05, 1.05])
+        ax.legend(fontsize=8, ncol=max(1, len(indices) // 8 + 1), loc='lower right')
+        ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Per-eigenvector cosine similarity plot saved to {save_path}")
 
 
 def _plot_eigvec_grid(
