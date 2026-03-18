@@ -557,7 +557,7 @@ def compute_hitting_times_from_eigenvectors(
     gamma: float = None,
     delta: float = 0.0,
     eigenvalue_type: str = 'transition',
-    enforce_conjugates: bool = True,
+    enforce_conjugates: bool = False,
 ) -> jnp.ndarray:
     """
     Compute hitting times from eigenvector decomposition.
