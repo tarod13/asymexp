@@ -84,7 +84,7 @@ class SharedArgs:
     # Visualization
     hitting_times_ncols: int = 6       # Columns per row-pair in the hitting-times figure
     hitting_times_nrow_pairs: int = 3  # Row-pairs shown (each pair = target row + source row); default 3 → 6 physical rows
-    hitting_times_log_scale: bool = True  # Plot log(steps + 1) instead of raw steps
+    hitting_times_log_scale: bool = False  # Plot log(steps + 1) instead of raw steps
 
     # Misc
     seed: int = 42
