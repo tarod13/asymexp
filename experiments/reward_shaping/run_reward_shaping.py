@@ -62,6 +62,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from src.envs.gridworld import GridWorldState
 from src.utils.envs import create_gridworld_env, get_canonical_free_states, get_env_transition_markers
 from src.utils.metrics import compute_hitting_times_from_eigenvectors
+from src.utils.laplacian import compute_laplacian, compute_eigendecomposition
 from src.utils.plotting import visualize_source_vs_target_hitting_times
 from src.utils.interaction import collect_data_and_compute_eigenvectors
 
@@ -129,6 +130,73 @@ def load_model(model_dir: Path, use_gt: bool = False) -> dict:
         eigenvalues_real=eig_real,
         eigenvalues_imag=eig_imag,
         eigenvalue_type=eigenvalue_type,
+    )
+
+
+def compute_gt_model_data(
+    env,
+    canonical_states: np.ndarray,
+    gamma: float,
+    delta: float,
+    num_eigenvectors: int,
+) -> dict:
+    """
+    Compute the exact ground-truth Laplacian eigenvectors from the environment.
+
+    Builds the analytic transition matrix P by iterating over every canonical
+    state and action, respecting portals (stochastic destinations), soft doors
+    (partially blocked transitions), and normal physics.  Then computes
+    L = (1+δ)I - (1-γ)P·SR_γ and its eigendecomposition — exactly as training
+    does when the GT files are not yet available on disk.
+    """
+    N = len(canonical_states)
+    full_to_canonical = {int(s): i for i, s in enumerate(canonical_states)}
+    # action effects: up=(0,-1), right=(+1,0), down=(0,+1), left=(-1,0)
+    action_effects = [(0, -1), (1, 0), (0, 1), (-1, 0)]
+
+    asym    = env.asymmetric_transitions if env.has_doors    else {}
+    portals = env.portals                if env.has_portals  else {}
+
+    P = np.zeros((N, N), dtype=np.float64)
+    for a, (dx, dy) in enumerate(action_effects):
+        for s_idx in range(N):
+            full_s = int(canonical_states[s_idx])
+            y, x   = divmod(full_s, env.width)
+
+            # 1. Portal (takes priority over doors and physics)
+            if (full_s, a) in portals:
+                dests, probs = portals[(full_s, a)]
+                for dest, prob in zip(dests, probs):
+                    d_idx = full_to_canonical.get(int(dest), s_idx)
+                    P[s_idx, d_idx] += 0.25 * float(prob)
+                continue
+
+            # 2. Door — reduces forward probability; remainder stays in place
+            door_prob = asym.get((full_s, a), 1.0)
+
+            # 3. Normal physics
+            nx, ny = x + dx, y + dy
+            if not (0 <= nx < env.width and 0 <= ny < env.height):
+                dest_idx = s_idx  # boundary → stay
+            else:
+                next_full = ny * env.width + nx
+                dest_idx  = full_to_canonical.get(next_full, s_idx)  # obstacle → stay
+
+            P[s_idx, dest_idx] += 0.25 * door_prob
+            P[s_idx, s_idx]    += 0.25 * (1.0 - door_prob)
+
+    laplacian = compute_laplacian(jnp.array(P), gamma=gamma, delta=delta)
+    eig       = compute_eigendecomposition(laplacian, k=num_eigenvectors, ascending=True)
+    return dict(
+        training_args    = {"gamma": gamma, "delta": delta},
+        canonical_states = canonical_states,
+        left_real        = np.array(eig["left_eigenvectors_real"]),
+        left_imag        = np.array(eig["left_eigenvectors_imag"]),
+        right_real       = np.array(eig["right_eigenvectors_real"]),
+        right_imag       = np.array(eig["right_eigenvectors_imag"]),
+        eigenvalues_real = np.array(eig["eigenvalues_real"]),
+        eigenvalues_imag = np.array(eig["eigenvalues_imag"]),
+        eigenvalue_type  = "laplacian",
     )
 
 
@@ -926,6 +994,33 @@ def main() -> None:
                   f"  ({len(eligible_goals)}/{num_canonical} eligible goals)")
 
     # ------------------------------------------------------------------
+    # 2c. Compute ground-truth eigenvectors from environment (fallback)
+    # ------------------------------------------------------------------
+    # Reached when --use_gt is set but no --model_dir was given (or the model
+    # dir does not contain saved GT files).  Computes the exact Laplacian
+    # eigendecomposition analytically from the env structure.
+    _need_gt_fallback = (
+        args.use_gt
+        and model_data is None
+        and (args.method is None or args.method == "complex")
+    )
+    if _need_gt_fallback:
+        print(f"\n{'='*60}")
+        print("Computing ground-truth eigenvectors from environment ...")
+        print(f"{'='*60}")
+        model_data = compute_gt_model_data(
+            env, canonical_states,
+            gamma=args.gt_gamma, delta=args.gt_delta,
+            num_eigenvectors=args.num_eigenvectors,
+        )
+        evtype = "laplacian"
+        print(f"  Eigenvector source : ground truth (computed from environment)")
+        print(f"  Eigenvalue type    : laplacian")
+        print(f"  Eigenvectors (K)   : {args.num_eigenvectors}")
+        print(f"  gt_gamma           : {args.gt_gamma}")
+        print(f"  gt_delta           : {args.gt_delta}")
+
+    # ------------------------------------------------------------------
     # 3. Compute hitting times (complex representation)
     # ------------------------------------------------------------------
     hitting_times = None
@@ -1089,9 +1184,13 @@ def main() -> None:
         }
         target_key = _method_to_key[args.method]
         if target_key not in conditions:
+            hints = {
+                "allo":    "Did you forget --allo_model_dir?",
+                "complex": "Did you forget --model_dir (or --use_gt)?",
+            }
             print(
                 f"ERROR: Condition '{target_key}' is not available. "
-                "(Did you forget --allo_model_dir for method=allo?)",
+                + hints.get(args.method, ""),
                 file=sys.stderr,
             )
             sys.exit(1)
