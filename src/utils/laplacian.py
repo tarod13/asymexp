@@ -428,7 +428,7 @@ def compute_gt_eigendecomposition(
     # Convert to JAX arrays.
     eigenvalues        = jnp.array(eigenvalues_np)
     right_eigenvectors = jnp.array(right_np)
-    left_eigenvectors  = jnp.array(left_np)
+    left_eigenvectors  = jnp.array(left_np).conj()  # scipy assumes complex conjugate in left eigenvector definition, so we take the conjugate to match our convention
 
     return {
         "eigenvalues":              eigenvalues,
