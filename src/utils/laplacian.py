@@ -1,5 +1,7 @@
 import jax
 import jax.numpy as jnp
+import numpy as np
+from scipy import linalg as scipy_linalg
 from typing import Dict, Optional
 
 
@@ -372,6 +374,72 @@ def compute_eigendecomposition(
         "right_eigenvectors_imag": right_eigenvectors_imag,
         "left_eigenvectors_real": left_eigenvectors_real,
         "left_eigenvectors_imag": left_eigenvectors_imag,
+    }
+
+
+def compute_gt_eigendecomposition(
+    matrix: jnp.ndarray,
+    num_eigenvector_pairs: Optional[int] = None,
+    ascending: bool = True,
+) -> Dict[str, jnp.ndarray]:
+    """
+    Full-rank eigendecomposition using scipy.linalg.eig.
+
+    Computes all N left and right eigenpairs in a single scipy.linalg.eig call,
+    sorts by eigenvalue magnitude, then optionally truncates.
+
+    scipy.linalg.eig(A, left=True, right=True) returns (w, vl, vr) where
+    columns of vl / vr are left / right eigenvectors satisfying
+        vl[:, i].conj() @ A = w[i] * vl[:, i].conj()
+        A @ vr[:, i]        = w[i] * vr[:, i]
+
+    Args:
+        matrix: Square matrix [N, N].
+        num_eigenvector_pairs: Number of eigenpairs to keep after sorting.
+                               None keeps all N.
+        ascending: Sort by |eigenvalue| ascending (True for Laplacians).
+
+    Returns:
+        Dict with the same keys as compute_eigendecomposition:
+            eigenvalues, right_eigenvectors, left_eigenvectors,
+            eigenvalues_real/imag, right_eigenvectors_real/imag,
+            left_eigenvectors_real/imag
+    """
+    matrix_np = np.array(matrix, dtype=np.complex128)
+
+    eigenvalues_np, left_np, right_np = scipy_linalg.eig(
+        matrix_np, left=True, right=True
+    )
+
+    # Sort all three arrays by |eigenvalue|.
+    magnitudes = np.abs(eigenvalues_np)
+    sorted_indices = np.argsort(magnitudes) if ascending else np.argsort(-magnitudes)
+    eigenvalues_np = eigenvalues_np[sorted_indices]
+    right_np = right_np[:, sorted_indices]
+    left_np  = left_np[:, sorted_indices]
+
+    # Truncate to the requested number of pairs.
+    k = num_eigenvector_pairs
+    if k is not None:
+        eigenvalues_np = eigenvalues_np[:k]
+        right_np = right_np[:, :k]
+        left_np  = left_np[:, :k]
+
+    # Convert to JAX arrays.
+    eigenvalues        = jnp.array(eigenvalues_np)
+    right_eigenvectors = jnp.array(right_np)
+    left_eigenvectors  = jnp.array(left_np).conj()  # scipy assumes complex conjugate in left eigenvector definition, so we take the conjugate to match our convention
+
+    return {
+        "eigenvalues":              eigenvalues,
+        "right_eigenvectors":       right_eigenvectors,
+        "left_eigenvectors":        left_eigenvectors,
+        "eigenvalues_real":         jnp.real(eigenvalues),
+        "eigenvalues_imag":         jnp.imag(eigenvalues),
+        "right_eigenvectors_real":  jnp.real(right_eigenvectors),
+        "right_eigenvectors_imag":  jnp.imag(right_eigenvectors),
+        "left_eigenvectors_real":   jnp.real(left_eigenvectors),
+        "left_eigenvectors_imag":   jnp.imag(left_eigenvectors),
     }
 
 
