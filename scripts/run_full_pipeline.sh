@@ -49,6 +49,7 @@ SCRIPTS_DIR="${SLURM_SUBMIT_DIR}/scripts"
 ACCOUNT="rrg-machado"
 BASE_DIR="./results"
 EXP_NAME="parallel_clf_eval"
+EXP_NUMBER=1
 SEED=42
 NUM_EIGENVECTORS=8
 NUM_SEEDS=100
@@ -73,6 +74,7 @@ while [[ $# -gt 0 ]]; do
         --account)            ACCOUNT="$2";            shift 2 ;;
         --base_dir)           BASE_DIR="$2";           shift 2 ;;
         --exp_name)           EXP_NAME="$2";           shift 2 ;;
+        --exp_number)         EXP_NUMBER="$2";         shift 2 ;;
         --seed)               SEED="$2";               shift 2 ;;
         --envs)               ENV_LIST="$2";           shift 2 ;;
         --num_eigenvectors)   NUM_EIGENVECTORS="$2";   shift 2 ;;
@@ -103,7 +105,12 @@ read -ra ENVS <<< "$ENV_LIST"
 NUM_ENVS=${#ENVS[@]}
 MAX_ARRAY_ID=$(( NUM_ENVS - 1 ))
 
-mkdir -p logs "$MANIFEST_DIR"
+mkdir -p logs
+# Wipe manifest on a fresh training run so stale env entries don't accumulate
+if [ "$SKIP_TRAIN" = false ]; then
+    rm -rf "$MANIFEST_DIR"
+fi
+mkdir -p "$MANIFEST_DIR"
 
 echo "============================================================"
 echo "  Full Eigenvector Pipeline"
@@ -126,6 +133,7 @@ if [ "$SKIP_TRAIN" = false ]; then
             --results_dir  "$RESULTS_DIR" \
             --manifest_dir "$MANIFEST_DIR" \
             --exp_name     "$EXP_NAME" \
+            --exp_number   "$EXP_NUMBER" \
             --seed         "$SEED" \
             --envs         "$ENV_LIST")
     echo "[1/3] Training array submitted: job $TRAIN_JID  (tasks 0-$MAX_ARRAY_ID)"
@@ -157,6 +165,7 @@ RS_ARGS=(--account="$ACCOUNT")
 RS_JID=$(sbatch --parsable \
     "${RS_ARGS[@]}" \
     "${SCRIPTS_DIR}/run_reward_shaping_per_env.sh" \
+        --account            "$ACCOUNT" \
         --manifest_dir       "$MANIFEST_DIR" \
         --num_seeds          "$NUM_SEEDS" \
         --num_episodes       "$NUM_EPISODES" \

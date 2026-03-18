@@ -26,6 +26,7 @@
 set -euo pipefail
 
 # ── Arguments ─────────────────────────────────────────────────────────────────
+ACCOUNT="rrg-machado"
 MANIFEST_DIR="./results/eval_manifest"
 NUM_SEEDS=100
 NUM_EPISODES=60000
@@ -43,6 +44,7 @@ NUM_EIGENVECTORS=8
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --account)            ACCOUNT="$2";            shift 2 ;;
         --manifest_dir)       MANIFEST_DIR="$2";       shift 2 ;;
         --num_seeds)          NUM_SEEDS="$2";          shift 2 ;;
         --num_episodes)       NUM_EPISODES="$2";       shift 2 ;;
@@ -76,6 +78,7 @@ fi
 
 for MANIFEST_FILE in "$MANIFEST_DIR"/*.txt; do
     ENV=$(basename "$MANIFEST_FILE" .txt)
+    export ENV
     MODEL_DIR=$(cat "$MANIFEST_FILE")
     OUTPUT_DIR="${MODEL_DIR}/reward_shaping"
 
@@ -85,6 +88,7 @@ for MANIFEST_FILE in "$MANIFEST_DIR"/*.txt; do
     echo "  Output dir : $OUTPUT_DIR"
 
     bash "$SUBMIT_RS" \
+        --account           "$ACCOUNT" \
         --model_dir         "$MODEL_DIR" \
         --output_dir        "$OUTPUT_DIR" \
         --num_seeds         "$NUM_SEEDS" \

@@ -29,6 +29,7 @@ mkdir -p logs
 RESULTS_DIR="./results/parallel_clf_eval"
 MANIFEST_DIR="./results/eval_manifest"
 EXP_NAME="parallel_clf_eval"
+EXP_NUMBER=1
 SEED=42
 ENV_LIST=""
 
@@ -37,6 +38,7 @@ while [[ $# -gt 0 ]]; do
         --results_dir)  RESULTS_DIR="$2"; shift 2 ;;
         --manifest_dir) MANIFEST_DIR="$2"; shift 2 ;;
         --exp_name)     EXP_NAME="$2";    shift 2 ;;
+        --exp_number)   EXP_NUMBER="$2";  shift 2 ;;
         --seed)         SEED="$2";        shift 2 ;;
         --envs)         ENV_LIST="$2";    shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -83,15 +85,15 @@ python train.py clf \
     --learning_rate        0.00001 \
     --ema_learning_rate    0.0003 \
     --exp_name             "$EXP_NAME" \
-    --exp_number           1 \
+    --exp_number           "$EXP_NUMBER" \
     --seed                 "$SEED" \
     --results_dir          "$RESULTS_DIR" \
     --no-plot_during_training \
     --save_model
 
 # ── Find the results directory and write to manifest ──────────────────────────
-# Directory pattern: {results_dir}/{env}/{env}__{exp_name}__0__{seed}__*/
-TRAIN_OUT=$(ls -td "${RESULTS_DIR}/${ENV_FILE}/${ENV_FILE}__${EXP_NAME}__0__${SEED}__"*/ 2>/dev/null | head -1)
+# Directory pattern: {results_dir}/{env}/{env}__{exp_name}__{exp_number}__{seed}__*/
+TRAIN_OUT=$(ls -td "${RESULTS_DIR}/${ENV_FILE}/${ENV_FILE}__${EXP_NAME}__${EXP_NUMBER}__${SEED}__"*/ 2>/dev/null | head -1)
 
 if [ -z "$TRAIN_OUT" ]; then
     echo "ERROR: Could not find results directory for $ENV_NAME" >&2
@@ -100,6 +102,8 @@ fi
 
 # Strip trailing slash for consistency
 TRAIN_OUT="${TRAIN_OUT%/}"
+# Resolve to absolute path so the manifest is portable across jobs
+TRAIN_OUT=$(realpath "$TRAIN_OUT")
 echo "$TRAIN_OUT" > "${MANIFEST_DIR}/${ENV_NAME}.txt"
 
 echo "========================================"

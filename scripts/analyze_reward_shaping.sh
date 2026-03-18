@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=rs_analyze
-#SBATCH --account=aip-machado
+#SBATCH --account=rrg-machado
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
