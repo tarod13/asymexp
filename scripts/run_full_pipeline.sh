@@ -157,6 +157,7 @@ RS_ARGS=(--account="$ACCOUNT")
 RS_JID=$(sbatch --parsable \
     "${RS_ARGS[@]}" \
     "${SCRIPTS_DIR}/run_reward_shaping_per_env.sh" \
+        --account            "$ACCOUNT" \
         --manifest_dir       "$MANIFEST_DIR" \
         --num_seeds          "$NUM_SEEDS" \
         --num_episodes       "$NUM_EPISODES" \

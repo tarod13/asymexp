@@ -43,6 +43,7 @@ else
 fi
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
+ACCOUNT="${ACCOUNT:-rrg-machado}"
 MODEL_DIR=""
 OUTPUT_DIR=""
 NUM_SEEDS=100
@@ -62,6 +63,7 @@ NUM_EIGENVECTORS=8
 # ── Parse arguments ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --account)            ACCOUNT="$2";            shift 2 ;;
         --model_dir)          MODEL_DIR="$2";          shift 2 ;;
         --output_dir)         OUTPUT_DIR="$2";         shift 2 ;;
         --num_seeds)          NUM_SEEDS="$2";          shift 2 ;;
@@ -125,6 +127,7 @@ if command -v sbatch &>/dev/null; then
 
     ARRAY_JOB_ID=$(
         sbatch \
+            --account="$ACCOUNT" \
             --array=0-${MAX_TASK_ID} \
             --export=ALL \
             "${SCRIPT_DIR}/run_reward_shaping_array.sh" \
@@ -134,6 +137,7 @@ if command -v sbatch &>/dev/null; then
 
     ANALYZE_JOB_ID=$(
         sbatch \
+            --account="$ACCOUNT" \
             --dependency=afterok:${ARRAY_JOB_ID} \
             --export=ALL \
             "${SCRIPT_DIR}/analyze_reward_shaping.sh" \
