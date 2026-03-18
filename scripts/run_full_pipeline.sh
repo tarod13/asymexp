@@ -7,8 +7,8 @@
 #   2. eval_parallel_plot.sh   — visualize results
 #   3. run_reward_shaping_per_env.sh — reward-shaping evaluation per env
 #
-# Run from the repository root:
-#   bash scripts/run_full_pipeline.sh [OPTIONS]
+# Usage:
+#   sbatch scripts/run_full_pipeline.sh [OPTIONS]
 #
 # Options:
 #   --account STR             SLURM account       (default: rrg-machado)
@@ -33,7 +33,17 @@
 #   --skip_plot               Skip stage 2
 # =============================================================================
 
+#SBATCH --job-name=pipeline
+#SBATCH --account=rrg-machado
+#SBATCH --time=0:10:00
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=256M
+#SBATCH --output=logs/pipeline.out
+#SBATCH --error=logs/pipeline.err
+
 set -euo pipefail
+
+SCRIPTS_DIR="${SLURM_SUBMIT_DIR}/scripts"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 ACCOUNT="rrg-machado"
@@ -112,7 +122,7 @@ if [ "$SKIP_TRAIN" = false ]; then
     TRAIN_JID=$(sbatch --parsable \
         --account="$ACCOUNT" \
         --array=0-${MAX_ARRAY_ID} \
-        scripts/eval_parallel_train.sh \
+        "${SCRIPTS_DIR}/eval_parallel_train.sh" \
             --results_dir  "$RESULTS_DIR" \
             --manifest_dir "$MANIFEST_DIR" \
             --exp_name     "$EXP_NAME" \
@@ -132,7 +142,7 @@ if [ "$SKIP_PLOT" = false ]; then
 
     PLOT_JID=$(sbatch --parsable \
         "${PLOT_ARGS[@]}" \
-        scripts/eval_parallel_plot.sh \
+        "${SCRIPTS_DIR}/eval_parallel_plot.sh" \
             --manifest_dir "$MANIFEST_DIR" \
             --plots_dir    "$PLOTS_DIR")
     echo "[2/3] Plotting job submitted: job $PLOT_JID$([ -n "$TRAIN_JID" ] && echo "  (after $TRAIN_JID)")"
@@ -146,7 +156,7 @@ RS_ARGS=(--account="$ACCOUNT")
 
 RS_JID=$(sbatch --parsable \
     "${RS_ARGS[@]}" \
-    scripts/run_reward_shaping_per_env.sh \
+    "${SCRIPTS_DIR}/run_reward_shaping_per_env.sh" \
         --manifest_dir       "$MANIFEST_DIR" \
         --num_seeds          "$NUM_SEEDS" \
         --num_episodes       "$NUM_EPISODES" \
