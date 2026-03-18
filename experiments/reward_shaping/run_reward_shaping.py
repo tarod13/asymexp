@@ -109,8 +109,14 @@ def load_model(model_dir: Path, use_gt: bool = False) -> dict:
         ckpt_path = model_dir / "models" / "final_model.pkl"
         with open(ckpt_path, "rb") as f:
             ckpt = pickle.load(f)
-        eig_real = np.array(ckpt["params"]["lambda_real"])
-        eig_imag = np.array(ckpt["params"]["lambda_imag"])
+        p = ckpt["params"]
+        if "lambda_real" in p:
+            eig_real = np.array(p["lambda_real"])
+            eig_imag = np.array(p["lambda_imag"])
+        else:
+            # 'separate' eigenvalue estimation: average x and y estimates
+            eig_real = np.array(0.5 * (p["lambda_x_real"] + p["lambda_y_real"]))
+            eig_imag = np.array(0.5 * (p["lambda_x_imag"] + p["lambda_y_imag"]))
         eigenvalue_type = "kernel"
 
     return dict(
