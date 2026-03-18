@@ -425,12 +425,9 @@ def _plot_eigvec_magnitude_comparison(
 
         gl = make_grid(learned_mag[:, idx])
         gg = make_grid(gt_mag[:, idx])
-        vmax = max(
-            float(np.nanmax(gl)) if not np.all(np.isnan(gl)) else 0.0,
-            float(np.nanmax(gg)) if not np.all(np.isnan(gg)) else 0.0,
-        )
 
         for ax, grid, row_label in ((ax_l, gl, 'Learned'), (ax_g, gg, 'GT')):
+            vmax = float(np.nanmax(grid)) if not np.all(np.isnan(grid)) else 1.0
             im = ax.imshow(
                 grid, cmap=cmap, origin='upper', interpolation='nearest',
                 extent=[-0.5, grid_width - 0.5, grid_height - 0.5, -0.5],
