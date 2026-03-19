@@ -1,19 +1,17 @@
 """
 Aggregate partial Q-learning results produced by distributed single-seed runs
 (via run_reward_shaping.py --method X --seed_idx Y) and generate the combined
-learning-curve figure that looks identical to the one produced by the
-non-distributed pipeline.
+learning-curve figure.
 
 Usage
 -----
     python experiments/reward_shaping/analyze_reward_shaping.py \\
-        --output_dir ./results/file/<run>/reward_shaping \\
-        [--window 100] [--max_steps 500]
+        --output_dir ./results/file/<run>/reward_shaping
 
 The script reads all  output_dir/partial/results_<method>_<seed>.pkl  files,
-concatenates the seed axis for each condition, and calls the same plot_results()
-function used by run_reward_shaping.py.  The combined results are saved to
-output_dir/results.pkl and output_dir/learning_curves.png.
+stacks the seed axis for each condition, and calls plot_results().
+The combined results are saved to output_dir/results.pkl and
+output_dir/learning_curves.png.
 """
 
 import argparse
@@ -38,17 +36,9 @@ def main() -> None:
         help="Directory that contains the 'partial/' sub-folder written by "
              "run_reward_shaping.py --method X --seed_idx Y.",
     )
-    parser.add_argument(
-        "--window", type=int, default=100,
-        help="Smoothing window (episodes) for training curves (default: 100).",
-    )
-    parser.add_argument(
-        "--max_steps", type=int, default=500,
-        help="Max steps per episode shown on the plot y-axis (default: 500).",
-    )
     args = parser.parse_args()
 
-    output_dir = Path(args.output_dir)
+    output_dir  = Path(args.output_dir)
     partial_dir = output_dir / "partial"
 
     if not partial_dir.is_dir():
@@ -63,7 +53,7 @@ def main() -> None:
     print(f"Found {len(partial_files)} partial result file(s) in {partial_dir}")
 
     # ── Load and group by condition name ────────────────────────────────────
-    # by_cond[cond_name][seed_idx] = {steps, reached, eval_sr, eval_episodes}
+    # by_cond[cond_name][seed_idx] = {eval_sr, eval_len_all, eval_len_suc, eval_steps}
     by_cond: dict[str, dict[int, dict]] = {}
     sample_args = None
 
@@ -91,48 +81,19 @@ def main() -> None:
         sorted_idx = sorted(seed_dict.keys())
         print(f"  '{cond_name}': {len(sorted_idx)} seed(s)  [idx {sorted_idx}]")
 
-        # Each entry has shape [1, num_episodes] or [num_chunks, 1].
-        steps_list   = [seed_dict[si]["steps"]    for si in sorted_idx]
-        reached_list = [seed_dict[si]["reached"]  for si in sorted_idx]
-        eval_sr_list = [seed_dict[si]["eval_sr"]  for si in sorted_idx]
-        eval_ep      = seed_dict[sorted_idx[0]]["eval_episodes"]
-
-        # Find the longest eval_episodes array to use as the reference x-axis,
-        # and pad shorter seeds' eval_sr with NaN rows so all have the same length.
-        all_eval_ep = [seed_dict[si]["eval_episodes"] for si in sorted_idx]
-        max_evals   = max(len(ep) for ep in all_eval_ep)
-        eval_ep     = all_eval_ep[np.argmax([len(ep) for ep in all_eval_ep])]
-
-        padded_eval_sr = []
-        for si, arr in zip(sorted_idx, eval_sr_list):
-            n = arr.shape[0]
-            if n < max_evals:
-                print(
-                    f"WARNING: seed_idx={si} for '{cond_name}' has {n} evaluations "
-                    f"vs {max_evals} for others. Padding with NaN.",
-                    file=sys.stderr,
-                )
-                pad = np.full((max_evals - n, arr.shape[1]), np.nan)
-                arr = np.concatenate([arr, pad], axis=0)
-            padded_eval_sr.append(arr)
-
+        # Each partial has shape [num_chunks, 1]; stack along seed axis → [num_chunks, num_seeds]
         results[cond_name] = dict(
-            steps         = np.concatenate(steps_list,    axis=0),  # [num_seeds, num_ep]
-            reached       = np.concatenate(reached_list,  axis=0),  # [num_seeds, num_ep]
-            eval_sr       = np.concatenate(padded_eval_sr, axis=1), # [max_evals, num_seeds]
-            eval_episodes = eval_ep,                                  # [max_evals]
+            eval_sr      = np.concatenate(
+                [seed_dict[si]["eval_sr"]      for si in sorted_idx], axis=1),
+            eval_len_all = np.concatenate(
+                [seed_dict[si]["eval_len_all"] for si in sorted_idx], axis=1),
+            eval_len_suc = np.concatenate(
+                [seed_dict[si]["eval_len_suc"] for si in sorted_idx], axis=1),
+            eval_steps   = seed_dict[sorted_idx[0]]["eval_steps"],
         )
 
     # ── Plot ─────────────────────────────────────────────────────────────────
-    num_episodes = next(iter(results.values()))["steps"].shape[1]
-    window = min(args.window, max(1, num_episodes // 10))
-
-    plot_results(
-        results,
-        output_dir / "learning_curves.png",
-        window    = window,
-        max_steps = args.max_steps,
-    )
+    plot_results(results, output_dir / "learning_curves.png")
 
     # ── Save combined results ─────────────────────────────────────────────────
     out_pkl = output_dir / "results.pkl"

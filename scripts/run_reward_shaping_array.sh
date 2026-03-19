@@ -21,8 +21,8 @@
 # scripts/submit_reward_shaping.sh (or set manually before sbatch):
 #
 #   Required : MODEL_DIR, OUTPUT_DIR, NUM_SEEDS, NUM_METHODS
-#   Q-learning: NUM_EPISODES, MAX_STEPS, SHAPING_COEF, GAMMA_RL, LR,
-#               EPSILON, LOG_INTERVAL, EVAL_SEED, NUM_EVAL_EPISODES
+#   Q-learning: TOTAL_STEPS, MAX_STEPS, SHAPING_COEF, GAMMA_RL, LR,
+#               EPSILON, EVAL_INTERVAL, EVAL_SEED, NUM_EVAL_EPISODES
 #   Optional  : MIN_GOAL_DISTANCE, START_STATE, NUM_EIGENVECTORS
 #
 # Usage
@@ -49,13 +49,13 @@ export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads
 ENV="${ENV:-GridRoom-4-Doors}"
 NUM_SEEDS="${NUM_SEEDS:-100}"
 NUM_METHODS="${NUM_METHODS:-3}"
-NUM_EPISODES="${NUM_EPISODES:-60000}"
+TOTAL_STEPS="${TOTAL_STEPS:-12000000}"
 MAX_STEPS="${MAX_STEPS:-200}"
 SHAPING_COEF="${SHAPING_COEF:-0.1}"
 GAMMA_RL="${GAMMA_RL:-0.99}"
 LR="${LR:-0.1}"
 EPSILON="${EPSILON:-0.5}"
-LOG_INTERVAL="${LOG_INTERVAL:-500}"
+EVAL_INTERVAL="${EVAL_INTERVAL:-500000}"
 EVAL_SEED="${EVAL_SEED:-0}"
 NUM_EVAL_EPISODES="${NUM_EVAL_EPISODES:-30}"
 MIN_GOAL_DISTANCE="${MIN_GOAL_DISTANCE:-8}"
@@ -85,13 +85,13 @@ CMD=(
     --method             "$METHOD"
     --seed_idx           "$seed_idx"
     --num_seeds          "$NUM_SEEDS"
-    --num_episodes       "$NUM_EPISODES"
+    --total_steps        "$TOTAL_STEPS"
     --max_steps          "$MAX_STEPS"
     --shaping_coef       "$SHAPING_COEF"
     --gamma_rl           "$GAMMA_RL"
     --lr                 "$LR"
     --epsilon            "$EPSILON"
-    --log_interval       "$LOG_INTERVAL"
+    --eval_interval      "$EVAL_INTERVAL"
     --eval_seed          "$EVAL_SEED"
     --num_eval_episodes  "$NUM_EVAL_EPISODES"
     --output_dir         "$OUTPUT_DIR"
