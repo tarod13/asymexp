@@ -258,7 +258,7 @@ def run_q_learning(
     canonical_states: np.ndarray,
     goal_per_seed: np.ndarray,              # [num_seeds] int — fixed goal per task
     eval_starts_per_seed: np.ndarray,       # [num_seeds] int — fixed eval start per task
-    num_episodes: int,
+    total_steps: int,
     num_seeds: int = 1,
     max_steps_per_episode: int = 500,
     num_eval_episodes: int = 30,
@@ -270,35 +270,21 @@ def run_q_learning(
     lr: float = 0.1,
     epsilon: float = 0.1,
     seed: int = 0,
-    log_interval_steps: int = 250_000,
+    eval_interval: int = 100_000,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Run tabular ε-greedy Q-learning with one independent Q-table per seed.
 
-    Each seed corresponds to one fixed task (goal).  There is no knowledge
-    transfer across seeds — they are fully independent.
-
-    All seeds are run in parallel via jax.vmap; the step loop within each
-    chunk is a jax.lax.scan call (JIT-compiled, no Python overhead).
-
-    Training
-    --------
-    Each episode keeps the fixed goal for the seed and draws a fresh random
-    start state, so the agent learns to navigate to its goal from anywhere.
-
-    Evaluation
-    ----------
-    After every log_interval_steps environment steps the current greedy
-    policy (epsilon=0) is tested from eval_starts_per_seed toward each
-    seed's goal for num_eval_episodes episodes.  The same starts and goals
-    are used for every condition, giving a fair, reproducible comparison.
+    Each seed has a fixed goal.  Training runs for exactly total_steps
+    environment steps.  Every eval_interval steps the greedy policy is
+    evaluated for num_eval_episodes episodes from the fixed eval start.
 
     Returns
     -------
-    train_steps       : [num_seeds, num_episodes]   int
-    train_reached     : [num_seeds, num_episodes]   bool
-    eval_success_rate : [num_chunks, num_seeds]      float
-    eval_episodes     : [num_chunks]                 int
+    eval_sr      : [num_chunks, num_seeds]  float  — success rate
+    eval_len_all : [num_chunks, num_seeds]  float  — mean episode length (all)
+    eval_len_suc : [num_chunks, num_seeds]  float  — mean episode length (successful only, NaN if none)
+    eval_steps   : [num_chunks]             int    — training step at each checkpoint
     """
     num_states  = len(canonical_states)
     num_actions = 4
@@ -311,34 +297,29 @@ def run_q_learning(
     eval_starts_jax      = jnp.array(eval_starts_per_seed,  dtype=jnp.int32)
     goal_jax             = jnp.array(goal_per_seed,         dtype=jnp.int32)
 
-    # Potential per seed: zeros for baseline (shaping_coef=0 → no effect)
     if potential_per_seed is None:
         potential_jax = jnp.zeros((num_seeds, num_states), jnp.float32)
     else:
-        potential_jax = jnp.array(potential_per_seed, jnp.float32)  # [num_seeds, N]
+        potential_jax = jnp.array(potential_per_seed, jnp.float32)
 
-    # Fixed training start per seed: -1 means random, >=0 means fixed.
     if train_start_per_seed is None:
         train_start_jax = jnp.full((num_seeds,), -1, dtype=jnp.int32)
     else:
         train_start_jax = jnp.array(train_start_per_seed, dtype=jnp.int32)
 
     # Valid-starts lookup table for distance-constrained random resets.
-    # valid_starts_table[g, :num_valid[g]] lists all canonical indices that are
-    # at least min_goal_distance (Manhattan) away from goal g and != g.
-    # Closed over in run_step so JAX never traces through the if-branch at runtime.
     if min_goal_distance > 0:
         coords = np.array(
             [(int(canonical_states[s]) % env.width,
               int(canonical_states[s]) // env.width)
              for s in range(num_states)]
-        )  # [N, 2]
-        taxi = np.abs(coords[:, None, :] - coords[None, :, :]).sum(axis=2)  # [N, N]
+        )
+        taxi = np.abs(coords[:, None, :] - coords[None, :, :]).sum(axis=2)
         valid_starts_lists = []
         for g in range(num_states):
             vs = [s for s in range(num_states)
                   if s != g and taxi[s, g] >= min_goal_distance]
-            if not vs:                        # fallback: any non-goal state
+            if not vs:
                 vs = [s for s in range(num_states) if s != g]
             valid_starts_lists.append(vs)
         max_valid = max(len(v) for v in valid_starts_lists)
@@ -347,13 +328,13 @@ def run_q_learning(
         for g, vs in enumerate(valid_starts_lists):
             table[g, :len(vs)] = vs
             counts[g] = len(vs)
-        valid_table_jax  = jnp.array(table)   # [N, max_valid]
-        valid_counts_jax = jnp.array(counts)  # [N]
+        valid_table_jax  = jnp.array(table)
+        valid_counts_jax = jnp.array(counts)
     else:
         valid_table_jax  = None
         valid_counts_jax = None
 
-    # ── Training ──────────────────────────────────────────────────────
+    # ── Training chunk ────────────────────────────────────────────────
     def run_chunk(carry, chunk_key):
         def run_step(step_carry, step_key):
             Q, s, done, step_in_ep, goal, potential, fixed_start = step_carry
@@ -361,11 +342,8 @@ def run_q_learning(
             reset_key, eps_key, rand_key, env_key, tie_key = jax.random.split(step_key, 5)
             at_reset = step_in_ep == 0
 
-            # At episode start: random or fixed start, fixed goal for this seed.
             if valid_table_jax is not None:
-                # Sample uniformly from pre-filtered starts (distance constraint).
-                k = jax.random.randint(
-                    reset_key, (), 0, valid_counts_jax[goal])
+                k = jax.random.randint(reset_key, (), 0, valid_counts_jax[goal])
                 new_start_random = valid_table_jax[goal, k]
             else:
                 new_start_raw = jax.random.randint(reset_key, (), 0, num_states)
@@ -374,20 +352,17 @@ def run_q_learning(
                     (goal + 1) % num_states,
                     new_start_raw,
                 )
-            # Use fixed_start when >= 0; otherwise use the (possibly constrained) random.
             new_start = jnp.where(fixed_start >= 0, fixed_start, new_start_random)
             s    = jnp.where(at_reset, new_start, s)
             done = jnp.where(at_reset, jnp.array(False), done)
 
-            # ε-greedy action with random tie-breaking
             use_random = jax.random.uniform(eps_key) < epsilon
             q_s    = Q[s]
             is_max = (q_s == q_s.max()).astype(jnp.float32)
-            greedy_a   = jax.random.choice(tie_key, num_actions, p=is_max / is_max.sum())
-            random_a   = jax.random.randint(rand_key, (), 0, num_actions)
-            a          = jnp.where(use_random, random_a, greedy_a)
+            greedy_a = jax.random.choice(tie_key, num_actions, p=is_max / is_max.sum())
+            random_a = jax.random.randint(rand_key, (), 0, num_actions)
+            a        = jnp.where(use_random, random_a, greedy_a)
 
-            # Environment step
             full_idx  = canonical_states_jax[s]
             env_state = GridWorldState(
                 position=jnp.stack(
@@ -402,39 +377,30 @@ def run_q_learning(
             s_prime   = jnp.where(can_idx >= 0, can_idx, s)
 
             reached = s_prime == goal
-            r       = jnp.where(reached, 1.0, 0.0)
-            r       = r + shaping_coef * (
-                gamma * potential[s_prime] - potential[s]
-            )
+            r = jnp.where(reached, 1.0, 0.0)
+            r = r + shaping_coef * (gamma * potential[s_prime] - potential[s])
 
-            # Q update — always learn, including on the terminal transition
             target = jnp.where(reached, r, r + gamma * Q[s_prime].max())
             Q = Q.at[s, a].add(lr * (target - Q[s, a]))
 
             new_done        = done | reached
             new_s           = jnp.where(new_done, s, s_prime)
-            # Reset episode counter immediately on done so the next step
-            # triggers at_reset and starts a fresh episode.
             next_step_in_ep = jnp.where(
                 new_done | (step_in_ep == max_steps_per_episode - 1),
                 jnp.zeros((), jnp.int32),
                 step_in_ep + 1,
             )
-            episode_end = new_done | (step_in_ep == max_steps_per_episode - 1)
-            return (Q, new_s, new_done, next_step_in_ep, goal, potential, fixed_start), (new_done, episode_end)
+            return (Q, new_s, new_done, next_step_in_ep, goal, potential, fixed_start), None
 
-        step_keys = jax.random.split(chunk_key, chunk_steps)
-        new_carry, (reached_flat, ep_end_flat) = jax.lax.scan(run_step, carry, step_keys)
-        # Return flat per-step flags; the main loop converts them to per-episode
-        # stats in numpy.  Episodes now have variable lengths (they restart
-        # immediately on done), so a fixed reshape is no longer valid.
-        return new_carry, (reached_flat, ep_end_flat)
+        step_keys = jax.random.split(chunk_key, eval_interval)
+        new_carry, _ = jax.lax.scan(run_step, carry, step_keys)
+        return new_carry
 
     vmapped_chunk = jax.jit(jax.vmap(run_chunk))
 
     # ── Evaluation ────────────────────────────────────────────────────
     def eval_one_seed(Q, eval_start, goal):
-        """Greedy rollout for num_eval_episodes episodes. Q: [N, A]."""
+        """Greedy rollout; returns (done_flat, ep_end_flat) over all eval steps."""
         def eval_step(carry, step_key):
             s, done, step_in_ep = carry
             at_reset = step_in_ep == 0
@@ -462,7 +428,6 @@ def run_q_learning(
             reached = s_prime == goal
             new_done = done | reached
             new_s    = jnp.where(new_done, s, s_prime)
-            # Restart immediately on done so the next step triggers at_reset.
             next_step_in_ep = jnp.where(
                 new_done | (step_in_ep == max_steps_per_episode - 1),
                 jnp.zeros((), jnp.int32),
@@ -471,8 +436,8 @@ def run_q_learning(
             episode_end = new_done | (step_in_ep == max_steps_per_episode - 1)
             return (new_s, new_done, next_step_in_ep), (new_done, episode_end)
 
-        eval_steps = num_eval_episodes * max_steps_per_episode
-        eval_keys  = jax.random.split(jax.random.PRNGKey(0), eval_steps)
+        n_eval_steps = num_eval_episodes * max_steps_per_episode
+        eval_keys = jax.random.split(jax.random.PRNGKey(0), n_eval_steps)
         _, (done_flat, ep_end_flat) = jax.lax.scan(
             eval_step,
             (eval_start, jnp.array(False), jnp.zeros((), jnp.int32)),
@@ -480,12 +445,10 @@ def run_q_learning(
         )
         return done_flat, ep_end_flat
 
-    # vmap over seeds; each seed has its own Q-table, eval start, and goal
     vmapped_eval = jax.jit(jax.vmap(eval_one_seed))
 
     # ── Main loop ─────────────────────────────────────────────────────
-    chunk_steps = log_interval_steps
-    num_chunks  = max(1, (num_episodes * max_steps_per_episode) // chunk_steps)
+    num_chunks = max(1, total_steps // eval_interval)
 
     seed_keys       = jax.random.split(jax.random.PRNGKey(seed), num_seeds)
     seed_chunk_keys = jax.vmap(lambda k: jax.random.split(k, num_chunks))(seed_keys)
@@ -495,123 +458,69 @@ def run_q_learning(
         jnp.zeros((num_seeds,), jnp.int32),   # s
         jnp.zeros((num_seeds,), jnp.bool_),   # done
         jnp.zeros((num_seeds,), jnp.int32),   # step_in_ep
-        goal_jax,                              # goal (fixed per seed)
-        potential_jax,                         # potential (fixed per seed)
-        train_start_jax,                       # fixed train start (-1 = random)
+        goal_jax,
+        potential_jax,
+        train_start_jax,
     )
 
-    # Per-seed accumulators: lists of 1-D arrays, one entry per chunk.
-    seed_steps_acc   = [[] for _ in range(num_seeds)]
-    seed_reached_acc = [[] for _ in range(num_seeds)]
-    all_eval_sr, eval_ep_indices = [], []
-    cumulative_eps = np.zeros(num_seeds, dtype=np.int64)
+    all_eval_sr      = []
+    all_eval_len_all = []
+    all_eval_len_suc = []
+    all_eval_steps   = []
 
-    def _fmt(s):
-        m, s = divmod(int(s), 60)
+    def _fmt(sec):
+        m, s = divmod(int(sec), 60)
         return f"{m}m{s:02d}s" if m else f"{s}s"
 
-    ep_width = len(str(num_episodes))
     t0 = time.monotonic()
     for chunk_i in range(num_chunks):
-        carry, (reached_flat, ep_end_flat) = vmapped_chunk(carry, seed_chunk_keys[:, chunk_i])
-        reached_np = np.array(reached_flat)  # [num_seeds, chunk_steps]
-        ep_end_np  = np.array(ep_end_flat)   # [num_seeds, chunk_steps]
+        carry = vmapped_chunk(carry, seed_chunk_keys[:, chunk_i])
 
-        # Convert flat per-step flags to per-episode stats for each seed.
-        # Cap each seed at num_episodes to keep the step budget from inflating
-        # the episode count when episodes terminate early.
-        chunk_reached_rates = np.zeros(num_seeds, dtype=float)
-        chunk_active        = np.zeros(num_seeds, dtype=bool)
-        chunk_suc_steps = []
-        chunk_n_reached = 0
+        done_np, ep_end_np = (
+            np.array(x) for x in vmapped_eval(carry[0], eval_starts_jax, goal_jax)
+        )  # each [num_seeds, n_eval_steps]
+
+        eval_sr_np      = np.zeros(num_seeds)
+        eval_len_all_np = np.zeros(num_seeds)
+        eval_len_suc_np = np.full(num_seeds, np.nan)
         for si in range(num_seeds):
-            remaining = num_episodes - cumulative_eps[si]
-            if remaining <= 0:
-                continue
-            ep_ends = np.where(ep_end_np[si])[0]
+            ep_ends   = np.where(ep_end_np[si])[0]
             if len(ep_ends) == 0:
                 continue
             ep_starts = np.concatenate([[0], ep_ends[:-1] + 1])
-            steps_s   = (ep_ends - ep_starts + 1).astype(np.int32)
-            reached_s = reached_np[si, ep_ends]
-            # Discard episodes beyond the budget for this seed.
-            n_add     = min(len(ep_ends), remaining)
-            steps_s   = steps_s[:n_add]
-            reached_s = reached_s[:n_add]
-            seed_steps_acc[si].append(steps_s)
-            seed_reached_acc[si].append(reached_s)
-            cumulative_eps[si] += n_add
-            chunk_reached_rates[si] = reached_s.mean()
-            chunk_active[si]        = True
-            chunk_n_reached += int(reached_s.sum())
-            chunk_suc_steps.extend(steps_s[reached_s.astype(bool)])
-        train_avg_steps = np.mean(chunk_suc_steps) if chunk_suc_steps else float("nan")
-
-        done_all_np, ep_end_all_np = (
-            np.array(x) for x in vmapped_eval(carry[0], eval_starts_jax, goal_jax)
-        )  # each [num_seeds, eval_steps]
-        eval_sr_np     = np.zeros(num_seeds)
-        eval_steps_np  = np.full(num_seeds, np.nan)
-        for si in range(num_seeds):
-            ep_ends_e = np.where(ep_end_all_np[si])[0]
-            if len(ep_ends_e) == 0:
-                continue
-            ep_starts_e = np.concatenate([[0], ep_ends_e[:-1] + 1])
-            lengths_e   = ep_ends_e - ep_starts_e + 1
-            reached_e   = done_all_np[si, ep_ends_e]
-            n = min(len(ep_ends_e), num_eval_episodes)
-            reached_e, lengths_e = reached_e[:n], lengths_e[:n]
-            eval_sr_np[si]    = reached_e.mean()
-            suc_len = lengths_e[reached_e.astype(bool)]
+            lengths   = (ep_ends - ep_starts + 1).astype(float)
+            reached   = done_np[si, ep_ends].astype(bool)
+            n = min(len(ep_ends), num_eval_episodes)
+            lengths, reached = lengths[:n], reached[:n]
+            eval_sr_np[si]      = reached.mean()
+            eval_len_all_np[si] = lengths.mean()
+            suc_len = lengths[reached]
             if len(suc_len):
-                eval_steps_np[si] = suc_len.mean()
-        all_eval_sr.append(eval_sr_np)
-        eval_ep_indices.append(int(cumulative_eps.mean()))
+                eval_len_suc_np[si] = suc_len.mean()
 
-        avg_q   = float(np.array(carry[0]).mean())
+        all_eval_sr.append(eval_sr_np)
+        all_eval_len_all.append(eval_len_all_np)
+        all_eval_len_suc.append(eval_len_suc_np)
+        step_count = (chunk_i + 1) * eval_interval
+        all_eval_steps.append(step_count)
+
         elapsed   = time.monotonic() - t0
         avg_chunk = elapsed / (chunk_i + 1)
         eta       = avg_chunk * (num_chunks - chunk_i - 1)
-        ep_disp   = int(cumulative_eps.mean())
-        train_steps_disp = f"{train_avg_steps:.0f}" if not np.isnan(train_avg_steps) else "—"
-        eval_steps_disp  = (f"{np.nanmean(eval_steps_np):.0f}"
-                            if not np.all(np.isnan(eval_steps_np)) else "—")
-        print(f"    ep ~{ep_disp:{ep_width}d}/{num_episodes}:"
-              f"  train_sr={chunk_reached_rates[chunk_active].mean():.2f}"
-              f"  train_seeds={chunk_active.sum()}/{num_seeds}"
-              f"  train_n={chunk_n_reached}"
-              f"  train_steps_goal={train_steps_disp}"
+        suc_disp  = (f"{np.nanmean(eval_len_suc_np):.0f}"
+                     if not np.all(np.isnan(eval_len_suc_np)) else "—")
+        print(f"    step {step_count}/{total_steps}:"
               f"  eval_sr={eval_sr_np.mean():.2f}"
-              f"  eval_steps_goal={eval_steps_disp}"
-              f"  avg_Q={avg_q:.4f}"
+              f"  eval_len_all={eval_len_all_np.mean():.0f}"
+              f"  eval_len_suc={suc_disp}"
               f"  elapsed {_fmt(elapsed)}  eta {_fmt(eta)}"
               f"  ({avg_chunk:.1f}s/chunk)")
 
-        if cumulative_eps.min() >= num_episodes:
-            break
-
-    # Concatenate per-seed episode lists and pad seeds to equal length.
-    all_steps_final   = [
-        np.concatenate(seed_steps_acc[si])   if seed_steps_acc[si]   else np.zeros(0, dtype=np.int32)
-        for si in range(num_seeds)
-    ]
-    all_reached_final = [
-        np.concatenate(seed_reached_acc[si]) if seed_reached_acc[si] else np.zeros(0, dtype=bool)
-        for si in range(num_seeds)
-    ]
-    max_eps = max((len(s) for s in all_steps_final), default=0)
-    train_steps   = np.full((num_seeds, max_eps), max_steps_per_episode, dtype=np.int32)
-    train_reached = np.zeros((num_seeds, max_eps), dtype=bool)
-    for si in range(num_seeds):
-        n = len(all_steps_final[si])
-        train_steps[si, :n]   = all_steps_final[si]
-        train_reached[si, :n] = all_reached_final[si]
-
     return (
-        train_steps,                                  # [num_seeds, total_episodes]
-        train_reached,                                # [num_seeds, total_episodes]
-        np.stack(all_eval_sr,       axis=0),          # [num_chunks, num_seeds]
-        np.array(eval_ep_indices,   dtype=np.int32),  # [num_chunks]
+        np.stack(all_eval_sr,      axis=0),          # [num_chunks, num_seeds]
+        np.stack(all_eval_len_all, axis=0),          # [num_chunks, num_seeds]
+        np.stack(all_eval_len_suc, axis=0),          # [num_chunks, num_seeds]
+        np.array(all_eval_steps,   dtype=np.int32),  # [num_chunks]
     )
 
 
@@ -619,77 +528,54 @@ def run_q_learning(
 # Plotting
 # ===========================================================================
 
-def _smooth(x: np.ndarray, window: int) -> np.ndarray:
-    """Causal moving average with edge padding."""
-    if window <= 1 or len(x) < window:
-        return x.astype(float)
-    kernel = np.ones(window) / window
-    x_padded = np.pad(x.astype(float), (window - 1, 0), mode="edge")
-    return np.convolve(x_padded, kernel, mode="valid")
-
-
 def plot_results(
     results: dict,
     output_path: Path,
-    window: int = 100,
-    max_steps: int = 500,
 ) -> None:
     """
-    Save a three-panel figure:
-      Left   – training steps per episode (lower = better)
-      Centre – training success rate (higher = better)
-      Right  – evaluation success rate on fixed (start, goal) pairs (higher = better)
+    Save a three-panel figure (x-axis: training steps):
+      Left   – evaluation success rate (↑ better)
+      Centre – mean episode length, all episodes (↓ better)
+      Right  – mean episode length, successful episodes only (↓ better)
+    Each panel shows mean ± std across seeds.
     """
     fig, axes = plt.subplots(1, 3, figsize=(18, 4.5))
     colours = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
     for idx, (label, data) in enumerate(results.items()):
-        c = colours[idx % len(colours)]
-        steps_arr   = data["steps"].astype(float)    # [seeds, episodes]
-        reached_arr = data["reached"].astype(float)  # [seeds, episodes]
-        eval_sr     = data["eval_sr"]                # [chunks, seeds]
-        eval_ep     = data["eval_episodes"]          # [chunks]
+        c            = colours[idx % len(colours)]
+        eval_sr      = data["eval_sr"]       # [chunks, seeds]
+        eval_len_all = data["eval_len_all"]  # [chunks, seeds]
+        eval_len_suc = data["eval_len_suc"]  # [chunks, seeds]
+        eval_steps   = data["eval_steps"]    # [chunks]
 
-        n_ep = steps_arr.shape[1]
-        x    = np.arange(n_ep)
-
-        for arr, ax, ylabel in [
-            (steps_arr,   axes[0], f"Steps per episode (max {max_steps})"),
-            (reached_arr, axes[1], "Success rate"),
+        for metric, ax in [
+            (eval_sr,      axes[0]),
+            (eval_len_all, axes[1]),
+            (eval_len_suc, axes[2]),
         ]:
-            mean  = _smooth(arr.mean(axis=0), window)
-            std_s = _smooth(arr.std(axis=0),  window)
-            ax.plot(x, mean, label=label, color=c, linewidth=1.5)
-            ax.fill_between(x, mean - std_s, mean + std_s, color=c, alpha=0.15)
-            ax.set_xlabel("Training episode", fontsize=10)
-            ax.set_ylabel(ylabel, fontsize=10)
-            ax.grid(True, linewidth=0.4, alpha=0.5)
+            mean = np.nanmean(metric, axis=1)
+            std  = np.nanstd(metric,  axis=1)
+            ax.plot(eval_steps, mean, label=label, color=c,
+                    linewidth=1.5, marker="o", markersize=3)
+            ax.fill_between(eval_steps, mean - std, mean + std, color=c, alpha=0.15)
 
-        # Eval: mean and std over seeds (NaN-safe for seeds with fewer evaluations)
-        eval_mean = np.nanmean(eval_sr, axis=1)   # [chunks]
-        eval_std  = np.nanstd(eval_sr,  axis=1)   # [chunks]
-        axes[2].plot(eval_ep, eval_mean, label=label, color=c,
-                     linewidth=1.5, marker="o", markersize=4)
-        axes[2].fill_between(eval_ep, eval_mean - eval_std, eval_mean + eval_std,
-                             color=c, alpha=0.15)
+    axes[0].set_title("Eval: success rate  (↑ better)", fontsize=11)
+    axes[0].set_ylabel("Success rate", fontsize=10)
+    axes[0].set_ylim(-0.05, 1.10)
 
-    axes[0].set_title("Training: steps per episode  (↓ better)", fontsize=11)
-    axes[1].set_title("Training: success rate  (↑ better)", fontsize=11)
-    axes[2].set_title("Evaluation: success rate on fixed pairs  (↑ better)", fontsize=11)
-    axes[1].set_ylim(-0.05, 1.10)
-    axes[2].set_ylim(-0.05, 1.10)
-    axes[2].set_xlabel("Training episode", fontsize=10)
-    axes[2].set_ylabel("Success rate", fontsize=10)
-    axes[2].grid(True, linewidth=0.4, alpha=0.5)
+    axes[1].set_title("Eval: avg episode length – all  (↓ better)", fontsize=11)
+    axes[1].set_ylabel("Steps", fontsize=10)
+
+    axes[2].set_title("Eval: avg episode length – successful only  (↓ better)", fontsize=11)
+    axes[2].set_ylabel("Steps", fontsize=10)
 
     for ax in axes:
+        ax.set_xlabel("Training steps", fontsize=10)
+        ax.grid(True, linewidth=0.4, alpha=0.5)
         ax.legend(fontsize=9, framealpha=0.8)
 
-    fig.suptitle(
-        f"Reward shaping with Laplacian hitting times\n"
-        f"(training smoothing window = {window} episodes)",
-        fontsize=12,
-    )
+    fig.suptitle("Reward shaping with Laplacian hitting times", fontsize=12)
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
@@ -766,8 +652,8 @@ def main() -> None:
         help="β: weight for the potential-based shaping bonus (default: 0.1).",
     )
     parser.add_argument(
-        "--num_episodes", type=int, default=3000,
-        help="Number of Q-learning episodes per seed (default: 3000).",
+        "--total_steps", type=int, default=1_500_000,
+        help="Total environment steps per seed (default: 1500000).",
     )
     parser.add_argument(
         "--max_steps", type=int, default=500,
@@ -790,8 +676,8 @@ def main() -> None:
         help="ε-greedy exploration rate (default: 0.1).",
     )
     parser.add_argument(
-        "--log_interval", type=int, default=250_000,
-        help="Print progress and run eval every this many environment steps (default: 250000).",
+        "--eval_interval", type=int, default=100_000,
+        help="Run evaluation every this many environment steps (default: 100000).",
     )
     parser.add_argument(
         "--eval_seed", type=int, default=0,
@@ -1207,20 +1093,19 @@ def main() -> None:
         conditions = {target_key: conditions[target_key]}
 
     results = {}
-    win = min(200, args.num_episodes)
     for cond_name, cond_kwargs in conditions.items():
         print(f"\n{'='*60}")
         print(f"Q-learning: {cond_name}")
         print(f"{'='*60}")
 
-        steps, reached, eval_sr, eval_ep = run_q_learning(
+        eval_sr, eval_len_all, eval_len_suc, eval_steps = run_q_learning(
             env                  = env,
             canonical_states     = canonical_states,
             goal_per_seed        = goal_per_seed,
             eval_starts_per_seed = eval_starts_per_seed,
             train_start_per_seed = train_start_per_seed,
             min_goal_distance    = args.min_goal_distance,
-            num_episodes         = args.num_episodes,
+            total_steps          = args.total_steps,
             num_seeds            = num_q_seeds,
             max_steps_per_episode= args.max_steps,
             num_eval_episodes    = args.num_eval_episodes,
@@ -1228,21 +1113,24 @@ def main() -> None:
             lr                   = args.lr,
             epsilon              = args.epsilon,
             seed                 = args.seed_idx if single_seed_mode else 0,
-            log_interval_steps   = args.log_interval,
+            eval_interval        = args.eval_interval,
             **cond_kwargs,
         )
 
         for seed_i in range(num_q_seeds):
-            final_train_sr = reached[seed_i, -win:].mean()
-            final_eval_sr  = float(eval_sr[-1, seed_i])
-            print(f"  seed {seed_i}:  train_sr={final_train_sr:.2f}"
-                  f"  eval_sr={final_eval_sr:.2f}  (last {win} train eps)")
+            final_sr      = float(eval_sr[-1, seed_i])
+            final_len_all = float(eval_len_all[-1, seed_i])
+            final_len_suc = eval_len_suc[-1, seed_i]
+            suc_disp = f"{final_len_suc:.1f}" if not np.isnan(final_len_suc) else "—"
+            print(f"  seed {seed_i}:  eval_sr={final_sr:.2f}"
+                  f"  eval_len_all={final_len_all:.0f}"
+                  f"  eval_len_suc={suc_disp}")
 
         results[cond_name] = dict(
-            steps         = steps,    # [num_q_seeds, num_episodes]
-            reached       = reached,
-            eval_sr       = eval_sr,  # [num_chunks, num_q_seeds]
-            eval_episodes = eval_ep,  # [num_chunks]
+            eval_sr      = eval_sr,       # [num_chunks, num_q_seeds]
+            eval_len_all = eval_len_all,  # [num_chunks, num_q_seeds]
+            eval_len_suc = eval_len_suc,  # [num_chunks, num_q_seeds]
+            eval_steps   = eval_steps,    # [num_chunks]
         )
 
     # ------------------------------------------------------------------
@@ -1290,12 +1178,7 @@ def main() -> None:
         )
     print(f"  results.pkl saved  → {output_dir / 'results.pkl'}")
 
-    plot_results(
-        results,
-        output_dir / "learning_curves.png",
-        window   = min(100, args.num_episodes // 10),
-        max_steps= args.max_steps,
-    )
+    plot_results(results, output_dir / "learning_curves.png")
 
     print(f"\nDone.  All outputs written to {output_dir}")
 
