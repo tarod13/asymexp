@@ -837,10 +837,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--method", type=str, default=None,
-        choices=["baseline", "complex", "allo"],
+        choices=["baseline", "complex", "allo", "gt"],
         help="Single-method mode for distributed execution: which condition to run. "
              "Must be paired with --seed_idx.  The script saves a partial result file "
-             "and skips the combined plot; use analyze_reward_shaping.py afterwards.",
+             "and skips the combined plot; use analyze_reward_shaping.py afterwards. "
+             "'gt' uses the exact ground-truth Laplacian eigenvectors (loaded from "
+             "training artifacts if --model_dir is given, else computed from the env).",
     )
     parser.add_argument(
         "--seed_idx", type=int, default=None,
@@ -849,8 +851,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # --method gt implies --use_gt
+    if args.method == "gt":
+        args.use_gt = True
+
     if args.use_gt and args.num_eigenvectors is None:
-        parser.error("--use_gt requires --num_eigenvectors.")
+        parser.error("--use_gt / --method gt requires --num_eigenvectors.")
 
     single_seed_mode = args.seed_idx is not None
     if single_seed_mode and args.method is None:
@@ -876,7 +882,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # In single-seed mode skip eigenvectors when not needed (saves memory).
     _load_complex = (model_dir is not None) and (
-        args.method is None or args.method == "complex"
+        args.method is None or args.method in ("complex", "gt")
     )
     if _load_complex:
         print(f"\n{'='*60}")
@@ -1002,7 +1008,7 @@ def main() -> None:
     _need_gt_fallback = (
         args.use_gt
         and model_data is None
-        and (args.method is None or args.method == "complex")
+        and (args.method is None or args.method in ("complex", "gt"))
     )
     if _need_gt_fallback:
         print(f"\n{'='*60}")
@@ -1167,7 +1173,9 @@ def main() -> None:
         "baseline": dict(potential_per_seed=None, shaping_coef=0.0),
     }
     if complex_potential_per_seed is not None:
-        conditions[f"shaped β={args.shaping_coef} (complex)"] = dict(
+        gt_label = args.use_gt and args.method == "gt"
+        cond_label = f"shaped β={args.shaping_coef} ({'gt' if gt_label else 'complex'})"
+        conditions[cond_label] = dict(
             potential_per_seed=complex_potential_per_seed, shaping_coef=args.shaping_coef
         )
     if allo_potential_per_seed is not None:
@@ -1180,13 +1188,15 @@ def main() -> None:
         _method_to_key = {
             "baseline": "baseline",
             "complex":  f"shaped β={args.shaping_coef} (complex)",
+            "gt":       f"shaped β={args.shaping_coef} (gt)",
             "allo":     f"shaped β={args.shaping_coef} (allo)",
         }
         target_key = _method_to_key[args.method]
         if target_key not in conditions:
             hints = {
                 "allo":    "Did you forget --allo_model_dir?",
-                "complex": "Did you forget --model_dir (or --use_gt)?",
+                "complex": "Did you forget --model_dir?",
+                "gt":      "Did you forget --num_eigenvectors?",
             }
             print(
                 f"ERROR: Condition '{target_key}' is not available. "

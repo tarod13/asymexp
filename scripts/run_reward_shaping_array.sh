@@ -79,15 +79,10 @@ echo "  Model dir : ${MODEL_DIR:-<unset>}"
 echo "  Output dir: ${OUTPUT_DIR:-<unset>}"
 echo "========================================"
 
-# The Python script --method flag accepts "baseline" and "complex" only.
-# The "gt" condition reuses --method complex combined with --use_gt.
-PYTHON_METHOD="$METHOD"
-if [ "$METHOD" = "gt" ]; then PYTHON_METHOD="complex"; fi
-
 CMD=(
     python experiments/reward_shaping/run_reward_shaping.py
     --env                "$ENV"
-    --method             "$PYTHON_METHOD"
+    --method             "$METHOD"
     --seed_idx           "$seed_idx"
     --num_seeds          "$NUM_SEEDS"
     --num_episodes       "$NUM_EPISODES"
@@ -107,9 +102,13 @@ if [ "$METHOD" = "complex" ] && [ -n "${MODEL_DIR:-}" ]; then
     CMD+=(--model_dir "$MODEL_DIR")
 fi
 
-# GT condition: compute hitting times from ground-truth Laplacian eigenvectors.
+# GT condition: load GT eigenvectors from model dir if available, else compute
+# from the environment.  --method gt implies --use_gt inside the Python script.
 if [ "$METHOD" = "gt" ]; then
-    CMD+=(--use_gt --num_eigenvectors "$NUM_EIGENVECTORS")
+    CMD+=(--num_eigenvectors "$NUM_EIGENVECTORS")
+    if [ -n "${MODEL_DIR:-}" ]; then
+        CMD+=(--model_dir "$MODEL_DIR")
+    fi
 fi
 
 if [ "${MIN_GOAL_DISTANCE:-0}" -gt 0 ]; then
