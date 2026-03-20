@@ -18,19 +18,20 @@
 #   --envs "E1 E2 ..."        Environments        (default: all 6)
 #   --num_eigenvectors N                          (default: 8)
 #   --num_seeds N             Q-learning seeds    (default: 100)
-#   --num_episodes N          Q-learning episodes (default: 60000)
-#   --max_steps N                                 (default: 200)
+#   --total_steps N           Q-learning steps    (default: 12000000)
+#   --max_steps N             Max steps/episode   (default: 200)
 #   --shaping_coef F                              (default: 0.1)
 #   --gamma_rl F                                  (default: 0.99)
 #   --lr F                                        (default: 0.1)
 #   --epsilon F                                   (default: 0.5)
-#   --log_interval N                              (default: 500)
+#   --eval_interval N                             (default: 500000)
 #   --eval_seed N                                 (default: 0)
 #   --num_eval_episodes N                         (default: 30)
 #   --min_goal_distance N                         (default: 8)
 #   --start_state "R,C"                           (default: "1,1")
 #   --skip_train              Skip stage 1 (reuse existing manifests)
 #   --skip_plot               Skip stage 2
+#   --skip_qlearning          Skip stage 3 array job; run analysis only
 # =============================================================================
 
 #SBATCH --job-name=pipeline
@@ -53,19 +54,20 @@ EXP_NUMBER=1
 SEED=42
 NUM_EIGENVECTORS=8
 NUM_SEEDS=100
-NUM_EPISODES=60000
+TOTAL_STEPS=12000000
 MAX_STEPS=200
 SHAPING_COEF=0.1
 GAMMA_RL=0.99
 LR=0.1
 EPSILON=0.5
-LOG_INTERVAL=500
+EVAL_INTERVAL=500000
 EVAL_SEED=0
 NUM_EVAL_EPISODES=30
 MIN_GOAL_DISTANCE=8
 START_STATE="1,1"
 SKIP_TRAIN=false
 SKIP_PLOT=false
+SKIP_QLEARNING=false
 ENV_LIST="GridRoom-4 GridRoom-4-Doors GridRoom-1 GridRoom-1-Portals GridMaze-OGBench GridMaze-OGBench-Portals"
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
@@ -79,19 +81,20 @@ while [[ $# -gt 0 ]]; do
         --envs)               ENV_LIST="$2";           shift 2 ;;
         --num_eigenvectors)   NUM_EIGENVECTORS="$2";   shift 2 ;;
         --num_seeds)          NUM_SEEDS="$2";          shift 2 ;;
-        --num_episodes)       NUM_EPISODES="$2";       shift 2 ;;
+        --total_steps)        TOTAL_STEPS="$2";        shift 2 ;;
         --max_steps)          MAX_STEPS="$2";          shift 2 ;;
         --shaping_coef)       SHAPING_COEF="$2";       shift 2 ;;
         --gamma_rl)           GAMMA_RL="$2";           shift 2 ;;
         --lr)                 LR="$2";                 shift 2 ;;
         --epsilon)            EPSILON="$2";            shift 2 ;;
-        --log_interval)       LOG_INTERVAL="$2";       shift 2 ;;
+        --eval_interval)      EVAL_INTERVAL="$2";      shift 2 ;;
         --eval_seed)          EVAL_SEED="$2";          shift 2 ;;
         --num_eval_episodes)  NUM_EVAL_EPISODES="$2";  shift 2 ;;
         --min_goal_distance)  MIN_GOAL_DISTANCE="$2";  shift 2 ;;
         --start_state)        START_STATE="$2";        shift 2 ;;
         --skip_train)         SKIP_TRAIN=true;         shift ;;
         --skip_plot)          SKIP_PLOT=true;          shift ;;
+        --skip_qlearning)     SKIP_QLEARNING=true;     shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -168,18 +171,19 @@ RS_JID=$(sbatch --parsable \
         --account            "$ACCOUNT" \
         --manifest_dir       "$MANIFEST_DIR" \
         --num_seeds          "$NUM_SEEDS" \
-        --num_episodes       "$NUM_EPISODES" \
+        --total_steps        "$TOTAL_STEPS" \
         --max_steps          "$MAX_STEPS" \
         --shaping_coef       "$SHAPING_COEF" \
         --gamma_rl           "$GAMMA_RL" \
         --lr                 "$LR" \
         --epsilon            "$EPSILON" \
-        --log_interval       "$LOG_INTERVAL" \
+        --eval_interval      "$EVAL_INTERVAL" \
         --eval_seed          "$EVAL_SEED" \
         --num_eval_episodes  "$NUM_EVAL_EPISODES" \
         --min_goal_distance  "$MIN_GOAL_DISTANCE" \
         --start_state        "$START_STATE" \
-        --num_eigenvectors   "$NUM_EIGENVECTORS")
+        --num_eigenvectors   "$NUM_EIGENVECTORS" \
+        $([ "$SKIP_QLEARNING" = true ] && echo "--skip_qlearning"))
 echo "[3/3] Reward-shaping launcher submitted: job $RS_JID$([ -n "$PLOT_JID" ] && echo "  (after $PLOT_JID)")"
 
 # ── Summary ───────────────────────────────────────────────────────────────────

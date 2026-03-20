@@ -8,11 +8,11 @@
 # Usage (from run_full_pipeline.sh):
 #   sbatch --dependency=afterok:<plot_jid> \
 #       scripts/run_reward_shaping_per_env.sh \
-#       [--manifest_dir PATH] [--num_seeds N] [--num_episodes N] \
+#       [--manifest_dir PATH] [--num_seeds N] [--total_steps N] \
 #       [--max_steps N] [--shaping_coef F] [--gamma_rl F] [--lr F] \
-#       [--epsilon F] [--log_interval N] [--eval_seed N] \
+#       [--epsilon F] [--eval_interval N] [--eval_seed N] \
 #       [--num_eval_episodes N] [--min_goal_distance N] \
-#       [--start_state "R,C"] [--num_eigenvectors N]
+#       [--start_state "R,C"] [--num_eigenvectors N] [--skip_qlearning]
 # =============================================================================
 
 #SBATCH --job-name=rs_per_env
@@ -29,36 +29,38 @@ set -euo pipefail
 ACCOUNT="rrg-machado"
 MANIFEST_DIR="./results/eval_manifest"
 NUM_SEEDS=100
-NUM_EPISODES=60000
+TOTAL_STEPS=12000000
 MAX_STEPS=200
 SHAPING_COEF=0.1
 GAMMA_RL=0.99
 LR=0.1
 EPSILON=0.5
-LOG_INTERVAL=500
+EVAL_INTERVAL=500000
 EVAL_SEED=0
 NUM_EVAL_EPISODES=30
 MIN_GOAL_DISTANCE=8
 START_STATE="1,1"
 NUM_EIGENVECTORS=8
+SKIP_QLEARNING=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --account)            ACCOUNT="$2";            shift 2 ;;
         --manifest_dir)       MANIFEST_DIR="$2";       shift 2 ;;
         --num_seeds)          NUM_SEEDS="$2";          shift 2 ;;
-        --num_episodes)       NUM_EPISODES="$2";       shift 2 ;;
+        --total_steps)        TOTAL_STEPS="$2";        shift 2 ;;
         --max_steps)          MAX_STEPS="$2";          shift 2 ;;
         --shaping_coef)       SHAPING_COEF="$2";       shift 2 ;;
         --gamma_rl)           GAMMA_RL="$2";           shift 2 ;;
         --lr)                 LR="$2";                 shift 2 ;;
         --epsilon)            EPSILON="$2";            shift 2 ;;
-        --log_interval)       LOG_INTERVAL="$2";       shift 2 ;;
+        --eval_interval)      EVAL_INTERVAL="$2";      shift 2 ;;
         --eval_seed)          EVAL_SEED="$2";          shift 2 ;;
         --num_eval_episodes)  NUM_EVAL_EPISODES="$2";  shift 2 ;;
         --min_goal_distance)  MIN_GOAL_DISTANCE="$2";  shift 2 ;;
         --start_state)        START_STATE="$2";        shift 2 ;;
         --num_eigenvectors)   NUM_EIGENVECTORS="$2";   shift 2 ;;
+        --skip_qlearning)     SKIP_QLEARNING=true;     shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -86,24 +88,28 @@ for MANIFEST_FILE in "$MANIFEST_DIR"/*.txt; do
     echo "  Model dir  : $MODEL_DIR"
     echo "  Output dir : $OUTPUT_DIR"
 
-    bash "$SUBMIT_RS" \
-        --account           "$ACCOUNT" \
-        --env               "$ENV" \
-        --model_dir         "$MODEL_DIR" \
-        --output_dir        "$OUTPUT_DIR" \
-        --num_seeds         "$NUM_SEEDS" \
-        --num_episodes      "$NUM_EPISODES" \
-        --max_steps         "$MAX_STEPS" \
-        --shaping_coef      "$SHAPING_COEF" \
-        --gamma_rl          "$GAMMA_RL" \
-        --lr                "$LR" \
-        --epsilon           "$EPSILON" \
-        --log_interval      "$LOG_INTERVAL" \
-        --eval_seed         "$EVAL_SEED" \
-        --num_eval_episodes "$NUM_EVAL_EPISODES" \
-        --min_goal_distance "$MIN_GOAL_DISTANCE" \
-        --start_state       "$START_STATE" \
+    SUBMIT_ARGS=(
+        --account           "$ACCOUNT"
+        --env               "$ENV"
+        --model_dir         "$MODEL_DIR"
+        --output_dir        "$OUTPUT_DIR"
+        --num_seeds         "$NUM_SEEDS"
+        --total_steps       "$TOTAL_STEPS"
+        --max_steps         "$MAX_STEPS"
+        --shaping_coef      "$SHAPING_COEF"
+        --gamma_rl          "$GAMMA_RL"
+        --lr                "$LR"
+        --epsilon           "$EPSILON"
+        --eval_interval     "$EVAL_INTERVAL"
+        --eval_seed         "$EVAL_SEED"
+        --num_eval_episodes "$NUM_EVAL_EPISODES"
+        --min_goal_distance "$MIN_GOAL_DISTANCE"
+        --start_state       "$START_STATE"
         --num_eigenvectors  "$NUM_EIGENVECTORS"
+    )
+    [ "$SKIP_QLEARNING" = true ] && SUBMIT_ARGS+=(--skip_qlearning)
+
+    bash "$SUBMIT_RS" "${SUBMIT_ARGS[@]}"
 done
 
 echo ""

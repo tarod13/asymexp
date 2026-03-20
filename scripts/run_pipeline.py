@@ -77,12 +77,18 @@ def main() -> None:
     parser.add_argument("--results_dir",   type=str,   default="./results")
     parser.add_argument("--env_file_name", type=str,   default="GridRoom-4-Doors")
     parser.add_argument("--shaping_coef",  type=float, default=0.1)
-    parser.add_argument("--num_episodes",  type=int,   default=30000)
-    parser.add_argument("--max_steps",     type=int,   default=500,
-                        help="Max steps per episode in Q-learning (default: 500).")
+    parser.add_argument("--total_steps",   type=int,   default=12_000_000,
+                        help="Total Q-learning environment steps per seed (default: 12000000).")
+    parser.add_argument("--max_steps",     type=int,   default=200,
+                        help="Max steps per episode in Q-learning (default: 200).")
+    parser.add_argument("--eval_interval", type=int,   default=500_000,
+                        help="Run evaluation every this many steps (default: 500000).")
     parser.add_argument("--num_seeds",     type=int,   default=5)
     parser.add_argument("--skip_allo",          action="store_true")
     parser.add_argument("--skip_complex",       action="store_true")
+    parser.add_argument("--skip_qlearning",     action="store_true",
+                        help="Skip Q-learning array job and run only the analysis "
+                             "on existing partial results. Requires --complex_dir.")
     parser.add_argument("--allo_dir",           type=str,   default="")
     parser.add_argument("--complex_dir",        type=str,   default="")
     parser.add_argument(
@@ -110,7 +116,9 @@ def main() -> None:
     print(f"  results_dir   : {args.results_dir}")
     print(f"  env           : {args.env_file_name}")
     print(f"  shaping_coef  : {args.shaping_coef}")
-    print(f"  num_episodes  : {args.num_episodes}")
+    print(f"  total_steps   : {args.total_steps}")
+    print(f"  max_steps     : {args.max_steps}")
+    print(f"  eval_interval : {args.eval_interval}")
     print(f"  num_seeds     : {args.num_seeds}")
     print(f"  skip_allo     : {args.skip_allo}")
     print(f"  skip_complex  : {args.skip_complex}")
@@ -243,20 +251,31 @@ def main() -> None:
         "OUTPUT_DIR":        str(output_dir),
         "NUM_SEEDS":         str(args.num_seeds),
         "NUM_METHODS":       str(num_methods),
-        "NUM_EPISODES":      str(args.num_episodes),
+        "TOTAL_STEPS":       str(args.total_steps),
         "MAX_STEPS":         str(args.max_steps),
         "SHAPING_COEF":      str(args.shaping_coef),
         "GAMMA_RL":          "0.99",
         "LR":                "0.1",
         "EPSILON":           "0.1",
-        "LOG_INTERVAL":      "500",
+        "EVAL_INTERVAL":     str(args.eval_interval),
         "EVAL_SEED":         "0",
         "NUM_EVAL_EPISODES": "30",
         "MIN_GOAL_DISTANCE": str(args.min_goal_distance),
         "START_STATE":       args.start_state or "",
     })
 
-    if shutil.which("sbatch"):
+    if args.skip_qlearning:
+        print("  --skip_qlearning set: skipping Q-learning, running analysis only...")
+        if shutil.which("sbatch"):
+            analyze_job_id = sbatch(
+                ["sbatch", "--export=ALL", str(analyze_script)],
+                env=env,
+            )
+            print(f"  Analysis job : {analyze_job_id}")
+            print(f"  Monitor: squeue -j {analyze_job_id}")
+        else:
+            run(["bash", str(analyze_script)], env=env)
+    elif shutil.which("sbatch"):
         # SLURM: submit array job then analysis job with dependency.
         array_job_id = sbatch(
             ["sbatch", f"--array=0-{max_task_id}", "--export=ALL", str(array_script)],
