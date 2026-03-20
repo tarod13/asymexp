@@ -19,7 +19,6 @@
 #
 # Configuration via environment variables (exported by submit_reward_shaping.sh):
 #   Required : OUTPUT_DIR
-#   Optional : MAX_STEPS (default 500), WINDOW (default 100)
 #
 # Usage
 # -----
@@ -38,21 +37,13 @@ source ~/ENV/bin/activate
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 
-# ── Defaults ──────────────────────────────────────────────────────────────────
-MAX_STEPS="${MAX_STEPS:-500}"
-WINDOW="${WINDOW:-100}"
-
 echo "========================================"
 echo "Reward-shaping analysis"
 echo "  Output dir : ${OUTPUT_DIR:-<unset>}"
-echo "  Max steps  : $MAX_STEPS"
-echo "  Window     : $WINDOW"
 echo "========================================"
 
 python experiments/reward_shaping/analyze_reward_shaping.py \
-    --output_dir "$OUTPUT_DIR"  \
-    --max_steps  "$MAX_STEPS"   \
-    --window     "$WINDOW"
+    --output_dir "$OUTPUT_DIR"
 
 echo "========================================"
 echo "Analysis complete.  Results in: $OUTPUT_DIR"
