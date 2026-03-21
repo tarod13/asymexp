@@ -14,10 +14,10 @@
 # job and produce the combined learning-curve figure.
 #
 # This job is typically submitted with --dependency=afterok:<array_job_id> by
-# scripts/submit_reward_shaping.sh so it runs only after every Q-learning task
+# scripts/run_reward_shaping_array.sh so it runs only after every Q-learning task
 # has finished successfully.
 #
-# Configuration via environment variables (exported by submit_reward_shaping.sh):
+# Configuration via environment variables (exported by run_reward_shaping_array.sh):
 #   Required : OUTPUT_DIR
 #
 # Usage
