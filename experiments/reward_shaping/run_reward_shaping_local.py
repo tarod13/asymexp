@@ -161,6 +161,10 @@ def main() -> None:
         help="Prefix for learned-eigenvector .npy files and the model checkpoint "
              "(default: 'final_'). Use e.g. 'latest_' to load in-progress checkpoints.",
     )
+    parser.add_argument(
+        "--no_hitting_times_plot", action="store_true",
+        help="Skip generating hitting-times visualizations (default: generate them).",
+    )
     args = parser.parse_args()
 
     model_dir = Path(args.model_dir) if args.model_dir else None
@@ -365,12 +369,13 @@ def main() -> None:
         if len(finite) > 0:
             print(f"  Range              : [{finite.min():.2f}, {finite.max():.2f}]")
         np.save(output_dir / "hitting_times.npy", hitting_times)
-        plot_hitting_times_grid(
-            hitting_times,
-            np.array(learned_model_data["canonical_states"]),
-            env,
-            output_dir / "hitting_times_complex_plots",
-        )
+        if not args.no_hitting_times_plot:
+            plot_hitting_times_grid(
+                hitting_times,
+                np.array(learned_model_data["canonical_states"]),
+                env,
+                output_dir / "hitting_times_complex_plots",
+            )
 
     if gt_model_data is not None:
         gt_model_data = truncate_model_eigenvectors(
@@ -399,12 +404,13 @@ def main() -> None:
         if len(gt_finite) > 0:
             print(f"  Range              : [{gt_finite.min():.2f}, {gt_finite.max():.2f}]")
         np.save(output_dir / "hitting_times_gt.npy", gt_hitting_times)
-        plot_hitting_times_grid(
-            gt_hitting_times,
-            np.array(gt_model_data["canonical_states"]),
-            env,
-            output_dir / "hitting_times_gt_plots",
-        )
+        if not args.no_hitting_times_plot:
+            plot_hitting_times_grid(
+                gt_hitting_times,
+                np.array(gt_model_data["canonical_states"]),
+                env,
+                output_dir / "hitting_times_gt_plots",
+            )
 
     if allo_model_data is not None:
         allo_model_data = truncate_model_eigenvectors(
@@ -435,12 +441,13 @@ def main() -> None:
         if len(allo_finite) > 0:
             print(f"  Range              : [{allo_finite.min():.2f}, {allo_finite.max():.2f}]")
         np.save(output_dir / "hitting_times_allo.npy", allo_hitting_times)
-        plot_hitting_times_grid(
-            allo_hitting_times,
-            np.array(allo_model_data["canonical_states"]),
-            env,
-            output_dir / "hitting_times_allo_plots",
-        )
+        if not args.no_hitting_times_plot:
+            plot_hitting_times_grid(
+                allo_hitting_times,
+                np.array(allo_model_data["canonical_states"]),
+                env,
+                output_dir / "hitting_times_allo_plots",
+            )
 
     # ------------------------------------------------------------------
     # 4. Sample one fixed (goal, eval_start) per seed
