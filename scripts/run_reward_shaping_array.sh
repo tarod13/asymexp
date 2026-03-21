@@ -1,126 +1,188 @@
 #!/bin/bash
-#SBATCH --job-name=rs_qlearn
+#SBATCH --job-name=rs_submit
 #SBATCH --account=rrg-machado
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=8G
-#SBATCH --time=1:00:00
-#SBATCH --output=logs/rs_qlearn_%A_%a.out
-#SBATCH --error=logs/rs_qlearn_%A_%a.err
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=256M
+#SBATCH --time=0:05:00
+#SBATCH --output=logs/rs_submit_%j.out
+#SBATCH --error=logs/rs_submit_%j.err
+# =============================================================================
+# Orchestrate distributed Q-learning reward-shaping jobs.
+#
+# Submits one job per (method × seed) pair via a SLURM array, then submits
+# the analysis job as a dependent job that runs once all Q-learning tasks
+# finish.  Falls back to sequential local execution when SLURM is unavailable.
+#
+# Called from scripts/run_reward_shaping_per_env.sh or directly:
+#
+#   bash scripts/run_reward_shaping_task.sh \
+#       --model_dir  ./results/file/<complex_run> \
+#       --output_dir ./results/file/<complex_run>/reward_shaping \
+#       [--num_seeds 100] [--total_steps 12000000] [--max_steps 200] \
+#       [--shaping_coef 0.1] [--gamma_rl 0.99] [--lr 0.1] \
+#       [--epsilon 0.5] [--eval_interval 500000] [--eval_seed 0] \
+#       [--num_eval_episodes 30] [--min_goal_distance 8] \
+#       [--start_state "1,1"] [--num_eigenvectors 8] [--skip_qlearning]
+#
+# Always runs three conditions: baseline, complex (learned model), gt (ground-truth
+# Laplacian eigenvectors via --use_gt).  Total tasks = 3 * num_seeds.
+# =============================================================================
 
-# =============================================================================
-# Distributed Q-learning reward-shaping array job.
-# Each task handles one (method, seed) pair, keeping per-job memory small.
-#
-# Task-ID encoding:
-#   task_id = method_idx * NUM_SEEDS + seed_idx
-#   method_idx : 0 = baseline, 1 = complex, 2 = gt
-#
-# All configuration is passed via environment variables exported by
-# scripts/submit_reward_shaping.sh (or set manually before sbatch):
-#
-#   Required : MODEL_DIR, OUTPUT_DIR, NUM_SEEDS, NUM_METHODS
-#   Q-learning: TOTAL_STEPS, MAX_STEPS, SHAPING_COEF, GAMMA_RL, LR,
-#               EPSILON, EVAL_INTERVAL, EVAL_SEED, NUM_EVAL_EPISODES
-#   Optional  : MIN_GOAL_DISTANCE, START_STATE, NUM_EIGENVECTORS
-#
-# Usage
-# -----
-#   sbatch --array=0-299 --export=ALL scripts/run_reward_shaping_array.sh
-#   bash   scripts/run_reward_shaping_array.sh <task_id>   # local single run
-# =============================================================================
+set -euo pipefail
+
+# When running as a SLURM job, BASH_SOURCE[0] points to a spool copy.
+# Use SLURM_SUBMIT_DIR (set by SLURM to the sbatch invocation directory)
+# combined with the known 'scripts/' subdirectory instead.
+if [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
+    SCRIPT_DIR="${SLURM_SUBMIT_DIR}/scripts"
+else
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
+# ── Defaults ──────────────────────────────────────────────────────────────────
+ACCOUNT="${ACCOUNT:-rrg-machado}"
+ENV=""
+MODEL_DIR=""
+OUTPUT_DIR=""
+NUM_SEEDS=100
+TOTAL_STEPS=12000000
+MAX_STEPS=200
+SHAPING_COEF=0.1
+GAMMA_RL=0.99
+LR=0.1
+EPSILON=0.5
+EVAL_INTERVAL=500000
+EVAL_SEED=0
+NUM_EVAL_EPISODES=30
+MIN_GOAL_DISTANCE=8
+START_STATE="1,1"
+NUM_EIGENVECTORS=8
+SKIP_QLEARNING=false
+
+# ── Parse arguments ───────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --account)            ACCOUNT="$2";            shift 2 ;;
+        --env)                ENV="$2";                shift 2 ;;
+        --model_dir)          MODEL_DIR="$2";          shift 2 ;;
+        --output_dir)         OUTPUT_DIR="$2";         shift 2 ;;
+        --num_seeds)          NUM_SEEDS="$2";          shift 2 ;;
+        --total_steps)        TOTAL_STEPS="$2";        shift 2 ;;
+        --max_steps)          MAX_STEPS="$2";          shift 2 ;;
+        --shaping_coef)       SHAPING_COEF="$2";       shift 2 ;;
+        --gamma_rl)           GAMMA_RL="$2";           shift 2 ;;
+        --lr)                 LR="$2";                 shift 2 ;;
+        --epsilon)            EPSILON="$2";            shift 2 ;;
+        --eval_interval)      EVAL_INTERVAL="$2";      shift 2 ;;
+        --eval_seed)          EVAL_SEED="$2";          shift 2 ;;
+        --num_eval_episodes)  NUM_EVAL_EPISODES="$2";  shift 2 ;;
+        --min_goal_distance)  MIN_GOAL_DISTANCE="$2";  shift 2 ;;
+        --start_state)        START_STATE="$2";        shift 2 ;;
+        --num_eigenvectors)   NUM_EIGENVECTORS="$2";   shift 2 ;;
+        --skip_qlearning)     SKIP_QLEARNING=true;     shift ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+
+# ── Validate required arguments ───────────────────────────────────────────────
+if [ -z "$ENV" ]; then
+    echo "ERROR: --env is required." >&2; exit 1
+fi
+if [ -z "$MODEL_DIR" ]; then
+    echo "ERROR: --model_dir is required." >&2; exit 1
+fi
+if [ -z "$OUTPUT_DIR" ]; then
+    echo "ERROR: --output_dir is required." >&2; exit 1
+fi
+
+# ── Three fixed methods: baseline, complex (learned), gt (ground-truth) ───────
+NUM_METHODS=3
+METHODS_LABEL="baseline, complex, gt"
+
+NUM_TASKS=$(( NUM_METHODS * NUM_SEEDS ))
+MAX_TASK_ID=$(( NUM_TASKS - 1 ))
+
+echo "========================================"
+echo "Reward-shaping distributed submission"
+echo "  Model dir      : $MODEL_DIR"
+echo "  Output dir     : $OUTPUT_DIR"
+echo "  Methods        : $METHODS_LABEL  (NUM_METHODS=$NUM_METHODS)"
+echo "  Num seeds      : $NUM_SEEDS"
+echo "  Total tasks    : $NUM_TASKS  (task IDs 0-$MAX_TASK_ID)"
+echo "  Total steps    : $TOTAL_STEPS"
+echo "  Shaping coef   : $SHAPING_COEF"
+echo "  Num eigenvectors: $NUM_EIGENVECTORS"
+echo "========================================"
+
+# ── Export env vars so child scripts inherit them ─────────────────────────────
+export ENV MODEL_DIR OUTPUT_DIR
+export NUM_SEEDS NUM_METHODS TOTAL_STEPS MAX_STEPS
+export SHAPING_COEF GAMMA_RL LR EPSILON EVAL_INTERVAL EVAL_SEED NUM_EVAL_EPISODES
+export MIN_GOAL_DISTANCE START_STATE NUM_EIGENVECTORS
 
 mkdir -p logs
+mkdir -p "${OUTPUT_DIR}/partial"
 
-# Support local execution: bash run_reward_shaping_array.sh <task_id>
-JOB_ID="${1:-$SLURM_ARRAY_TASK_ID}"
+# ── Choose SLURM or local execution ──────────────────────────────────────────
+if command -v sbatch &>/dev/null; then
+    echo ""
+    echo "Detected SLURM — submitting jobs..."
 
-# ── Environment setup ─────────────────────────────────────────────────────────
-module --force purge
-module load StdEnv/2023 gcc/14.3 python/3.11 mujoco/3.3.0
-source ~/ENV/bin/activate
+    if [ "$SKIP_QLEARNING" = true ]; then
+        # ── Analysis only ─────────────────────────────────────────────────────
+        echo "  --skip_qlearning set: submitting analysis job only."
+        ANALYZE_JOB_ID=$(
+            sbatch \
+                --account="$ACCOUNT" \
+                --export=ALL \
+                "${SCRIPT_DIR}/analyze_reward_shaping.sh" \
+            | awk '{print $4}'
+        )
+        echo "  Analysis job submitted: $ANALYZE_JOB_ID"
+        echo "  Monitor: squeue -j ${ANALYZE_JOB_ID}"
+    else
+        # ── SLURM: submit array job then analysis job with dependency ──────────
+        ARRAY_JOB_ID=$(
+            sbatch \
+                --account="$ACCOUNT" \
+                --array=0-${MAX_TASK_ID} \
+                --export=ALL \
+                "${SCRIPT_DIR}/run_reward_shaping_task.sh" \
+            | awk '{print $4}'
+        )
+        echo "  Q-learning array job submitted: $ARRAY_JOB_ID  (tasks 0-${MAX_TASK_ID})"
 
-export XLA_PYTHON_CLIENT_PREALLOCATE=false
-export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
-export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=${SLURM_CPUS_PER_TASK:-4}"
-
-# ── Defaults (overridden by exported env vars from submit_reward_shaping.sh) ──
-ENV="${ENV:-GridRoom-4-Doors}"
-NUM_SEEDS="${NUM_SEEDS:-100}"
-NUM_METHODS="${NUM_METHODS:-3}"
-TOTAL_STEPS="${TOTAL_STEPS:-12000000}"
-MAX_STEPS="${MAX_STEPS:-200}"
-SHAPING_COEF="${SHAPING_COEF:-0.1}"
-GAMMA_RL="${GAMMA_RL:-0.99}"
-LR="${LR:-0.1}"
-EPSILON="${EPSILON:-0.5}"
-EVAL_INTERVAL="${EVAL_INTERVAL:-500000}"
-EVAL_SEED="${EVAL_SEED:-0}"
-NUM_EVAL_EPISODES="${NUM_EVAL_EPISODES:-30}"
-MIN_GOAL_DISTANCE="${MIN_GOAL_DISTANCE:-8}"
-START_STATE="${START_STATE:-1,1}"
-NUM_EIGENVECTORS="${NUM_EIGENVECTORS:-8}"
-
-# ── Decode (method, seed) from task ID ───────────────────────────────────────
-method_idx=$(( JOB_ID / NUM_SEEDS ))
-seed_idx=$(( JOB_ID % NUM_SEEDS ))
-
-METHODS=("baseline" "complex" "gt")
-METHOD="${METHODS[$method_idx]}"
-
-echo "========================================"
-echo "Reward-shaping Q-learning (distributed)"
-echo "  Array job : ${SLURM_ARRAY_JOB_ID:-local}_${JOB_ID}"
-echo "  Task ID   : $JOB_ID  (of 0-$(( NUM_METHODS * NUM_SEEDS - 1 )))"
-echo "  Method    : $METHOD (idx $method_idx)"
-echo "  Seed idx  : $seed_idx"
-echo "  Model dir : ${MODEL_DIR:-<unset>}"
-echo "  Output dir: ${OUTPUT_DIR:-<unset>}"
-echo "========================================"
-
-CMD=(
-    python experiments/reward_shaping/run_reward_shaping_cluster.py
-    --env                "$ENV"
-    --method             "$METHOD"
-    --seed_idx           "$seed_idx"
-    --num_seeds          "$NUM_SEEDS"
-    --total_steps        "$TOTAL_STEPS"
-    --max_steps          "$MAX_STEPS"
-    --shaping_coef       "$SHAPING_COEF"
-    --gamma_rl           "$GAMMA_RL"
-    --lr                 "$LR"
-    --epsilon            "$EPSILON"
-    --eval_interval      "$EVAL_INTERVAL"
-    --eval_seed          "$EVAL_SEED"
-    --num_eval_episodes  "$NUM_EVAL_EPISODES"
-    --output_dir         "$OUTPUT_DIR"
-)
-
-# Complex representation: load from trained model dir.
-if [ "$METHOD" = "complex" ] && [ -n "${MODEL_DIR:-}" ]; then
-    CMD+=(--model_dir "$MODEL_DIR")
-fi
-
-# GT condition: load GT eigenvectors from model dir if available, else compute
-# from the environment.  --method gt implies --use_gt inside the Python script.
-if [ "$METHOD" = "gt" ]; then
-    CMD+=(--num_eigenvectors "$NUM_EIGENVECTORS")
-    if [ -n "${MODEL_DIR:-}" ]; then
-        CMD+=(--model_dir "$MODEL_DIR")
+        ANALYZE_JOB_ID=$(
+            sbatch \
+                --account="$ACCOUNT" \
+                --dependency=afterok:${ARRAY_JOB_ID} \
+                --export=ALL \
+                "${SCRIPT_DIR}/analyze_reward_shaping.sh" \
+            | awk '{print $4}'
+        )
+        echo "  Analysis job submitted:         $ANALYZE_JOB_ID  (runs after $ARRAY_JOB_ID)"
+        echo "  Monitor: squeue -j ${ARRAY_JOB_ID},${ANALYZE_JOB_ID}"
     fi
+    echo ""
+    echo "Results will appear in: $OUTPUT_DIR"
+
+else
+    # ── Local fallback ────────────────────────────────────────────────────────
+    echo ""
+    if [ "$SKIP_QLEARNING" = true ]; then
+        echo "  --skip_qlearning set: running analysis only..."
+    else
+        echo "SLURM not available — running locally (sequential)..."
+        for task_id in $(seq 0 $MAX_TASK_ID); do
+            echo "--- Task $task_id / $MAX_TASK_ID ---"
+            bash "${SCRIPT_DIR}/run_reward_shaping_task.sh" "$task_id"
+        done
+        echo ""
+        echo "All Q-learning tasks complete. Running analysis..."
+    fi
+    bash "${SCRIPT_DIR}/analyze_reward_shaping.sh"
+    echo ""
+    echo "Done!  Results in: $OUTPUT_DIR"
 fi
-
-if [ "${MIN_GOAL_DISTANCE:-0}" -gt 0 ]; then
-    CMD+=(--min_goal_distance "$MIN_GOAL_DISTANCE")
-fi
-
-if [ -n "${START_STATE:-}" ]; then
-    CMD+=(--start_state "$START_STATE")
-fi
-
-"${CMD[@]}"
-
-echo "========================================"
-echo "Task $JOB_ID (method=$METHOD, seed=$seed_idx) complete."
-echo "========================================"

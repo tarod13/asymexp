@@ -10,7 +10,41 @@ from pathlib import Path
 import jax.numpy as jnp
 import numpy as np
 
+import sys
+
 from src.utils.laplacian import compute_laplacian, compute_eigendecomposition
+
+
+def truncate_model_eigenvectors(model_data: dict, num_eigenvectors: int | None) -> dict:
+    """
+    Restrict a model-data dict to at most ``num_eigenvectors`` eigenvector pairs.
+
+    When ``num_eigenvectors`` is None the dict is returned unchanged (use all
+    available pairs).  When the requested count exceeds the number of pairs
+    present in the arrays, a warning is printed and the maximum available count
+    is used instead.
+    """
+    if num_eigenvectors is None:
+        return model_data
+
+    available = model_data["left_real"].shape[1]
+    if num_eigenvectors > available:
+        print(
+            f"WARNING: requested {num_eigenvectors} eigenvector pairs but only "
+            f"{available} are available; using {available}.",
+            file=sys.stderr,
+        )
+        num_eigenvectors = available
+
+    return {
+        **model_data,
+        "left_real":        model_data["left_real"][:, :num_eigenvectors],
+        "left_imag":        model_data["left_imag"][:, :num_eigenvectors],
+        "right_real":       model_data["right_real"][:, :num_eigenvectors],
+        "right_imag":       model_data["right_imag"][:, :num_eigenvectors],
+        "eigenvalues_real": model_data["eigenvalues_real"][:num_eigenvectors],
+        "eigenvalues_imag": model_data["eigenvalues_imag"][:num_eigenvectors],
+    }
 
 
 def load_model(
@@ -98,7 +132,7 @@ def compute_gt_model_data(
     canonical_states: np.ndarray,
     gamma: float,
     delta: float,
-    num_eigenvectors: int,
+    num_eigenvectors: int | None = None,
 ) -> dict:
     """
     Compute the exact ground-truth Laplacian eigenvectors from the environment.
@@ -108,8 +142,16 @@ def compute_gt_model_data(
     (partially blocked transitions), and normal physics.  Then computes
     L = (1+δ)I - (1-γ)P·SR_γ and its eigendecomposition — exactly as training
     does when the GT files are not yet available on disk.
+
+    Parameters
+    ----------
+    num_eigenvectors : int or None
+        Number of eigenvectors to compute.  When None (default), all N
+        canonical-state eigenvectors are computed (maximum available).
     """
     N = len(canonical_states)
+    if num_eigenvectors is None:
+        num_eigenvectors = N
     full_to_canonical = {int(s): i for i, s in enumerate(canonical_states)}
     # action effects: up=(0,-1), right=(+1,0), down=(0,+1), left=(-1,0)
     action_effects = [(0, -1), (1, 0), (0, 1), (-1, 0)]

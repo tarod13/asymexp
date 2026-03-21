@@ -1,12 +1,20 @@
 """
 Reward shaping experiment — local (non-distributed) entry point.
 
-Runs all available conditions (baseline, complex, allo, gt) across all seeds
+Runs all available conditions (baseline, complex, gt, allo) across all seeds
 in a single process.  Results are saved directly to <output_dir>/results.pkl
 and <output_dir>/learning_curves.png.
 
 Use this script for development and debugging.  For large-scale cluster runs
 use run_reward_shaping_cluster.py with scripts/run_reward_shaping_array.sh.
+
+Conditions produced depend on the flags supplied:
+
+  --model_dir only                 → baseline + complex
+  --model_dir --use_gt             → baseline + complex + gt
+  --use_gt (no --model_dir)        → baseline + gt  (computed from env)
+  --allo_model_dir                 → adds allo to any of the above
+  (no flags)                       → baseline only
 
 Usage
 -----
@@ -20,18 +28,17 @@ Usage
         --model_dir ./results/file/my_run \\
         --num_seeds 3
 
-    # Baseline + complex + allo
+    # Baseline + complex + gt + allo
     python experiments/reward_shaping/run_reward_shaping_local.py \\
         --env GridRoom-4-Doors \\
         --model_dir ./results/file/my_run \\
         --allo_model_dir ./results/file/my_allo_run \\
-        --num_seeds 3
+        --use_gt --num_seeds 3
 
-    # Ground-truth eigenvectors (computed from environment)
+    # Ground-truth only (computed from environment)
     python experiments/reward_shaping/run_reward_shaping_local.py \\
         --env GridRoom-4-Doors \\
-        --use_gt --num_eigenvectors 20 \\
-        --num_seeds 3
+        --use_gt --num_seeds 3
 """
 
 import argparse
@@ -45,7 +52,9 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from src.rl.loading import load_model, compute_gt_model_data
+from src.rl.loading import (
+    load_model, compute_gt_model_data, truncate_model_eigenvectors,
+)
 from src.rl.qlearning import build_all_potentials, run_q_learning
 from src.rl.plotting import plot_results, plot_hitting_times_grid
 from src.utils.envs import create_gridworld_env, get_canonical_free_states
@@ -64,7 +73,8 @@ def main() -> None:
     parser.add_argument(
         "--model_dir", default=None,
         help="Results directory for the complex representation (train_lap_rep.py). "
-             "When provided, adds a 'shaped (complex)' condition.",
+             "When provided, adds a 'shaped (complex)' condition. "
+             "With --use_gt also adds a 'shaped (gt)' condition.",
     )
     parser.add_argument(
         "--allo_model_dir", default=None,
@@ -113,12 +123,16 @@ def main() -> None:
     )
     parser.add_argument(
         "--use_gt", action="store_true",
-        help="Use ground-truth Laplacian eigenvectors instead of learned ones.",
+        help="Include a ground-truth Laplacian condition.  GT eigenvectors are "
+             "loaded from --model_dir if the gt_*.npy files are present there; "
+             "otherwise they are computed analytically from the environment.",
     )
     parser.add_argument(
         "--num_eigenvectors", type=int, default=None,
-        help="Number of eigenvectors for the GT Laplacian "
-             "(required when --use_gt is set).",
+        help="Number of eigenvector pairs to use for hitting-time computation "
+             "across ALL methods (complex, gt, allo).  Defaults to all available "
+             "pairs.  If the requested count exceeds what is available, the "
+             "maximum available count is used and a warning is printed.",
     )
     parser.add_argument(
         "--gt_gamma", type=float, default=0.95,
@@ -149,9 +163,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.use_gt and args.num_eigenvectors is None:
-        parser.error("--use_gt requires --num_eigenvectors.")
-
     model_dir = Path(args.model_dir) if args.model_dir else None
     if args.output_dir:
         output_dir = Path(args.output_dir)
@@ -164,27 +175,57 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 1. Load pre-trained models
     # ------------------------------------------------------------------
-    model_data = None
-    evtype     = None
+
+    # --- Complex (learned) representation ---
+    learned_model_data = None
     if model_dir is not None:
         print(f"\n{'='*60}")
-        print(f"Loading {'ground-truth' if args.use_gt else 'complex representation'} "
-              f"model from: {model_dir}")
+        print(f"Loading complex (learned) representation from: {model_dir}")
         print(f"{'='*60}")
-        model_data = load_model(
-            model_dir, use_gt=args.use_gt,
+        learned_model_data = load_model(
+            model_dir, use_gt=False,
             checkpoint_prefix=args.checkpoint_prefix,
         )
-        evtype = model_data["eigenvalue_type"]
-        print(f"  Eigenvector source : {'ground truth (saved during training)' if args.use_gt else 'learned'}")
-        print(f"  Eigenvalue type    : {evtype}")
-        print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
+        print(f"  Eigenvalue type    : {learned_model_data['eigenvalue_type']}")
+        print(f"  Eigenvectors (K)   : {learned_model_data['eigenvalues_real'].shape[0]}")
 
+    # --- Ground-truth representation ---
+    gt_model_data = None
+    if args.use_gt:
+        if model_dir is not None:
+            # Try loading saved GT eigenvectors from the model directory first.
+            gt_files = [
+                model_dir / "gt_left_real.npy",
+                model_dir / "gt_left_imag.npy",
+                model_dir / "gt_right_real.npy",
+                model_dir / "gt_right_imag.npy",
+                model_dir / "gt_eigenvalues_real.npy",
+                model_dir / "gt_eigenvalues_imag.npy",
+            ]
+            if all(f.exists() for f in gt_files):
+                print(f"\n{'='*60}")
+                print(f"Loading GT eigenvectors from training artifacts: {model_dir}")
+                print(f"{'='*60}")
+                gt_model_data = load_model(
+                    model_dir, use_gt=True,
+                    checkpoint_prefix=args.checkpoint_prefix,
+                )
+                print(f"  Eigenvalue type    : {gt_model_data['eigenvalue_type']}")
+                print(f"  Eigenvectors (K)   : {gt_model_data['eigenvalues_real'].shape[0]}")
+            else:
+                print(
+                    f"WARNING: GT eigenvector files not found in {model_dir}; "
+                    "computing ground-truth eigenvectors from environment samples.",
+                    file=sys.stderr,
+                )
+                gt_model_data = None  # triggers env-based computation below
+
+    # --- ALLO representation ---
     allo_model_data = None
-    if (not args.use_gt) and args.allo_model_dir is not None:
+    if args.allo_model_dir is not None:
         allo_model_dir = Path(args.allo_model_dir)
         print(f"\n{'='*60}")
-        print(f"Loading ALLO representation model from: {allo_model_dir}")
+        print(f"Loading ALLO representation from: {allo_model_dir}")
         print(f"{'='*60}")
         allo_model_data = load_model(
             allo_model_dir,
@@ -272,43 +313,49 @@ def main() -> None:
                   f"  ({len(eligible_goals)}/{num_canonical} eligible goals)")
 
     # ------------------------------------------------------------------
-    # 2c. GT fallback: compute from environment if no model_dir given
+    # 2c. GT fallback: compute analytically from environment if needed
     # ------------------------------------------------------------------
-    if args.use_gt and model_data is None:
+    if args.use_gt and gt_model_data is None:
         print(f"\n{'='*60}")
         print("Computing ground-truth eigenvectors from environment ...")
         print(f"{'='*60}")
-        model_data = compute_gt_model_data(
+        gt_model_data = compute_gt_model_data(
             env, canonical_states,
             gamma=args.gt_gamma, delta=args.gt_delta,
             num_eigenvectors=args.num_eigenvectors,
         )
-        evtype = "laplacian"
+        resolved_k = gt_model_data["eigenvalues_real"].shape[0]
         print(f"  Eigenvector source : ground truth (computed from environment)")
         print(f"  Eigenvalue type    : laplacian")
-        print(f"  Eigenvectors (K)   : {args.num_eigenvectors}")
+        print(f"  Eigenvectors (K)   : {resolved_k}")
         print(f"  gt_gamma           : {args.gt_gamma}")
         print(f"  gt_delta           : {args.gt_delta}")
 
     # ------------------------------------------------------------------
-    # 3. Compute hitting times
+    # 3. Apply eigenvector truncation, then compute hitting times
     # ------------------------------------------------------------------
-    hitting_times = None
-    if model_data is not None:
+    hitting_times      = None
+    gt_hitting_times   = None
+    allo_hitting_times = None
+
+    if learned_model_data is not None:
+        learned_model_data = truncate_model_eigenvectors(
+            learned_model_data, args.num_eigenvectors
+        )
         print(f"\n{'='*60}")
         print("Computing hitting times (complex representation) ...")
         print(f"{'='*60}")
         hitting_times = np.array(
             compute_hitting_times_from_eigenvectors(
-                left_real        = model_data["left_real"],
-                left_imag        = model_data["left_imag"],
-                right_real       = model_data["right_real"],
-                right_imag       = model_data["right_imag"],
-                eigenvalues_real = model_data["eigenvalues_real"],
-                eigenvalues_imag = model_data["eigenvalues_imag"],
-                gamma            = model_data["training_args"].get("gamma", 0.95),
-                delta            = model_data["training_args"].get("delta", 0.1),
-                eigenvalue_type  = evtype,
+                left_real        = learned_model_data["left_real"],
+                left_imag        = learned_model_data["left_imag"],
+                right_real       = learned_model_data["right_real"],
+                right_imag       = learned_model_data["right_imag"],
+                eigenvalues_real = learned_model_data["eigenvalues_real"],
+                eigenvalues_imag = learned_model_data["eigenvalues_imag"],
+                gamma            = learned_model_data["training_args"].get("gamma", 0.95),
+                delta            = learned_model_data["training_args"].get("delta", 0.1),
+                eigenvalue_type  = learned_model_data["eigenvalue_type"],
             )
         )
         finite = hitting_times[np.isfinite(hitting_times) & (hitting_times >= 0)]
@@ -317,17 +364,52 @@ def main() -> None:
               f"  ({len(finite)/hitting_times.size:.1%})")
         if len(finite) > 0:
             print(f"  Range              : [{finite.min():.2f}, {finite.max():.2f}]")
-
         np.save(output_dir / "hitting_times.npy", hitting_times)
         plot_hitting_times_grid(
             hitting_times,
-            np.array(model_data["canonical_states"]),
+            np.array(learned_model_data["canonical_states"]),
             env,
-            output_dir / ("hitting_times_gt_plots" if args.use_gt else "hitting_times_complex_plots"),
+            output_dir / "hitting_times_complex_plots",
         )
 
-    allo_hitting_times = None
+    if gt_model_data is not None:
+        gt_model_data = truncate_model_eigenvectors(
+            gt_model_data, args.num_eigenvectors
+        )
+        print(f"\n{'='*60}")
+        print("Computing hitting times (ground-truth representation) ...")
+        print(f"{'='*60}")
+        gt_hitting_times = np.array(
+            compute_hitting_times_from_eigenvectors(
+                left_real        = gt_model_data["left_real"],
+                left_imag        = gt_model_data["left_imag"],
+                right_real       = gt_model_data["right_real"],
+                right_imag       = gt_model_data["right_imag"],
+                eigenvalues_real = gt_model_data["eigenvalues_real"],
+                eigenvalues_imag = gt_model_data["eigenvalues_imag"],
+                gamma            = gt_model_data["training_args"].get("gamma", 0.95),
+                delta            = gt_model_data["training_args"].get("delta", 0.1),
+                eigenvalue_type  = gt_model_data["eigenvalue_type"],
+            )
+        )
+        gt_finite = gt_hitting_times[np.isfinite(gt_hitting_times) & (gt_hitting_times >= 0)]
+        print(f"  Shape              : {gt_hitting_times.shape}")
+        print(f"  Finite values      : {len(gt_finite)} / {gt_hitting_times.size}"
+              f"  ({len(gt_finite)/gt_hitting_times.size:.1%})")
+        if len(gt_finite) > 0:
+            print(f"  Range              : [{gt_finite.min():.2f}, {gt_finite.max():.2f}]")
+        np.save(output_dir / "hitting_times_gt.npy", gt_hitting_times)
+        plot_hitting_times_grid(
+            gt_hitting_times,
+            np.array(gt_model_data["canonical_states"]),
+            env,
+            output_dir / "hitting_times_gt_plots",
+        )
+
     if allo_model_data is not None:
+        allo_model_data = truncate_model_eigenvectors(
+            allo_model_data, args.num_eigenvectors
+        )
         print(f"\n{'='*60}")
         print("Computing hitting times (ALLO representation) ...")
         print(f"{'='*60}")
@@ -405,21 +487,26 @@ def main() -> None:
     # ------------------------------------------------------------------
     complex_potential_per_seed = None
     if hitting_times is not None:
-        complex_potential_matrix   = build_all_potentials(hitting_times)
-        complex_potential_per_seed = complex_potential_matrix[:, goal_per_seed].T
+        complex_potential_per_seed = build_all_potentials(hitting_times)[:, goal_per_seed].T
+
+    gt_potential_per_seed = None
+    if gt_hitting_times is not None:
+        gt_potential_per_seed = build_all_potentials(gt_hitting_times)[:, goal_per_seed].T
 
     allo_potential_per_seed = None
     if allo_hitting_times is not None:
-        allo_potential_matrix   = build_all_potentials(allo_hitting_times)
-        allo_potential_per_seed = allo_potential_matrix[:, goal_per_seed].T
+        allo_potential_per_seed = build_all_potentials(allo_hitting_times)[:, goal_per_seed].T
 
     conditions = {
         "baseline": dict(potential_per_seed=None, shaping_coef=0.0),
     }
     if complex_potential_per_seed is not None:
-        cond_label = f"shaped β={args.shaping_coef} ({'gt' if args.use_gt else 'complex'})"
-        conditions[cond_label] = dict(
+        conditions[f"shaped β={args.shaping_coef} (complex)"] = dict(
             potential_per_seed=complex_potential_per_seed, shaping_coef=args.shaping_coef
+        )
+    if gt_potential_per_seed is not None:
+        conditions[f"shaped β={args.shaping_coef} (gt)"] = dict(
+            potential_per_seed=gt_potential_per_seed, shaping_coef=args.shaping_coef
         )
     if allo_potential_per_seed is not None:
         conditions[f"shaped β={args.shaping_coef} (allo)"] = dict(

@@ -1,9 +1,8 @@
 """Full training + reward-shaping pipeline (local, all-in-one).
 
-This is the local variant of run_pipeline.py.  Step 3 calls
-run_reward_shaping.py directly (all seeds and methods in a single process)
-instead of submitting SLURM array jobs.  Use this for local runs where you
-want a single process to produce the final plot immediately.
+Trains both representations then calls run_reward_shaping_local.py directly
+(all seeds and methods in a single process) to produce the final plot
+immediately.  Use this for local runs and smoke-tests.
 
 Steps
 -----
@@ -23,7 +22,6 @@ Options (all optional, with defaults shown):
   --results_dir    DIR         Where to save training outputs       [./results]
   --env_file_name  ENV         Environment name                     [GridRoom-4-Doors]
   --shaping_coef   BETA        Reward-shaping coefficient           [0.1]
-  --num_episodes   N           Q-learning episodes per seed         [3000]
   --num_seeds      N           Number of Q-learning seeds           [5]
   --skip_allo                  Skip allo training (reuse existing)
   --skip_complex               Skip complex training (reuse existing)
@@ -36,7 +34,7 @@ Examples
   python scripts/run_pipeline_local.py
 
   # Quick smoke-test with fewer gradient steps and episodes
-  python scripts/run_pipeline_local.py --steps 5000 --num_episodes 500 --num_seeds 2
+  python scripts/run_pipeline_local.py --steps 5000 --num_seeds 2
 
   # Reuse pre-trained models, just re-run reward shaping
   python scripts/run_pipeline_local.py \\
@@ -71,7 +69,6 @@ def main() -> None:
     parser.add_argument("--results_dir",   type=str,   default="./results")
     parser.add_argument("--env_file_name", type=str,   default="GridRoom-4-Doors")
     parser.add_argument("--shaping_coef",  type=float, default=0.1)
-    parser.add_argument("--num_episodes",  type=int,   default=30000)
     parser.add_argument("--max_steps",     type=int,   default=500,
                         help="Max steps per episode in Q-learning (default: 500).")
     parser.add_argument("--num_seeds",     type=int,   default=5)
@@ -81,11 +78,11 @@ def main() -> None:
     parser.add_argument("--complex_dir",        type=str,   default="")
     parser.add_argument(
         "--start_state", type=str, default="",
-        help="Optional fixed starting state as 'x,y'. Passed to run_reward_shaping.py.",
+        help="Optional fixed starting state as 'x,y'. Passed to run_reward_shaping_local.py.",
     )
     parser.add_argument(
         "--min_goal_distance", type=int, default=0,
-        help="Minimum taxi distance from start to goal. Passed to run_reward_shaping.py.",
+        help="Minimum taxi distance from start to goal. Passed to run_reward_shaping_local.py.",
     )
     args = parser.parse_args()
 
@@ -104,7 +101,6 @@ def main() -> None:
     print(f"  results_dir   : {args.results_dir}")
     print(f"  env           : {args.env_file_name}")
     print(f"  shaping_coef  : {args.shaping_coef}")
-    print(f"  num_episodes  : {args.num_episodes}")
     print(f"  num_seeds     : {args.num_seeds}")
     print(f"  skip_allo     : {args.skip_allo}")
     print(f"  skip_complex  : {args.skip_complex}")
@@ -216,12 +212,11 @@ def main() -> None:
     output_dir = complex_dir / "reward_shaping"
 
     rs_cmd = [
-        py, str(repo_root / "experiments" / "reward_shaping" / "run_reward_shaping.py"),
+        py, str(repo_root / "experiments" / "reward_shaping" / "run_reward_shaping_local.py"),
         "--env",            args.env_file_name,
         "--model_dir",      str(complex_dir),
         "--allo_model_dir", str(allo_dir),
         "--output_dir",     str(output_dir),
-        "--num_episodes",   str(args.num_episodes),
         "--num_seeds",      str(args.num_seeds),
         "--shaping_coef",   str(args.shaping_coef),
         "--max_steps",      str(args.max_steps),

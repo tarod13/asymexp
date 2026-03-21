@@ -65,7 +65,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-SUBMIT_RS="${SLURM_SUBMIT_DIR}/scripts/submit_reward_shaping.sh"
+SUBMIT_RS="${SLURM_SUBMIT_DIR}/scripts/run_reward_shaping_array.sh"
 
 echo "========================================"
 echo "Reward-shaping per-env launcher"

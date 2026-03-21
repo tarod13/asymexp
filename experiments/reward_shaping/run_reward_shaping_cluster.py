@@ -25,7 +25,7 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from src.rl.loading import load_model, compute_gt_model_data
+from src.rl.loading import load_model, compute_gt_model_data, truncate_model_eigenvectors
 from src.rl.qlearning import build_all_potentials, run_q_learning
 from src.utils.envs import create_gridworld_env, get_canonical_free_states
 from src.utils.metrics import compute_hitting_times_from_eigenvectors
@@ -96,8 +96,10 @@ def main() -> None:
     )
     parser.add_argument(
         "--num_eigenvectors", type=int, default=None,
-        help="Number of eigenvectors for the GT Laplacian "
-             "(required when --use_gt / --method gt).",
+        help="Number of eigenvector pairs to use for hitting-time computation "
+             "across ALL methods.  Defaults to all available pairs.  If the "
+             "requested count exceeds what is available, the maximum is used "
+             "and a warning is printed.",
     )
     parser.add_argument(
         "--gt_gamma", type=float, default=0.95,
@@ -141,8 +143,6 @@ def main() -> None:
     if args.method == "gt":
         args.use_gt = True
 
-    if args.use_gt and args.num_eigenvectors is None:
-        parser.error("--use_gt / --method gt requires --num_eigenvectors.")
     if args.seed_idx >= args.num_seeds:
         parser.error(
             f"--seed_idx {args.seed_idx} is out of range for --num_seeds {args.num_seeds}."
@@ -162,23 +162,51 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 1. Load pre-trained model (skip if not needed for this method)
     # ------------------------------------------------------------------
-    _load_complex = (model_dir is not None) and (args.method in ("complex", "gt"))
-    if _load_complex:
-        print(f"\n{'='*60}")
-        print(f"Loading {'ground-truth' if args.use_gt else 'complex representation'} "
-              f"model from: {model_dir}")
-        print(f"{'='*60}")
-        model_data = load_model(
-            model_dir, use_gt=args.use_gt,
-            checkpoint_prefix=args.checkpoint_prefix,
-        )
-        evtype = model_data["eigenvalue_type"]
-        print(f"  Eigenvector source : {'ground truth (saved during training)' if args.use_gt else 'learned'}")
-        print(f"  Eigenvalue type    : {evtype}")
-        print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
-    else:
-        model_data = None
-        evtype     = None
+    model_data = None
+    evtype     = None
+
+    if (model_dir is not None) and (args.method in ("complex", "gt")):
+        if args.use_gt:
+            # Try loading saved GT eigenvectors from the model directory.
+            gt_files = [
+                model_dir / "gt_left_real.npy",
+                model_dir / "gt_left_imag.npy",
+                model_dir / "gt_right_real.npy",
+                model_dir / "gt_right_imag.npy",
+                model_dir / "gt_eigenvalues_real.npy",
+                model_dir / "gt_eigenvalues_imag.npy",
+            ]
+            if all(f.exists() for f in gt_files):
+                print(f"\n{'='*60}")
+                print(f"Loading GT eigenvectors from training artifacts: {model_dir}")
+                print(f"{'='*60}")
+                model_data = load_model(
+                    model_dir, use_gt=True,
+                    checkpoint_prefix=args.checkpoint_prefix,
+                )
+                evtype = model_data["eigenvalue_type"]
+                print(f"  Eigenvector source : ground truth (saved during training)")
+                print(f"  Eigenvalue type    : {evtype}")
+                print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
+            else:
+                print(
+                    f"WARNING: GT eigenvector files not found in {model_dir}; "
+                    "computing ground-truth eigenvectors from environment samples.",
+                    file=sys.stderr,
+                )
+                # model_data stays None → GT fallback in section 2c
+        else:
+            print(f"\n{'='*60}")
+            print(f"Loading complex (learned) representation from: {model_dir}")
+            print(f"{'='*60}")
+            model_data = load_model(
+                model_dir, use_gt=False,
+                checkpoint_prefix=args.checkpoint_prefix,
+            )
+            evtype = model_data["eigenvalue_type"]
+            print(f"  Eigenvector source : learned")
+            print(f"  Eigenvalue type    : {evtype}")
+            print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
 
     allo_model_data = None
     if args.method == "allo":
@@ -290,13 +318,14 @@ def main() -> None:
         evtype = "laplacian"
         print(f"  Eigenvector source : ground truth (computed from environment)")
         print(f"  Eigenvalue type    : laplacian")
-        print(f"  Eigenvectors (K)   : {args.num_eigenvectors}")
+        print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
 
     # ------------------------------------------------------------------
     # 3. Compute hitting times
     # ------------------------------------------------------------------
     hitting_times = None
     if model_data is not None:
+        model_data = truncate_model_eigenvectors(model_data, args.num_eigenvectors)
         print(f"\n{'='*60}")
         print("Computing hitting times (complex representation) ...")
         print(f"{'='*60}")
@@ -322,6 +351,7 @@ def main() -> None:
 
     allo_hitting_times = None
     if allo_model_data is not None:
+        allo_model_data = truncate_model_eigenvectors(allo_model_data, args.num_eigenvectors)
         print(f"\n{'='*60}")
         print("Computing hitting times (ALLO representation) ...")
         print(f"{'='*60}")
