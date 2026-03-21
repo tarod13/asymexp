@@ -358,7 +358,7 @@ def main() -> None:
                 eigenvalue_type  = learned_model_data["eigenvalue_type"],
             )
         )
-        finite = hitting_times[np.isfinite(hitting_times) & (hitting_times >= 0)]
+        finite = hitting_times[np.isfinite(hitting_times)]
         print(f"  Shape              : {hitting_times.shape}")
         print(f"  Finite values      : {len(finite)} / {hitting_times.size}"
               f"  ({len(finite)/hitting_times.size:.1%})")
@@ -392,7 +392,7 @@ def main() -> None:
                 eigenvalue_type  = gt_model_data["eigenvalue_type"],
             )
         )
-        gt_finite = gt_hitting_times[np.isfinite(gt_hitting_times) & (gt_hitting_times >= 0)]
+        gt_finite = gt_hitting_times[np.isfinite(gt_hitting_times)]
         print(f"  Shape              : {gt_hitting_times.shape}")
         print(f"  Finite values      : {len(gt_finite)} / {gt_hitting_times.size}"
               f"  ({len(gt_finite)/gt_hitting_times.size:.1%})")
@@ -427,7 +427,7 @@ def main() -> None:
             )
         )
         allo_finite = allo_hitting_times[
-            np.isfinite(allo_hitting_times) & (allo_hitting_times >= 0)
+            np.isfinite(allo_hitting_times)
         ]
         print(f"  Shape              : {allo_hitting_times.shape}")
         print(f"  Finite values      : {len(allo_finite)} / {allo_hitting_times.size}"

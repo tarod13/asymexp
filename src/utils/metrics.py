@@ -635,7 +635,6 @@ def compute_hitting_times_from_eigenvectors(
     )  # Clip to avoid numerical instability when eigenvalues are very close to 1
     mode_weights = 1.0 / (1.0 - clipped_eigenvalues)  # [num_eigenvectors-1]
 
-
     # Pairwise differences of right eigenvectors: φ_jk - φ_ik
     # pairwise_diff[j, i, k] = right[j, k] - right[i, k]
     pairwise_diff = (
