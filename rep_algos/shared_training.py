@@ -502,6 +502,31 @@ def learn_eigenvectors(args, learner_module, method):
     # Configure sampling strategy
     sampling_mode = args.sampling_mode
 
+    # Episode-centric sampling validation and setup
+    _sample_episodes = getattr(args, 'sample_episodes', False)
+    _num_sampled_episodes = getattr(args, 'num_sampled_episodes', 16)
+    _num_wind_buckets = getattr(args, 'num_wind_buckets', 20)
+
+    if _sample_episodes:
+        assert args.batch_size % _num_sampled_episodes == 0, (
+            f"batch_size ({args.batch_size}) must be divisible by "
+            f"num_sampled_episodes ({_num_sampled_episodes})."
+        )
+        if args.sampling_mode == "rejection":
+            raise ValueError(
+                "sample_episodes=True is incompatible with sampling_mode='rejection': "
+                "rejection sampling re-orders transitions and cannot preserve episode grouping. "
+                "Use sampling_mode='none' or 'weighted' instead."
+            )
+        _transitions_per_episode = args.batch_size // _num_sampled_episodes
+        if not getattr(args, 'random_wind', False):
+            import warnings
+            warnings.warn(
+                "sample_episodes=True but random_wind=False: episode-centric sampling "
+                "provides no benefit (all episodes share the same MDP). Consider setting "
+                "sample_episodes=False."
+            )
+
     # Determine same-episodes sampling from constraint_mode (shared across all IS modes)
     if args.constraint_mode == "same_episodes":
         transitions_per_episode = 2
@@ -579,11 +604,16 @@ def learn_eigenvectors(args, learner_module, method):
         # sampling_probs * is_ratio ≈ uniform
         eval_distribution = sampling_probs * is_ratio.squeeze(-1)
 
-        sample_batch = lambda batch_size, discount: replay_buffer.sample(
-            batch_size, discount,
-            transitions_per_episode=transitions_per_episode,
-            use_same_episodes=use_same_episodes
-        )
+        if _sample_episodes:
+            sample_batch = lambda batch_size, discount: replay_buffer.sample_episodes(
+                _num_sampled_episodes, batch_size // _num_sampled_episodes, discount
+            )
+        else:
+            sample_batch = lambda batch_size, discount: replay_buffer.sample(
+                batch_size, discount,
+                transitions_per_episode=transitions_per_episode,
+                use_same_episodes=use_same_episodes
+            )
 
     elif sampling_mode == "none":
         # Sample from buffer as-is with no IS correction.
@@ -596,17 +626,28 @@ def learn_eigenvectors(args, learner_module, method):
         # Use the empirical buffer distribution for evaluation metrics
         eval_distribution = sampling_probs
 
-        sample_batch = lambda batch_size, discount: replay_buffer.sample(
-            batch_size, discount,
-            transitions_per_episode=transitions_per_episode,
-            use_same_episodes=use_same_episodes
-        )
+        if _sample_episodes:
+            sample_batch = lambda batch_size, discount: replay_buffer.sample_episodes(
+                _num_sampled_episodes, batch_size // _num_sampled_episodes, discount
+            )
+        else:
+            sample_batch = lambda batch_size, discount: replay_buffer.sample(
+                batch_size, discount,
+                transitions_per_episode=transitions_per_episode,
+                use_same_episodes=use_same_episodes
+            )
 
     else:
         raise ValueError(
             f"Unknown sampling_mode {sampling_mode!r}. "
             f"Expected one of: 'rejection', 'weighted', 'none'."
         )
+
+    # Attach episode-centric sampling metadata to args so learners can read them
+    # as static Python-level constants when building the JIT-compiled update function.
+    args.sample_episodes = _sample_episodes
+    args.num_sampled_episodes = _num_sampled_episodes
+    args.num_wind_buckets = _num_wind_buckets
 
     # Get the update function from learner module
     update_encoder = learner_module.create_update_function(encoder, args)

@@ -66,6 +66,11 @@ class SharedArgs:
     # Episodic replay buffer
     max_time_offset: int | None = None  # Maximum time offset for sampling (None = episode length)
 
+    # Episode-centric sampling (primarily for random_wind, ensures per-MDP consistency in batches)
+    sample_episodes: bool = False  # If True, sample num_sampled_episodes distinct episodes per batch
+    num_sampled_episodes: int = 16  # Number of distinct episodes per batch; batch_size must be divisible by this
+    num_wind_buckets: int = 20  # Buckets for wind-conditioned EMA; only active when random_wind=True and sample_episodes=True
+
     # Logging and saving
     log_freq: int = 100
     plot_freq: int = 1000
