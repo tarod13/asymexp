@@ -80,7 +80,7 @@ echo "  Output dir: ${OUTPUT_DIR:-<unset>}"
 echo "========================================"
 
 CMD=(
-    python experiments/reward_shaping/run_reward_shaping.py
+    python experiments/reward_shaping/run_reward_shaping_cluster.py
     --env                "$ENV"
     --method             "$METHOD"
     --seed_idx           "$seed_idx"

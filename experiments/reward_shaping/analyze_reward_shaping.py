@@ -24,7 +24,7 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from experiments.reward_shaping.run_reward_shaping import plot_results
+from src.rl.plotting import plot_results
 
 
 def main() -> None:
