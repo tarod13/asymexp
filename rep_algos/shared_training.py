@@ -60,6 +60,7 @@ from src.utils.plotting import (
     plot_roc_heatmap,
     plot_hitting_time_heatmap,
     plot_full_ideal_summary,
+    plot_wind_sweep_grid,
 )
 from src.utils.laplacian import compute_eigendecomposition, compute_gt_eigendecomposition
 
@@ -1467,6 +1468,41 @@ def learn_eigenvectors(args, learner_module, method):
         portal_sources=portal_sources if portal_sources else None,
         portal_ends=portal_ends if portal_ends else None,
     )
+
+    # 8. Wind sweep visualization (random_wind only)
+    if per_wind_gt and getattr(args, 'windy', False) and getattr(args, 'random_wind', False):
+        print("Generating wind sweep visualization...")
+        sweep_data = []
+        for w_val, gt_w, _ in per_wind_gt:
+            eval_coords_w = jnp.concatenate(
+                [state_coords,
+                 jnp.full((len(state_coords), 1), w_val, dtype=jnp.float32)],
+                axis=-1,
+            )
+            fd_w = encoder.apply(encoder_state.params['encoder'], eval_coords_w)[0]
+            if method == "allo":
+                zeros_w = jnp.zeros_like(fd_w['right_real'])
+                fd_w = {**fd_w, 'left_real': fd_w['right_real'],
+                        'left_imag': zeros_w, 'right_imag': zeros_w}
+            sweep_data.append({
+                'wind':               w_val,
+                'gt_right_real':      np.array(gt_w['right_eigenvectors_real']),
+                'gt_right_imag':      np.array(gt_w['right_eigenvectors_imag']),
+                'gt_left_real':       np.array(gt_w['left_eigenvectors_real']),
+                'gt_left_imag':       np.array(gt_w['left_eigenvectors_imag']),
+                'learned_right_real': np.array(fd_w['right_real']),
+                'learned_right_imag': np.array(fd_w['right_imag']),
+            })
+        plot_wind_sweep_grid(
+            sweep_data=sweep_data,
+            canonical_states=np.array(canonical_states),
+            grid_width=env.width,
+            grid_height=env.height,
+            eig_indices=list(range(args.num_eigenvector_pairs)),
+            save_dir=str(plots_dir),
+            method=method,
+        )
+        print(f"  Wind sweep figures saved to {plots_dir}/wind_sweep_*.png")
 
     print("\n" + "="*60)
     print("Visualization complete!")
