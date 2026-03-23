@@ -339,4 +339,5 @@ def run_q_learning(
         np.stack(all_eval_len_all, axis=0),          # [num_chunks, num_seeds]
         np.stack(all_eval_len_suc, axis=0),          # [num_chunks, num_seeds]
         np.array(all_eval_steps,   dtype=np.int32),  # [num_chunks]
+        np.array(carry[0]),                          # [num_seeds, num_states, num_actions]
     )

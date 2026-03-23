@@ -57,7 +57,8 @@ from src.rl.loading import (
 )
 from src.rl.qlearning import build_all_potentials, run_q_learning
 from src.rl.plotting import plot_results, plot_hitting_times_grid
-from src.utils.envs import create_gridworld_env, get_canonical_free_states
+from src.utils.envs import create_gridworld_env, get_canonical_free_states, get_env_transition_markers
+from src.utils.plotting import plot_potential_vs_value
 from src.utils.metrics import compute_hitting_times_from_eigenvectors
 
 
@@ -592,7 +593,7 @@ def main() -> None:
         print(f"Q-learning: {cond_name}")
         print(f"{'='*60}")
 
-        eval_sr, eval_len_all, eval_len_suc, eval_steps = run_q_learning(
+        eval_sr, eval_len_all, eval_len_suc, eval_steps, Q_final = run_q_learning(
             env                  = env,
             canonical_states     = canonical_states,
             goal_per_seed        = goal_per_seed,
@@ -621,10 +622,12 @@ def main() -> None:
                   f"  eval_len_suc={suc_disp}")
 
         results[cond_name] = dict(
-            eval_sr      = eval_sr,
-            eval_len_all = eval_len_all,
-            eval_len_suc = eval_len_suc,
-            eval_steps   = eval_steps,
+            eval_sr           = eval_sr,
+            eval_len_all      = eval_len_all,
+            eval_len_suc      = eval_len_suc,
+            eval_steps        = eval_steps,
+            Q_final           = Q_final,
+            potential_per_seed= cond_kwargs.get("potential_per_seed"),
         )
 
     # ------------------------------------------------------------------
@@ -648,6 +651,45 @@ def main() -> None:
     print(f"  results.pkl saved  → {output_dir / 'results.pkl'}")
 
     plot_results(results, output_dir / "learning_curves.png")
+
+    # ------------------------------------------------------------------
+    # 8. Potential vs value plots (one figure per condition)
+    # ------------------------------------------------------------------
+    print(f"\n{'='*60}")
+    print("Plotting potential vs value ...")
+    print(f"{'='*60}")
+
+    pv_dir = output_dir / "potential_vs_value"
+    pv_dir.mkdir(exist_ok=True)
+
+    door_markers = get_env_transition_markers(env)
+    num_canonical = len(canonical_states)
+
+    for cond_name, cond_data in results.items():
+        Q_fin  = cond_data["Q_final"]           # [num_seeds, num_states, num_actions]
+        pot    = cond_data["potential_per_seed"]  # [num_seeds, num_states] or None
+
+        V_per_seed = Q_fin.max(axis=-1)           # [num_seeds, num_canonical]
+
+        if pot is None:
+            pot_per_seed = np.zeros((args.num_seeds, num_canonical), dtype=np.float32)
+        else:
+            pot_per_seed = np.array(pot, dtype=np.float32)
+
+        safe_name = cond_name.replace(" ", "_").replace("=", "").replace("/", "_")
+        save_path = str(pv_dir / f"{safe_name}_potential_vs_value.png")
+
+        plot_potential_vs_value(
+            canonical_states  = canonical_states,
+            grid_width        = env.width,
+            grid_height       = env.height,
+            potential_per_seed= pot_per_seed,
+            value_per_seed    = V_per_seed,
+            goal_per_seed     = goal_per_seed,
+            cond_name         = cond_name,
+            portals           = door_markers if door_markers else None,
+            save_path         = save_path,
+        )
 
     print(f"\nDone.  All outputs written to {output_dir}")
 
