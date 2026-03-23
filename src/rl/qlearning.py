@@ -30,18 +30,24 @@ def build_potential(hitting_times: np.ndarray, goal_idx: int, clamp_negatives: b
     finite_mask = np.isfinite(h)
     if finite_mask.sum() == 0:
         return np.zeros(len(h), dtype=np.float32)
+    
+    h = np.where(
+        finite_mask, 
+        h, 
+        float(h[finite_mask].max()) if finite_mask.any() else 0.0
+    )
 
     if clamp_negatives:
-        h = np.where(finite_mask & (h >= 0), h, 0.0)
-        finite_mask = h > 0
-    else:
-        h = np.where(finite_mask, h, 0.0)
+        non_negative_mask = (h >= 0)
+        h = np.where(
+            non_negative_mask, 
+            h, 
+            float(h[non_negative_mask].max()) if non_negative_mask.any() else 0.0
+        )
 
-    h_ref = float(np.abs(h).max())
-    if h_ref < 1e-8:
-        h_ref = 1e-8
-
-    h = h / h_ref  # normalise
+    h = h - np.min(h, axis=0, keepdims=True)  # shift so min is zero (prevents large negative potentials when normalising by max)
+    h_max = np.max(h, axis=0, keepdims=True)  # max absolute value across states
+    h = 100 * h / h_max.clip(1e-8)  # normalize
 
     return -h.astype(np.float32)   # higher potential = closer to goal
 
