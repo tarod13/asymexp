@@ -877,33 +877,65 @@ def init_params(encoder_initial_params, args):
         'encoder': encoder_initial_params,
     }
 
+    # When episode-centric sampling is used with random_wind, EMA parameters are
+    # stored per wind bucket (shape (B, ...) instead of (...)) so that each MDP's
+    # spectral structure is tracked and used independently.
+    use_buckets = (
+        getattr(args, 'sample_episodes', False)
+        and getattr(args, 'random_wind', False)
+    )
+    B = getattr(args, 'num_wind_buckets', 20) if use_buckets else None
+
     # EMA estimates for eigenvalues
     if args.eigenvalue_estimation_method == 'separate':
         # Disentangled eigenvalue estimates for x (right) and y (left) eigenvectors
-        params.update({
-            'lambda_x_real': jnp.ones((k,)),
-            'lambda_x_imag': jnp.zeros((k,)),
-            'lambda_y_real': jnp.ones((k,)),
-            'lambda_y_imag': jnp.zeros((k,)),
-        })
+        if use_buckets:
+            params.update({
+                'lambda_x_real': jnp.ones((B, k)),
+                'lambda_x_imag': jnp.zeros((B, k)),
+                'lambda_y_real': jnp.ones((B, k)),
+                'lambda_y_imag': jnp.zeros((B, k)),
+            })
+        else:
+            params.update({
+                'lambda_x_real': jnp.ones((k,)),
+                'lambda_x_imag': jnp.zeros((k,)),
+                'lambda_y_real': jnp.ones((k,)),
+                'lambda_y_imag': jnp.zeros((k,)),
+            })
     else:
         # Single shared eigenvalue estimate
         # 'average': averaged Rayleigh quotient from x and y
         # 'two_sided': bi-orthogonal estimate <y, next_x> / <y, x>
-        params.update({
-            'lambda_real': jnp.ones((k,)),
-            'lambda_imag': jnp.zeros((k,)),
-        })
+        if use_buckets:
+            params.update({
+                'lambda_real': jnp.ones((B, k)),
+                'lambda_imag': jnp.zeros((B, k)),
+            })
+        else:
+            params.update({
+                'lambda_real': jnp.ones((k,)),
+                'lambda_imag': jnp.zeros((k,)),
+            })
 
     # Add EMA constraint estimators only for EMA constraint_mode
     if args.constraint_mode == "ema":
-        params.update({
-            'norm_x_ema': jnp.zeros((k,)),
-            'norm_y_ema': jnp.zeros((k,)),
-            'phase_xy_ema': jnp.zeros((k,)),
-            'corr_xy_real_ema': jnp.zeros((k, k)),
-            'corr_xy_imag_ema': jnp.zeros((k, k)),
-        })
+        if use_buckets:
+            params.update({
+                'norm_x_ema':       jnp.zeros((B, k)),
+                'norm_y_ema':       jnp.zeros((B, k)),
+                'phase_xy_ema':     jnp.zeros((B, k)),
+                'corr_xy_real_ema': jnp.zeros((B, k, k)),
+                'corr_xy_imag_ema': jnp.zeros((B, k, k)),
+            })
+        else:
+            params.update({
+                'norm_x_ema':       jnp.zeros((k,)),
+                'norm_y_ema':       jnp.zeros((k,)),
+                'phase_xy_ema':     jnp.zeros((k,)),
+                'corr_xy_real_ema': jnp.zeros((k, k)),
+                'corr_xy_imag_ema': jnp.zeros((k, k)),
+            })
 
     # Add barrier coefficient(s) for increasing-barrier enforcement methods
     enforcement_method = getattr(args, 'constraint_enforcement_method', 'clf')
@@ -1039,9 +1071,223 @@ def create_update_function(encoder, args):
             "Choose 'clf', 'barrier', 'granular_barrier', or 'complex_allo'."
         )
 
+    # Episode-centric sampling settings (captured as Python-level constants).
+    use_episodic = (
+        getattr(args, 'sample_episodes', False)
+        and getattr(args, 'random_wind', False)
+    )
+    N = getattr(args, 'num_sampled_episodes', 1) if use_episodic else 1
+    T = (args.batch_size // N) if use_episodic else args.batch_size
+    B = getattr(args, 'num_wind_buckets', 20)  # number of wind buckets
+    use_buckets = use_episodic  # alias for clarity below
+
     def sg(z):
         """Stop gradient utility function."""
         return jax.lax.stop_gradient(z)
+
+    def _unbucket_params(params, ep_bucket):
+        """For the episode-centric path: replace bucketed EMA arrays with the
+        per-bucket slice for this episode, so the existing loss helpers
+        (_compute_lambda_terms, _compute_lyapunov_terms) receive the same
+        flat shapes they expect in the non-bucketed path."""
+        if not use_buckets:
+            return params
+        ep_params = dict(params)
+        if args.eigenvalue_estimation_method == 'separate':
+            ep_params['lambda_x_real'] = params['lambda_x_real'][ep_bucket]
+            ep_params['lambda_x_imag'] = params['lambda_x_imag'][ep_bucket]
+            ep_params['lambda_y_real'] = params['lambda_y_real'][ep_bucket]
+            ep_params['lambda_y_imag'] = params['lambda_y_imag'][ep_bucket]
+        else:
+            ep_params['lambda_real'] = params['lambda_real'][ep_bucket]
+            ep_params['lambda_imag'] = params['lambda_imag'][ep_bucket]
+        if args.constraint_mode == "ema":
+            ep_params['norm_x_ema']       = params['norm_x_ema'][ep_bucket]
+            ep_params['norm_y_ema']       = params['norm_y_ema'][ep_bucket]
+            ep_params['phase_xy_ema']     = params['phase_xy_ema'][ep_bucket]
+            ep_params['corr_xy_real_ema'] = params['corr_xy_real_ema'][ep_bucket]
+            ep_params['corr_xy_imag_ema'] = params['corr_xy_imag_ema'][ep_bucket]
+        return ep_params
+
+    def _clf_core_loss(params, c, nc, c2, nc2, ip_fn, multi_ip_fn, ep_bucket):
+        """Core CLF loss body, shared between the standard and episode-centric paths.
+
+        Args:
+            params:       Parameter dict (EMA arrays already have flat shapes).
+            c, nc:        Batch-1 current / next-step coordinate arrays.
+            c2, nc2:      Batch-2 current / next-step coordinate arrays.
+            ip_fn:        Weighted inner-product function (batch-specific).
+            multi_ip_fn:  Multi-vector weighted inner-product function (batch-specific).
+            ep_bucket:    Integer scalar — wind bucket index (added to aux for the
+                          episodic scatter-mean update). Pass a dummy scalar when
+                          not in the episodic path; the value is ignored downstream.
+
+        Returns:
+            (total_loss scalar, aux dict)
+        """
+        # ----------------------------------------------------------------
+        # 1. Forward Pass & Feature Extraction
+        # ----------------------------------------------------------------
+        encoder_params = params['encoder']
+        features_1      = encoder.apply(encoder_params, c)[0]
+        features_2      = encoder.apply(encoder_params, c2)[0]
+        next_features   = encoder.apply(encoder_params, nc)[0]
+        next_features_2 = encoder.apply(encoder_params, nc2)[0]
+
+        x_r, x_i     = features_1['right_real'],      features_1['right_imag']
+        y_r, y_i     = features_1['left_real'],        features_1['left_imag']
+        x2_r, x2_i   = features_2['right_real'],      features_2['right_imag']
+        y2_r, y2_i   = features_2['left_real'],        features_2['left_imag']
+        next_x_r, next_x_i = next_features['right_real'],   next_features['right_imag']
+        next_y_r, next_y_i = next_features['left_real'],    next_features['left_imag']
+        next_x2_r, next_x2_i = next_features_2['right_real'], next_features_2['right_imag']
+        next_y2_r, next_y2_i = next_features_2['left_real'],  next_features_2['left_imag']
+
+        # ----------------------------------------------------------------
+        # 2. Lambda (Eigenvalue) Estimators — targets + EMA loss
+        # ----------------------------------------------------------------
+        norm_x_sq_est = ip_fn(x_r, x_r) + ip_fn(x_i, x_i)
+        norm_y_sq_est = ip_fn(y_r, y_r) + ip_fn(y_i, y_i)
+
+        (lambda_loss,
+         ema_lambda_x_r, ema_lambda_x_i,
+         ema_lambda_y_r, ema_lambda_y_i) = _compute_lambda_terms(
+            x_r, x_i, y_r, y_i,
+            next_x_r, next_x_i, next_y_r, next_y_i,
+            norm_x_sq_est, norm_y_sq_est,
+            params,
+            args.eigenvalue_estimation_method,
+            args.normalize_eigenvalue_targets,
+            ip_fn, sg
+        )
+
+        # ----------------------------------------------------------------
+        # 3. Lyapunov function V and ∇V (shared between enforcement methods)
+        # ----------------------------------------------------------------
+        V, nabla_V, constraint_estimator_loss, V_components = _compute_lyapunov_terms(
+            x_r, x_i, y_r, y_i,
+            x2_r, x2_i, y2_r, y2_i,
+            next_x_r, next_x_i, next_y_r, next_y_i,
+            next_x2_r, next_x2_i, next_y2_r, next_y2_i,
+            params, args, ip_fn, multi_ip_fn,
+        )
+
+        # ----------------------------------------------------------------
+        # 4. Graph Loss (Dynamics) + Chirality
+        # ----------------------------------------------------------------
+        two_sided_graph_loss = getattr(args, 'two_sided_graph_loss', False)
+        if two_sided_graph_loss:
+            f_x_0_real   = y_r
+            f_x_0_imag   = y_i
+            f_x_res_real = -(ema_lambda_y_r * y_r + ema_lambda_y_i * y_i)
+            f_x_res_imag = -(-ema_lambda_y_i * y_r + ema_lambda_y_r * y_i)
+            f_y_0_real   = next_x_r
+            f_y_0_imag   = next_x_i
+            f_y_res_real = -(ema_lambda_x_r * x_r - ema_lambda_x_i * x_i)
+            f_y_res_imag = -(ema_lambda_x_i * x_r + ema_lambda_x_r * x_i)
+
+            if getattr(args, 'use_clf_symmetry_weights', False):
+                _k = f_x_0_real.shape[-1]
+                weights = jnp.linspace(_k, 1.0, _k)
+                f_x_0_real   = f_x_0_real   * weights
+                f_x_0_imag   = f_x_0_imag   * weights
+                f_x_res_real = f_x_res_real  * weights
+                f_x_res_imag = f_x_res_imag  * weights
+                f_y_0_real   = f_y_0_real    * weights
+                f_y_0_imag   = f_y_0_imag    * weights
+                f_y_res_real = f_y_res_real   * weights
+                f_y_res_imag = f_y_res_imag   * weights
+
+            graph_loss_x_real = -(ip_fn(next_x_r, sg(f_x_0_real)) + ip_fn(x_r, sg(f_x_res_real)))
+            graph_loss_x_imag = -(ip_fn(next_x_i, sg(f_x_0_imag)) + ip_fn(x_i, sg(f_x_res_imag)))
+            graph_loss_x = graph_loss_x_real + graph_loss_x_imag
+            graph_loss_y_real = -(ip_fn(y_r, sg(f_y_0_real)) + ip_fn(y_r, sg(f_y_res_real)))
+            graph_loss_y_imag = -(ip_fn(y_i, sg(f_y_0_imag)) + ip_fn(y_i, sg(f_y_res_imag)))
+            graph_loss_y = graph_loss_y_real + graph_loss_y_imag
+        else:
+            f_x_0_real   = next_x_r
+            f_x_0_imag   = next_x_i
+            f_x_res_real = -(ema_lambda_x_r * x_r - ema_lambda_x_i * x_i)
+            f_x_res_imag = -(ema_lambda_x_i * x_r + ema_lambda_x_r * x_i)
+            f_y_0_real   = y_r
+            f_y_0_imag   = y_i
+            f_y_res_real = -(ema_lambda_y_r * y_r + ema_lambda_y_i * y_i)
+            f_y_res_imag = -(-ema_lambda_y_i * y_r + ema_lambda_y_r * y_i)
+
+            if getattr(args, 'use_clf_symmetry_weights', False):
+                _k = f_x_0_real.shape[-1]
+                weights = jnp.linspace(_k, 1.0, _k)
+                f_x_0_real   = f_x_0_real   * weights
+                f_x_0_imag   = f_x_0_imag   * weights
+                f_x_res_real = f_x_res_real  * weights
+                f_x_res_imag = f_x_res_imag  * weights
+                f_y_0_real   = f_y_0_real    * weights
+                f_y_0_imag   = f_y_0_imag    * weights
+                f_y_res_real = f_y_res_real   * weights
+                f_y_res_imag = f_y_res_imag   * weights
+
+            graph_loss_x_real = -(ip_fn(x_r, sg(f_x_0_real)) + ip_fn(x_r, sg(f_x_res_real)))
+            graph_loss_x_imag = -(ip_fn(x_i, sg(f_x_0_imag)) + ip_fn(x_i, sg(f_x_res_imag)))
+            graph_loss_x = graph_loss_x_real + graph_loss_x_imag
+            graph_loss_y_real = -(ip_fn(next_y_r, sg(f_y_0_real)) + ip_fn(y_r, sg(f_y_res_real)))
+            graph_loss_y_imag = -(ip_fn(next_y_i, sg(f_y_0_imag)) + ip_fn(y_i, sg(f_y_res_imag)))
+            graph_loss_y = graph_loss_y_real + graph_loss_y_imag
+
+        if args.norm_graph_loss:
+            norm_x_clip = jnp.maximum(norm_x_sq_est, 1e-6)
+            norm_y_clip = jnp.maximum(norm_y_sq_est, 1e-6)
+            graph_loss_x = graph_loss_x / sg(norm_x_clip)
+            graph_loss_y = graph_loss_y / sg(norm_y_clip)
+
+        graph_loss = (graph_loss_x + graph_loss_y).sum()
+
+        x_i_normalized = x_i / jnp.sqrt(norm_x_sq_est + 1e-6)
+        chirality_x    = ip_fn(sg(x_i_normalized ** 2), x_i_normalized)
+        chirality_loss = (chirality_x ** 2).sum()
+
+        # ----------------------------------------------------------------
+        # 5. Constraint Enforcement (pluggable strategy)
+        # ----------------------------------------------------------------
+        f_vectors = {
+            'x_0_real':   f_x_0_real,   'x_0_imag':   f_x_0_imag,
+            'x_res_real': f_x_res_real, 'x_res_imag': f_x_res_imag,
+            'y_0_real':   f_y_0_real,   'y_0_imag':   f_y_0_imag,
+            'y_res_real': f_y_res_real, 'y_res_imag': f_y_res_imag,
+        }
+        features = {'x_r': x_r, 'x_i': x_i, 'y_r': y_r, 'y_i': y_i}
+        enforcement_loss, enforcement_aux = _enforce_constraints(
+            V, nabla_V, f_vectors, features, params, ip_fn, sg,
+            V_components, two_sided_graph_loss,
+        )
+
+        # ----------------------------------------------------------------
+        # 6. Total Loss
+        # ----------------------------------------------------------------
+        total_loss = (
+            graph_loss
+            + enforcement_loss
+            + args.chirality_factor * chirality_loss
+            + lambda_loss
+            + constraint_estimator_loss
+        )
+
+        aux = {
+            'total_loss':           total_loss,
+            'graph_loss':           graph_loss,
+            'chirality_loss':       chirality_loss,
+            'graph_loss_x_real':    graph_loss_x_real.sum(),
+            'graph_loss_x_imag':    graph_loss_x_imag.sum(),
+            'graph_loss_y_real':    graph_loss_y_real.sum(),
+            'graph_loss_y_imag':    graph_loss_y_imag.sum(),
+            'ema_lambda_x_real':    ema_lambda_x_r.mean(),
+            'ema_lambda_x_imag':    ema_lambda_x_i.mean(),
+            'ema_lambda_y_real':    ema_lambda_y_r.mean(),
+            'ema_lambda_y_imag':    ema_lambda_y_i.mean(),
+            'ep_bucket':            ep_bucket,
+            **V_components,
+            **enforcement_aux,
+        }
+        return total_loss, aux
 
     @jax.jit
     def update_encoder(
@@ -1052,205 +1298,64 @@ def create_update_function(encoder, args):
         next_state_coords_batch_2: jnp.ndarray,
         state_weighting: jnp.ndarray,
     ):
-        def ip(a, b):
-            """Weighted inner product that keeps dimensions."""
-            weighted_a = state_weighting * a
-            return jnp.mean(weighted_a * b, axis=0, keepdims=True)
+        if use_episodic:
+            # ── Episode-centric path ──────────────────────────────────────────
+            obs_dim       = state_coords_batch.shape[-1]
+            ep_coords     = state_coords_batch.reshape(N, T, obs_dim)
+            ep_n_coords   = next_state_coords_batch.reshape(N, T, obs_dim)
+            ep_coords_2   = state_coords_batch_2.reshape(N, T, obs_dim)
+            ep_n_coords_2 = next_state_coords_batch_2.reshape(N, T, obs_dim)
+            ep_weights    = state_weighting.reshape(N, T, 1)
 
-        def multi_ip(a, b):
-            """Weighted multiple inner products for multiple vectors."""
-            weighted_a = state_weighting * a
-            return jnp.einsum('ij,ik->jk', weighted_a, b) / a.shape[0]
+            def per_episode_loss(params, ec, enc, ec2, enc2, ew):
+                def ep_ip(a, b):
+                    return jnp.mean(ew * a * b, axis=0, keepdims=True)
+                def ep_multi_ip(a, b):
+                    return jnp.einsum('ij,ik->jk', ew * a, b) / T
 
-        def encoder_loss(params):
-            # ----------------------------------------------------------------
-            # 1. Forward Pass & Feature Extraction
-            # ----------------------------------------------------------------
-            encoder_params = params['encoder']
-            features_1 = encoder.apply(encoder_params, state_coords_batch)[0]
-            features_2 = encoder.apply(encoder_params, state_coords_batch_2)[0]
-            next_features = encoder.apply(encoder_params, next_state_coords_batch)[0]
-            next_features_2 = encoder.apply(encoder_params, next_state_coords_batch_2)[0]
+                ep_wind   = ec[0, -1]
+                ep_bucket = jnp.clip(
+                    jnp.floor((ep_wind + 1.0) / 2.0 * B).astype(jnp.int32),
+                    0, B - 1,
+                )
+                ep_params = _unbucket_params(params, ep_bucket)
+                return _clf_core_loss(ep_params, ec, enc, ec2, enc2,
+                                      ep_ip, ep_multi_ip, ep_bucket)
 
-            # Extract right/left eigenvectors (Batch 1)
-            x_r, x_i = features_1['right_real'], features_1['right_imag']
-            y_r, y_i = features_1['left_real'], features_1['left_imag']
+            def vmapped_loss(params):
+                per_ep_losses, per_ep_aux = jax.vmap(
+                    per_episode_loss, in_axes=(None, 0, 0, 0, 0, 0)
+                )(params, ep_coords, ep_n_coords, ep_coords_2, ep_n_coords_2, ep_weights)
+                return per_ep_losses.mean(), per_ep_aux
 
-            # Extract right/left eigenvectors (Batch 2)
-            x2_r, x2_i = features_2['right_real'], features_2['right_imag']
-            y2_r, y2_i = features_2['left_real'], features_2['left_imag']
+            (total_loss, per_ep_aux), grads = jax.value_and_grad(
+                vmapped_loss, has_aux=True
+            )(encoder_state.params)
 
-            # Extract next step vectors (Batch 1)
-            next_x_r, next_x_i = next_features['right_real'], next_features['right_imag']
-            next_y_r, next_y_i = next_features['left_real'], next_features['left_imag']
+            aux        = jax.tree_util.tree_map(lambda x: x.mean(axis=0), per_ep_aux)
+            ep_buckets = per_ep_aux['ep_bucket']  # (N,) — for post-step external updates
 
-            # Extract next step vectors (Batch 2)
-            next_x2_r, next_x2_i = next_features_2['right_real'], next_features_2['right_imag']
-            next_y2_r, next_y2_i = next_features_2['left_real'], next_features_2['left_imag']
+        else:
+            # ── Standard flat-batch path ──────────────────────────────────────
+            def ip(a, b):
+                return jnp.mean(state_weighting * a * b, axis=0, keepdims=True)
 
-            # ----------------------------------------------------------------
-            # 2. Lambda (Eigenvalue) Estimators — targets + EMA loss
-            # ----------------------------------------------------------------
+            def multi_ip(a, b):
+                return jnp.einsum('ij,ik->jk', state_weighting * a, b) / a.shape[0]
 
-            # Norms (shape (1,k)) — also used downstream by graph loss / chirality
-            norm_x_sq_est = ip(x_r, x_r) + ip(x_i, x_i)
-            norm_y_sq_est = ip(y_r, y_r) + ip(y_i, y_i)
+            # Dummy scalar bucket — value unused in the non-episodic path.
+            _dummy_bucket = jnp.zeros((), dtype=jnp.int32)
 
-            (lambda_loss,
-             ema_lambda_x_r, ema_lambda_x_i,
-             ema_lambda_y_r, ema_lambda_y_i) = _compute_lambda_terms(
-                x_r, x_i, y_r, y_i,
-                next_x_r, next_x_i, next_y_r, next_y_i,
-                norm_x_sq_est, norm_y_sq_est,
-                params,
-                args.eigenvalue_estimation_method,
-                args.normalize_eigenvalue_targets,
-                ip, sg
-            )
+            def encoder_loss(params):
+                return _clf_core_loss(
+                    params,
+                    state_coords_batch, next_state_coords_batch,
+                    state_coords_batch_2, next_state_coords_batch_2,
+                    ip, multi_ip, _dummy_bucket,
+                )
 
-            # ----------------------------------------------------------------
-            # 4. Lyapunov function V and ∇V (shared between enforcement methods)
-            # ----------------------------------------------------------------
-            V, nabla_V, constraint_estimator_loss, V_components = _compute_lyapunov_terms(
-                x_r, x_i, y_r, y_i,
-                x2_r, x2_i, y2_r, y2_i,
-                next_x_r, next_x_i, next_y_r, next_y_i,
-                next_x2_r, next_x2_i, next_y2_r, next_y2_i,
-                params, args, ip, multi_ip,
-            )
-
-            # ----------------------------------------------------------------
-            # 5. Graph Loss (Dynamics) + Chirality
-            # ----------------------------------------------------------------
-            two_sided_graph_loss = getattr(args, 'two_sided_graph_loss', False)
-            if two_sided_graph_loss:
-                f_x_0_real = y_r
-                f_x_0_imag = y_i
-                f_x_res_real = -(ema_lambda_y_r * y_r + ema_lambda_y_i * y_i)
-                f_x_res_imag = -(-ema_lambda_y_i * y_r + ema_lambda_y_r * y_i)
-
-                f_y_0_real = next_x_r
-                f_y_0_imag = next_x_i
-                f_y_res_real = -(ema_lambda_x_r * x_r - ema_lambda_x_i * x_i)
-                f_y_res_imag = -(ema_lambda_x_i * x_r + ema_lambda_x_r * x_i)
-
-                if getattr(args, 'use_clf_symmetry_weights', False):
-                    k = f_x_0_real.shape[-1]
-                    weights = jnp.linspace(k, 1.0, k)
-                    f_x_0_real   = f_x_0_real   * weights
-                    f_x_0_imag   = f_x_0_imag   * weights
-                    f_x_res_real = f_x_res_real  * weights
-                    f_x_res_imag = f_x_res_imag  * weights
-                    f_y_0_real   = f_y_0_real    * weights
-                    f_y_0_imag   = f_y_0_imag    * weights
-                    f_y_res_real = f_y_res_real   * weights
-                    f_y_res_imag = f_y_res_imag   * weights
-
-                graph_loss_x_real = -(ip(next_x_r, sg(f_x_0_real)) + ip(x_r, sg(f_x_res_real)))
-                graph_loss_x_imag = -(ip(next_x_i, sg(f_x_0_imag)) + ip(x_i, sg(f_x_res_imag)))
-                graph_loss_x = graph_loss_x_real + graph_loss_x_imag
-
-                graph_loss_y_real = -(ip(y_r, sg(f_y_0_real)) + ip(y_r, sg(f_y_res_real)))
-                graph_loss_y_imag = -(ip(y_i, sg(f_y_0_imag)) + ip(y_i, sg(f_y_res_imag)))
-                graph_loss_y = graph_loss_y_real + graph_loss_y_imag
-
-            else:
-                f_x_0_real = next_x_r
-                f_x_0_imag = next_x_i
-                f_x_res_real = -(ema_lambda_x_r * x_r - ema_lambda_x_i * x_i)
-                f_x_res_imag = -(ema_lambda_x_i * x_r + ema_lambda_x_r * x_i)
-
-                f_y_0_real = y_r
-                f_y_0_imag = y_i
-                f_y_res_real = -(ema_lambda_y_r * y_r + ema_lambda_y_i * y_i)
-                f_y_res_imag = -(-ema_lambda_y_i * y_r + ema_lambda_y_r * y_i)
-
-                if getattr(args, 'use_clf_symmetry_weights', False):
-                    k = f_x_0_real.shape[-1]
-                    weights = jnp.linspace(k, 1.0, k)
-                    f_x_0_real   = f_x_0_real   * weights
-                    f_x_0_imag   = f_x_0_imag   * weights
-                    f_x_res_real = f_x_res_real  * weights
-                    f_x_res_imag = f_x_res_imag  * weights
-                    f_y_0_real   = f_y_0_real    * weights
-                    f_y_0_imag   = f_y_0_imag    * weights
-                    f_y_res_real = f_y_res_real   * weights
-                    f_y_res_imag = f_y_res_imag   * weights
-
-                graph_loss_x_real = -(ip(x_r, sg(f_x_0_real)) + ip(x_r, sg(f_x_res_real)))
-                graph_loss_x_imag = -(ip(x_i, sg(f_x_0_imag)) + ip(x_i, sg(f_x_res_imag)))
-                graph_loss_x = graph_loss_x_real + graph_loss_x_imag
-
-                graph_loss_y_real = -(ip(next_y_r, sg(f_y_0_real)) + ip(y_r, sg(f_y_res_real)))
-                graph_loss_y_imag = -(ip(next_y_i, sg(f_y_0_imag)) + ip(y_i, sg(f_y_res_imag)))
-                graph_loss_y = graph_loss_y_real + graph_loss_y_imag
-
-            if args.norm_graph_loss:
-                # Divide each per-eigenvector component by its 2-norm to normalise the loss
-                # scale. norm_x_sq_est / norm_y_sq_est have shape (1, k), matching graph_loss_x/y.
-                norm_x_clip = jnp.maximum(norm_x_sq_est, 1e-6)
-                norm_y_clip = jnp.maximum(norm_y_sq_est, 1e-6)
-                graph_loss_x = graph_loss_x / sg(norm_x_clip)
-                graph_loss_y = graph_loss_y / sg(norm_y_clip)
-
-            graph_loss = (graph_loss_x + graph_loss_y).sum()
-
-            x_i_normalized = x_i / jnp.sqrt(norm_x_sq_est + 1e-6)
-            chirality_x = ip(sg(x_i_normalized**2), x_i_normalized)
-            chirality_loss = ((chirality_x)**2).sum()
-
-            # ----------------------------------------------------------------
-            # 6. Constraint Enforcement (pluggable strategy)
-            # ----------------------------------------------------------------
-            f_vectors = {
-                'x_0_real':   f_x_0_real,
-                'x_0_imag':   f_x_0_imag,
-                'x_res_real': f_x_res_real,
-                'x_res_imag': f_x_res_imag,
-                'y_0_real': f_y_0_real,
-                'y_0_imag': f_y_0_imag,
-                'y_res_real': f_y_res_real,
-                'y_res_imag': f_y_res_imag,
-            }
-            features = {'x_r': x_r, 'x_i': x_i, 'y_r': y_r, 'y_i': y_i}
-
-            enforcement_loss, enforcement_aux = _enforce_constraints(
-                V, nabla_V, f_vectors, features, params, ip, sg, V_components, two_sided_graph_loss,
-            )
-
-            # ----------------------------------------------------------------
-            # 7. Total Loss
-            # ----------------------------------------------------------------
-            total_loss = (
-                graph_loss
-                + enforcement_loss
-                + args.chirality_factor * chirality_loss
-                + lambda_loss
-                + constraint_estimator_loss
-            )
-
-            # Auxiliary metrics
-            aux = {
-                'total_loss': total_loss,
-                'graph_loss': graph_loss,
-                'chirality_loss': chirality_loss,
-                'graph_loss_x_real': graph_loss_x_real.sum(),
-                'graph_loss_x_imag': graph_loss_x_imag.sum(),
-                'graph_loss_y_real': graph_loss_y_real.sum(),
-                'graph_loss_y_imag': graph_loss_y_imag.sum(),
-                'ema_lambda_x_real': ema_lambda_x_r.mean(),
-                'ema_lambda_x_imag': ema_lambda_x_i.mean(),
-                'ema_lambda_y_real': ema_lambda_y_r.mean(),
-                'ema_lambda_y_imag': ema_lambda_y_i.mean(),
-                **V_components,
-                **enforcement_aux,
-            }
-
-            return total_loss, aux
-
-        # Compute loss and gradients
-        (total_loss, aux), grads = jax.value_and_grad(
-            encoder_loss, has_aux=True)(encoder_state.params)
+            (total_loss, aux), grads = jax.value_and_grad(
+                encoder_loss, has_aux=True)(encoder_state.params)
 
         # Gradient clipping
         max_norm = 1.0
@@ -1354,13 +1459,29 @@ def get_eigenvalues(params):
     Supports both shared ('average') and disentangled ('separate', 'two_sided')
     eigenvalue_estimation_method parameterizations. When disentangled,
     returns the average of x and y estimates as the canonical eigenvalue.
+
+    When sample_episodes+random_wind bucketing is active, lambda arrays have
+    shape (num_wind_buckets, k). This function returns their mean over buckets
+    so downstream evaluation code always receives shape (k,).
     """
     if 'lambda_real' in params:
-        return params['lambda_real'], params['lambda_imag']
+        lr = params['lambda_real']
+        li = params['lambda_imag']
+        # Handle bucketed shape (B, k) → (k,) by averaging over buckets.
+        if lr.ndim == 2:
+            lr, li = lr.mean(axis=0), li.mean(axis=0)
+        return lr, li
     else:
         # Disentangled: both lambda_x_imag and lambda_y_imag store +λ_i (same convention),
         # so a simple average is correct for both real and imaginary parts.
-        lambda_real = 0.5 * (params['lambda_x_real'] + params['lambda_y_real'])
-        lambda_imag = 0.5 * (params['lambda_x_imag'] + params['lambda_y_imag'])
+        lxr = params['lambda_x_real']
+        lxi = params['lambda_x_imag']
+        lyr = params['lambda_y_real']
+        lyi = params['lambda_y_imag']
+        if lxr.ndim == 2:
+            lxr, lxi = lxr.mean(axis=0), lxi.mean(axis=0)
+            lyr, lyi = lyr.mean(axis=0), lyi.mean(axis=0)
+        lambda_real = 0.5 * (lxr + lyr)
+        lambda_imag = 0.5 * (lxi + lyi)
         return lambda_real, lambda_imag
 

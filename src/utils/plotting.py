@@ -1,5 +1,7 @@
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.colors as mcolors
+import matplotlib.gridspec as gridspec
 import numpy as np
 import jax.numpy as jnp
 from pathlib import Path
@@ -2229,3 +2231,193 @@ def plot_full_ideal_summary(
         portal_sources=portal_sources,
         portal_ends=portal_ends,
     )
+
+
+# ── Wind-sweep visualization primitives ──────────────────────────────────────
+
+def align_phase(real: np.ndarray, imag: np.ndarray) -> tuple:
+    """Rotate each eigenvector column so its largest-magnitude component is
+    real and positive, removing the arbitrary U(1) phase from jnp.linalg.eig."""
+    K = real.shape[1]
+    out_real = real.copy()
+    out_imag = imag.copy()
+    for k in range(K):
+        cplx    = real[:, k] + 1j * imag[:, k]
+        max_idx = np.argmax(np.abs(cplx))
+        phase   = np.angle(cplx[max_idx])
+        rotated = cplx * np.exp(-1j * phase)
+        out_real[:, k] = rotated.real
+        out_imag[:, k] = rotated.imag
+    return out_real, out_imag
+
+
+def eigvec_to_grid(values: np.ndarray,
+                   canonical_states: np.ndarray,
+                   width: int, height: int) -> np.ndarray:
+    """Place per-state values on a (height, width) grid; walls stay NaN."""
+    grid = np.full((height, width), np.nan)
+    for i, s in enumerate(canonical_states):
+        grid[int(s) // width, int(s) % width] = values[i]
+    return grid
+
+
+def make_figure(display: np.ndarray,
+                wind_values: np.ndarray,
+                canonical_states: np.ndarray,
+                grid_width: int, grid_height: int,
+                eig_indices: list,
+                title: str) -> plt.Figure:
+    """Build the heatmap grid figure.
+
+    display: (n_wind, num_states, K)
+    rows    = eigenvectors (indexed by eig_indices)
+    columns = wind values
+    """
+    n_wind = len(wind_values)
+    n_rows = len(eig_indices)
+
+    vabs    = max(float(np.nanmax(np.abs(display[:, :, eig_indices]))), 1e-9)
+    hm_norm = mcolors.Normalize(vmin=-vabs, vmax=vabs)
+
+    cell_w  = 0.55
+    cell_h  = cell_w * grid_height / grid_width
+    cb_w    = 0.25
+    cb_gap  = 0.08
+    pad_l   = 0.50
+    pad_top = 0.35
+    pad_bot = 0.25
+
+    fig_w = pad_l + n_wind * cell_w + cb_gap + cb_w + 0.10
+    fig_h = pad_top + n_rows * cell_h + pad_bot
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    fig.suptitle(title, fontsize=10, y=1.0)
+
+    hmap_right = 1.0 - (cb_gap + cb_w + 0.10) / fig_w
+    gs = gridspec.GridSpec(
+        n_rows, n_wind + 1,
+        width_ratios=[1.0] * n_wind + [cb_w / cell_w],
+        hspace=0.06,
+        wspace=0.0,
+        left=pad_l / fig_w,
+        right=hmap_right,
+        top=1.0 - pad_top / fig_h,
+        bottom=pad_bot / fig_h,
+    )
+
+    for row, k in enumerate(eig_indices):
+        eig_data  = display[:, :, k]
+        row_label = "ψ₀" if k == 0 else f"ψ{k}"
+
+        for col in range(n_wind):
+            ax = fig.add_subplot(gs[row, col])
+            grid_img = eigvec_to_grid(
+                eig_data[col], canonical_states, grid_width, grid_height
+            )
+            ax.imshow(
+                grid_img,
+                cmap="RdBu_r", norm=hm_norm,
+                origin="upper", aspect="auto",
+                interpolation="nearest",
+            )
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            if row == 0:
+                ax.set_title(f"{wind_values[col]:+.2f}", fontsize=4.5, pad=2)
+
+        fig.text(
+            pad_l / fig_w - 0.005,
+            1.0 - (pad_top + (row + 0.5) * cell_h) / fig_h,
+            row_label,
+            ha="right", va="center", fontsize=8,
+            transform=fig.transFigure,
+        )
+
+    cb_left   = hmap_right + cb_gap / fig_w
+    cb_bottom = pad_bot / fig_h
+    cb_height = 1.0 - (pad_top + pad_bot) / fig_h
+    ax_cb = fig.add_axes([cb_left, cb_bottom, cb_w / fig_w, cb_height])
+    sm = plt.cm.ScalarMappable(cmap="RdBu_r", norm=hm_norm)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, cax=ax_cb)
+    cbar.ax.tick_params(labelsize=6)
+
+    return fig
+
+
+def save_figure(display, wind_values, canonical_states, grid_width, grid_height,
+                eig_indices, title, out_path):
+    """Save a wind-sweep heatmap grid to *out_path* and close the figure."""
+    fig = make_figure(display, wind_values, canonical_states,
+                      grid_width, grid_height, eig_indices, title)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_wind_sweep_grid(sweep_data: list,
+                         canonical_states: np.ndarray,
+                         grid_width: int,
+                         grid_height: int,
+                         eig_indices: list,
+                         save_dir: str,
+                         method: str = "clf"):
+    """Generate wind-sweep heatmap figures from a single training run.
+
+    Parameters
+    ----------
+    sweep_data : list of dicts, one per wind value, each containing:
+        wind               – scalar wind value
+        gt_right_real      – (S, K) ground-truth right eigenvectors, real part
+        gt_right_imag      – (S, K)
+        gt_left_real       – (S, K) ground-truth left eigenvectors, real part
+        gt_left_imag       – (S, K)
+        learned_right_real – (S, K) learned right eigenvectors, real part
+        learned_right_imag – (S, K)
+    canonical_states : (S,) array of canonical state indices
+    grid_width, grid_height : int
+    eig_indices : list of column indices to display (rows in the figure)
+    save_dir : directory where PNG files are written
+    method : "allo" suppresses left-eigenvector figures
+    """
+    save_dir = Path(save_dir)
+    sweep_data = sorted(sweep_data, key=lambda d: d['wind'])
+    wind_values = np.array([d['wind'] for d in sweep_data])
+
+    def _stack_and_align(key_r, key_i):
+        all_r = np.stack([d[key_r] for d in sweep_data], axis=0)
+        all_i = np.stack([d[key_i] for d in sweep_data], axis=0)
+        for w in range(len(wind_values)):
+            all_r[w], all_i[w] = align_phase(all_r[w], all_i[w])
+        return all_r, all_i
+
+    gt_rr, gt_ri = _stack_and_align('gt_right_real', 'gt_right_imag')
+    ln_rr, ln_ri = _stack_and_align('learned_right_real', 'learned_right_imag')
+
+    for comp, label, display in [
+        ("real", "Re",  gt_rr),
+        ("imag", "Im",  gt_ri),
+        ("abs",  "|·|", np.sqrt(gt_rr ** 2 + gt_ri ** 2)),
+    ]:
+        save_figure(display, wind_values, canonical_states,
+                    grid_width, grid_height, eig_indices,
+                    f"GT right eigenvectors [{label}(ψ_k)] × wind",
+                    save_dir / f"wind_sweep_gt_right_{comp}.png")
+
+    save_figure(ln_rr, wind_values, canonical_states,
+                grid_width, grid_height, eig_indices,
+                "Learned right eigenvectors [Re(ψ_k)] × wind",
+                save_dir / "wind_sweep_learned_right_real.png")
+
+    if method != "allo":
+        gt_lr, gt_li = _stack_and_align('gt_left_real', 'gt_left_imag')
+        for comp, label, display in [
+            ("real", "Re",  gt_lr),
+            ("imag", "Im",  gt_li),
+            ("abs",  "|·|", np.sqrt(gt_lr ** 2 + gt_li ** 2)),
+        ]:
+            save_figure(display, wind_values, canonical_states,
+                        grid_width, grid_height, eig_indices,
+                        f"GT left eigenvectors [{label}(ψ_k)] × wind",
+                        save_dir / f"wind_sweep_gt_left_{comp}.png")

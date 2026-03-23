@@ -443,6 +443,91 @@ class EpisodicReplayBuffer:
         winds = self._episodes['winds'][episode_idx, obs_idx] if 'winds' in self._episodes else None
         return EpisodeBatch(obs=obs, next_obs=next_obs, winds=winds)
     
+    def sample_episodes(self, num_sampled_episodes, transitions_per_episode, discount, env_info={}):
+        """Sample transitions grouped by episode for per-MDP consistency.
+
+        Selects num_sampled_episodes distinct episodes (without replacement), then
+        samples transitions_per_episode independent transitions from each.  The
+        returned batch is ordered episode-major: all transitions from episode 0
+        come first, then episode 1, etc.  Total batch size = num_sampled_episodes *
+        transitions_per_episode.
+
+        This is the correct sampling mode when random_wind=True, because it
+        guarantees that the transitions_per_episode transitions in each group all
+        belong to the same MDP (same wind value), allowing per-episode Gram matrix
+        estimates and bucketed EMA updates to be computed correctly.
+
+        Args:
+            num_sampled_episodes:   Number of distinct episodes to draw (without replacement).
+            transitions_per_episode: Number of independent transitions to sample from each episode.
+            discount:               Discount factor for transition duration sampling.
+            env_info:               Environment information for observation transformation.
+
+        Returns:
+            EpisodeBatch with obs/next_obs/winds of shape
+            (num_sampled_episodes * transitions_per_episode, ...), ordered episode-major.
+        """
+        assert num_sampled_episodes <= len(self), (
+            f"Requested {num_sampled_episodes} distinct episodes but buffer only has {len(self)}."
+        )
+
+        # 1. Draw distinct episode indices.
+        episode_idx_unique = np.random.choice(len(self), size=num_sampled_episodes, replace=False)
+
+        # 2. Tile episode-major so each episode repeats transitions_per_episode times:
+        #    [ep0, ep0, ..., ep0,  ep1, ep1, ..., ep1,  ...]
+        episode_idx = np.repeat(episode_idx_unique, transitions_per_episode)
+
+        # 3. Standard transition sampling (identical to the default path in sample()).
+        transition_ranges = self._get_episode_lengths(episode_idx)
+        obs_idx = uniform_sampling(transition_ranges - 1)
+
+        # Calculate remaining trajectory length using pre-computed terminal indices.
+        if 'terminal_indices' in self._episodes:
+            batch_term_indices = self._episodes['terminal_indices'][episode_idx]
+            valid_mask = batch_term_indices >= obs_idx[:, None]
+            valid_mask &= (batch_term_indices >= 0)
+            relative_term_indices = batch_term_indices - obs_idx[:, None]
+            relative_term_indices = np.where(valid_mask, relative_term_indices, 999999)
+            sorted_terms = np.sort(relative_term_indices, axis=1)
+            num_valid_terms = np.sum(valid_mask, axis=1)
+            max_durations = np.where(
+                num_valid_terms >= 2,
+                sorted_terms[:, 1],
+                np.where(
+                    num_valid_terms >= 1,
+                    sorted_terms[:, 0],
+                    transition_ranges - obs_idx - 1,
+                ),
+            )
+        elif 'terminals' in self._episodes:
+            batch_size = len(episode_idx)
+            max_durations = np.zeros(batch_size, dtype=np.int32)
+            for i in range(batch_size):
+                ep_idx = episode_idx[i]
+                start_idx = obs_idx[i]
+                ep_length = transition_ranges[i]
+                terminals = self._episodes['terminals'][ep_idx, start_idx:ep_length]
+                terminal_indices = np.where(terminals == 1)[0]
+                if len(terminal_indices) > 0:
+                    max_durations[i] = terminal_indices[1] if len(terminal_indices) > 1 else terminal_indices[0]
+                else:
+                    max_durations[i] = ep_length - start_idx - 1
+        else:
+            max_durations = transition_ranges - obs_idx - 1
+
+        transition_durations = discounted_sampling(max_durations, discount=discount) + 1
+        next_obs_idx = obs_idx + transition_durations
+
+        obs = self._episodes['obs'][episode_idx, obs_idx]
+        next_obs = self._episodes['obs'][episode_idx, next_obs_idx]
+
+        obs = self._transform_observations(obs, env_info)
+        next_obs = self._transform_observations(next_obs, env_info)
+
+        winds = self._episodes['winds'][episode_idx, obs_idx] if 'winds' in self._episodes else None
+        return EpisodeBatch(obs=obs, next_obs=next_obs, winds=winds)
+
     def get_component(self, component_name):
         if component_name == 'next_obs':
             return [
