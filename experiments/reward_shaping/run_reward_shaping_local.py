@@ -665,30 +665,36 @@ def main() -> None:
     door_markers = get_env_transition_markers(env)
     num_canonical = len(canonical_states)
 
+    # Extract baseline V(s) to use as a reference row in shaped-condition plots.
+    baseline_V = None
+    if "baseline" in results:
+        baseline_V = results["baseline"]["Q_final"].max(axis=-1)  # [num_seeds, num_canonical]
+
     for cond_name, cond_data in results.items():
-        Q_fin  = cond_data["Q_final"]           # [num_seeds, num_states, num_actions]
-        pot    = cond_data["potential_per_seed"]  # [num_seeds, num_states] or None
+        # Baseline has no potential — skip; its values appear as row 2 in other plots.
+        if cond_name == "baseline":
+            continue
 
-        V_per_seed = Q_fin.max(axis=-1)           # [num_seeds, num_canonical]
+        Q_fin = cond_data["Q_final"]            # [num_seeds, num_states, num_actions]
+        pot   = cond_data["potential_per_seed"]  # [num_seeds, num_states] or None
 
-        if pot is None:
-            pot_per_seed = np.zeros((args.num_seeds, num_canonical), dtype=np.float32)
-        else:
-            pot_per_seed = np.array(pot, dtype=np.float32)
+        V_per_seed   = Q_fin.max(axis=-1)                          # [num_seeds, num_canonical]
+        pot_per_seed = np.array(pot, dtype=np.float32)             # always non-None here
 
         safe_name = cond_name.replace(" ", "_").replace("=", "").replace("/", "_")
         save_path = str(pv_dir / f"{safe_name}_potential_vs_value.png")
 
         plot_potential_vs_value(
-            canonical_states  = canonical_states,
-            grid_width        = env.width,
-            grid_height       = env.height,
-            potential_per_seed= pot_per_seed,
-            value_per_seed    = V_per_seed,
-            goal_per_seed     = goal_per_seed,
-            cond_name         = cond_name,
-            portals           = door_markers if door_markers else None,
-            save_path         = save_path,
+            canonical_states        = canonical_states,
+            grid_width              = env.width,
+            grid_height             = env.height,
+            potential_per_seed      = pot_per_seed,
+            value_per_seed          = V_per_seed,
+            goal_per_seed           = goal_per_seed,
+            baseline_value_per_seed = baseline_V,
+            cond_name               = cond_name,
+            portals                 = door_markers if door_markers else None,
+            save_path               = save_path,
         )
 
     print(f"\nDone.  All outputs written to {output_dir}")

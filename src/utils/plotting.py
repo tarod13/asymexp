@@ -498,36 +498,46 @@ def plot_potential_vs_value(
     potential_per_seed: np.ndarray,
     value_per_seed: np.ndarray,
     goal_per_seed: np.ndarray,
+    baseline_value_per_seed: Optional[np.ndarray] = None,
     cond_name: str = "",
     portals=None,
     portal_sources=None,
     portal_ends=None,
     save_path: Optional[str] = None,
 ) -> plt.Figure:
-    """2 × num_seeds figure: row 0 = potential Φ(s), row 1 = value V(s).
+    """(2 or 3) × num_seeds figure: row 0 = potential Φ(s), row 1 = shaped V(s),
+    optional row 2 = baseline V(s) (when baseline_value_per_seed is provided).
 
     Each column is one seed.  Colorbars are independent per subplot.
     The goal cell is marked with a white star.
 
     Args:
-        canonical_states:    flat grid indices of free states, shape [num_canonical]
-        grid_width/height:   environment dimensions
-        potential_per_seed:  Φ(s) for each seed, shape [num_seeds, num_canonical]
-        value_per_seed:      V(s)=max_a Q(s,a) for each seed, shape [num_seeds, num_canonical]
-        goal_per_seed:       canonical state index of each seed's goal, shape [num_seeds]
-        cond_name:           figure super-title (condition label)
-        portals:             {(src_flat, action): dst_flat} door markers (optional)
-        portal_sources/ends: flat state indices for stochastic portal overlays (optional)
-        save_path:           if provided, save figure here and close it
+        canonical_states:         flat grid indices of free states, shape [num_canonical]
+        grid_width/height:        environment dimensions
+        potential_per_seed:       Φ(s) for each seed, shape [num_seeds, num_canonical]
+        value_per_seed:           V(s)=max_a Q(s,a) for each seed, shape [num_seeds, num_canonical]
+        goal_per_seed:            canonical state index of each seed's goal, shape [num_seeds]
+        baseline_value_per_seed:  baseline V(s) for each seed, shape [num_seeds, num_canonical] (optional)
+        cond_name:                figure super-title (condition label)
+        portals:                  {(src_flat, action): dst_flat} door markers (optional)
+        portal_sources/ends:      flat state indices for stochastic portal overlays (optional)
+        save_path:                if provided, save figure here and close it
     """
     import matplotlib.cm as cm
 
     num_seeds = len(goal_per_seed)
-    row_labels = ["Potential Φ(s)", "Value V(s)"]
-    data_rows  = [potential_per_seed, value_per_seed]
-    cmap_names = ["plasma", "viridis"]
 
-    fig, axes = plt.subplots(2, num_seeds, figsize=(num_seeds * 3, 6),
+    if baseline_value_per_seed is not None:
+        row_labels = ["Potential Φ(s)", "Value V(s) [shaped]", "Value V(s) [baseline]"]
+        data_rows  = [potential_per_seed, value_per_seed, baseline_value_per_seed]
+        cmap_names = ["plasma", "viridis", "viridis"]
+    else:
+        row_labels = ["Potential Φ(s)", "Value V(s)"]
+        data_rows  = [potential_per_seed, value_per_seed]
+        cmap_names = ["plasma", "viridis"]
+
+    num_rows = len(row_labels)
+    fig, axes = plt.subplots(num_rows, num_seeds, figsize=(num_seeds * 3, num_rows * 3),
                              squeeze=False)
 
     for row_idx, (row_label, data, cmap_name) in enumerate(
