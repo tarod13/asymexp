@@ -56,6 +56,7 @@ from src.rl.loading import (
     load_model, compute_gt_model_data, truncate_model_eigenvectors,
 )
 from src.rl.qlearning import build_all_potentials, run_q_learning
+from src.rl.debug_viz import run_step_by_step_debug
 from src.rl.plotting import plot_results, plot_hitting_times_grid
 from src.utils.envs import create_gridworld_env, get_canonical_free_states, get_env_transition_markers
 from src.utils.plotting import plot_potential_vs_value
@@ -165,6 +166,12 @@ def main() -> None:
     parser.add_argument(
         "--no_hitting_times_plot", action="store_true",
         help="Skip generating hitting-times visualizations (default: generate them).",
+    )
+    parser.add_argument(
+        "--step_by_step_visual", action="store_true",
+        help="Run a single debugging episode (1 seed, 1 episode) and save a "
+             "per-step figure to <output_dir>/debug_frames/.  Skips normal "
+             "Q-learning, results saving, and learning-curve plots.",
     )
     args = parser.parse_args()
 
@@ -583,6 +590,49 @@ def main() -> None:
         conditions[f"shaped β={args.shaping_coef} (allo)"] = dict(
             potential_per_seed=allo_potential_per_seed, shaping_coef=args.shaping_coef
         )
+
+    # ------------------------------------------------------------------
+    # 5b. Step-by-step visual debug (bypasses all normal training/plotting)
+    # ------------------------------------------------------------------
+    if args.step_by_step_visual:
+        print(f"\n{'='*60}")
+        print("STEP-BY-STEP VISUAL DEBUG MODE")
+        print(f"{'='*60}")
+
+        # Pick the first shaped condition; fall back to baseline (zero potential)
+        debug_cond = next(
+            (k for k in conditions if k != "baseline"), "baseline"
+        )
+        debug_potential = conditions[debug_cond].get("potential_per_seed")
+        if debug_potential is not None:
+            potential_seed0 = np.array(debug_potential[0], dtype=np.float32)
+        else:
+            potential_seed0 = np.zeros(num_canonical, dtype=np.float32)
+
+        print(f"  Condition          : {debug_cond}")
+        print(f"  Goal (canonical)   : {goal_per_seed[0]}")
+        print(f"  Start (canonical)  : {eval_starts_per_seed[0]}")
+
+        full_to_can_dbg = np.full(env.width * env.height, -1, dtype=np.int32)
+        for i, s in enumerate(canonical_states):
+            full_to_can_dbg[int(s)] = i
+
+        run_step_by_step_debug(
+            env              = env,
+            canonical_states = canonical_states,
+            full_to_can      = full_to_can_dbg,
+            potential        = potential_seed0,
+            goal_canonical   = int(goal_per_seed[0]),
+            start_canonical  = int(eval_starts_per_seed[0]),
+            gamma            = args.gamma_rl,
+            lr               = args.lr,
+            epsilon          = args.epsilon,
+            shaping_coef     = args.shaping_coef,
+            max_steps        = args.max_steps,
+            debug_dir        = output_dir / "debug_frames",
+        )
+        print(f"\nDone.  Debug frames written to {output_dir / 'debug_frames'}")
+        return
 
     # ------------------------------------------------------------------
     # 6. Run Q-learning for every condition
