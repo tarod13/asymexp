@@ -197,7 +197,16 @@ def main() -> None:
     gt_model_data = None
     if args.use_gt:
         if model_dir is not None:
-            # Try loading saved GT eigenvectors from the model directory first.
+            # Try loading saved GT eigenvectors from the model directory.
+            # Priority: full_ (un-truncated) > gt_ (truncated) > compute from env.
+            full_files = [
+                model_dir / "full_left_real.npy",
+                model_dir / "full_left_imag.npy",
+                model_dir / "full_right_real.npy",
+                model_dir / "full_right_imag.npy",
+                model_dir / "full_eigenvalues_real.npy",
+                model_dir / "full_eigenvalues_imag.npy",
+            ]
             gt_files = [
                 model_dir / "gt_left_real.npy",
                 model_dir / "gt_left_imag.npy",
@@ -206,7 +215,17 @@ def main() -> None:
                 model_dir / "gt_eigenvalues_real.npy",
                 model_dir / "gt_eigenvalues_imag.npy",
             ]
-            if all(f.exists() for f in gt_files):
+            if all(f.exists() for f in full_files):
+                print(f"\n{'='*60}")
+                print(f"Loading full GT eigenvectors from training artifacts: {model_dir}")
+                print(f"{'='*60}")
+                gt_model_data = load_model(
+                    model_dir, use_gt=True, gt_prefix="full_",
+                    checkpoint_prefix=args.checkpoint_prefix,
+                )
+                print(f"  Eigenvalue type    : {gt_model_data['eigenvalue_type']}")
+                print(f"  Eigenvectors (K)   : {gt_model_data['eigenvalues_real'].shape[0]}")
+            elif all(f.exists() for f in gt_files):
                 print(f"\n{'='*60}")
                 print(f"Loading GT eigenvectors from training artifacts: {model_dir}")
                 print(f"{'='*60}")
@@ -378,31 +397,75 @@ def main() -> None:
             )
 
     if gt_model_data is not None:
-        gt_model_data = truncate_model_eigenvectors(
-            gt_model_data, args.num_eigenvectors
-        )
-        print(f"\n{'='*60}")
-        print("Computing hitting times (ground-truth representation) ...")
-        print(f"{'='*60}")
-        gt_hitting_times = np.array(
-            compute_hitting_times_from_eigenvectors(
-                left_real        = gt_model_data["left_real"],
-                left_imag        = gt_model_data["left_imag"],
-                right_real       = gt_model_data["right_real"],
-                right_imag       = gt_model_data["right_imag"],
-                eigenvalues_real = gt_model_data["eigenvalues_real"],
-                eigenvalues_imag = gt_model_data["eigenvalues_imag"],
-                gamma            = gt_model_data["training_args"].get("gamma", 0.95),
-                delta            = gt_model_data["training_args"].get("delta", 0.1),
-                eigenvalue_type  = gt_model_data["eigenvalue_type"],
+        if args.num_eigenvectors is None:
+            # No truncation requested: check for pre-computed full hitting times.
+            precomp_gt_ht_path = (
+                model_dir / "full_ideal_gt_hitting_times.npy"
+                if model_dir is not None else None
             )
-        )
-        gt_finite = gt_hitting_times[np.isfinite(gt_hitting_times)]
-        print(f"  Shape              : {gt_hitting_times.shape}")
-        print(f"  Finite values      : {len(gt_finite)} / {gt_hitting_times.size}"
-              f"  ({len(gt_finite)/gt_hitting_times.size:.1%})")
-        if len(gt_finite) > 0:
-            print(f"  Range              : [{gt_finite.min():.2f}, {gt_finite.max():.2f}]")
+            if precomp_gt_ht_path is not None and precomp_gt_ht_path.exists():
+                print(f"\n{'='*60}")
+                print("Loading pre-computed GT hitting times (fast path) ...")
+                print(f"{'='*60}")
+                gt_hitting_times = np.load(precomp_gt_ht_path)
+                gt_finite = gt_hitting_times[np.isfinite(gt_hitting_times)]
+                print(f"  Source             : {precomp_gt_ht_path}")
+                print(f"  Shape              : {gt_hitting_times.shape}")
+                print(f"  Finite values      : {len(gt_finite)} / {gt_hitting_times.size}"
+                      f"  ({len(gt_finite)/gt_hitting_times.size:.1%})")
+                if len(gt_finite) > 0:
+                    print(f"  Range              : [{gt_finite.min():.2f}, {gt_finite.max():.2f}]")
+            else:
+                gt_model_data = truncate_model_eigenvectors(gt_model_data, None)
+                print(f"\n{'='*60}")
+                print("Computing hitting times (ground-truth representation) ...")
+                print(f"{'='*60}")
+                gt_hitting_times = np.array(
+                    compute_hitting_times_from_eigenvectors(
+                        left_real        = gt_model_data["left_real"],
+                        left_imag        = gt_model_data["left_imag"],
+                        right_real       = gt_model_data["right_real"],
+                        right_imag       = gt_model_data["right_imag"],
+                        eigenvalues_real = gt_model_data["eigenvalues_real"],
+                        eigenvalues_imag = gt_model_data["eigenvalues_imag"],
+                        gamma            = gt_model_data["training_args"].get("gamma", 0.95),
+                        delta            = gt_model_data["training_args"].get("delta", 0.1),
+                        eigenvalue_type  = gt_model_data["eigenvalue_type"],
+                    )
+                )
+                gt_finite = gt_hitting_times[np.isfinite(gt_hitting_times)]
+                print(f"  Shape              : {gt_hitting_times.shape}")
+                print(f"  Finite values      : {len(gt_finite)} / {gt_hitting_times.size}"
+                      f"  ({len(gt_finite)/gt_hitting_times.size:.1%})")
+                if len(gt_finite) > 0:
+                    print(f"  Range              : [{gt_finite.min():.2f}, {gt_finite.max():.2f}]")
+        else:
+            # Truncation requested: always compute hitting times from scratch.
+            gt_model_data = truncate_model_eigenvectors(
+                gt_model_data, args.num_eigenvectors
+            )
+            print(f"\n{'='*60}")
+            print("Computing hitting times (ground-truth representation) ...")
+            print(f"{'='*60}")
+            gt_hitting_times = np.array(
+                compute_hitting_times_from_eigenvectors(
+                    left_real        = gt_model_data["left_real"],
+                    left_imag        = gt_model_data["left_imag"],
+                    right_real       = gt_model_data["right_real"],
+                    right_imag       = gt_model_data["right_imag"],
+                    eigenvalues_real = gt_model_data["eigenvalues_real"],
+                    eigenvalues_imag = gt_model_data["eigenvalues_imag"],
+                    gamma            = gt_model_data["training_args"].get("gamma", 0.95),
+                    delta            = gt_model_data["training_args"].get("delta", 0.1),
+                    eigenvalue_type  = gt_model_data["eigenvalue_type"],
+                )
+            )
+            gt_finite = gt_hitting_times[np.isfinite(gt_hitting_times)]
+            print(f"  Shape              : {gt_hitting_times.shape}")
+            print(f"  Finite values      : {len(gt_finite)} / {gt_hitting_times.size}"
+                  f"  ({len(gt_finite)/gt_hitting_times.size:.1%})")
+            if len(gt_finite) > 0:
+                print(f"  Range              : [{gt_finite.min():.2f}, {gt_finite.max():.2f}]")
         np.save(output_dir / "hitting_times_gt.npy", gt_hitting_times)
         if not args.no_hitting_times_plot:
             plot_hitting_times_grid(

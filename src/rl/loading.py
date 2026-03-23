@@ -51,6 +51,7 @@ def load_model(
     model_dir: Path,
     use_gt: bool = False,
     checkpoint_prefix: str = "final_",
+    gt_prefix: str = "gt_",
 ) -> dict:
     """
     Load eigenvectors and eigenvalues from a results directory produced by
@@ -69,6 +70,10 @@ def load_model(
         the end of training (``final_learned_*.npy``, ``models/final_model.pkl``).
         Pass e.g. ``"latest_"`` to load in-progress checkpoints instead.
         Has no effect when ``use_gt=True``.
+    gt_prefix : str
+        Filename prefix for ground-truth eigenvector files when ``use_gt=True``.
+        The default ``"gt_"`` loads ``gt_left_real.npy`` etc.  Pass ``"full_"``
+        to load the full (un-truncated) eigendecomposition files instead.
 
     Returns a dict with keys:
         training_args    – original training hyper-parameters (dict)
@@ -87,12 +92,12 @@ def load_model(
     canonical_states = np.array(viz_metadata["canonical_states"])
 
     if use_gt:
-        left_real  = np.load(model_dir / "gt_left_real.npy")
-        left_imag  = np.load(model_dir / "gt_left_imag.npy")
-        right_real = np.load(model_dir / "gt_right_real.npy")
-        right_imag = np.load(model_dir / "gt_right_imag.npy")
-        eig_real   = np.load(model_dir / "gt_eigenvalues_real.npy")
-        eig_imag   = np.load(model_dir / "gt_eigenvalues_imag.npy")
+        left_real  = np.load(model_dir / f"{gt_prefix}left_real.npy")
+        left_imag  = np.load(model_dir / f"{gt_prefix}left_imag.npy")
+        right_real = np.load(model_dir / f"{gt_prefix}right_real.npy")
+        right_imag = np.load(model_dir / f"{gt_prefix}right_imag.npy")
+        eig_real   = np.load(model_dir / f"{gt_prefix}eigenvalues_real.npy")
+        eig_imag   = np.load(model_dir / f"{gt_prefix}eigenvalues_imag.npy")
         eigenvalue_type = "laplacian"
     else:
         # Raw learned eigenvectors (adjoint left eigenvectors, as used during training)
