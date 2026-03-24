@@ -164,6 +164,10 @@ def main() -> None:
              "(default: 'final_'). Use e.g. 'latest_' to load in-progress checkpoints.",
     )
     parser.add_argument(
+        "--n_step_td", type=int, default=1,
+        help="Number of steps for n-step Q-learning returns (default: 1).",
+    )
+    parser.add_argument(
         "--no_hitting_times_plot", action="store_true",
         help="Skip generating hitting-times visualizations (default: generate them).",
     )
@@ -644,6 +648,7 @@ def main() -> None:
                 shaping_coef     = shaping_coef_cond,
                 max_steps        = args.max_steps,
                 debug_dir        = cond_dir,
+                n_step_td        = args.n_step_td,
                 portals          = dbg_door_markers if dbg_door_markers else None,
                 portal_sources   = dbg_portal_sources if dbg_portal_sources else None,
                 portal_ends      = dbg_portal_ends   if dbg_portal_ends   else None,
@@ -677,6 +682,7 @@ def main() -> None:
             epsilon              = args.epsilon,
             seed                 = 0,
             eval_interval        = args.eval_interval,
+            n_step_td            = args.n_step_td,
             **cond_kwargs,
         )
 

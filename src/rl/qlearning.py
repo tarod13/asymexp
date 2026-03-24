@@ -89,6 +89,7 @@ def run_q_learning(
     epsilon: float = 0.1,
     seed: int = 0,
     eval_interval: int = 100_000,
+    n_step_td: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Run tabular ε-greedy Q-learning with one independent Q-table per seed.
@@ -152,10 +153,16 @@ def run_q_learning(
         valid_table_jax  = None
         valid_counts_jax = None
 
+    # ── n-step return constants ────────────────────────────────────────
+    n          = n_step_td
+    k_indices  = jnp.arange(n)
+    gammas_jax = jnp.array([gamma ** k for k in range(n)], dtype=jnp.float32)
+    gamma_n    = float(gamma ** n)
+
     # ── Training chunk ────────────────────────────────────────────────
     def run_chunk(carry, chunk_key):
         def run_step(step_carry, step_key):
-            Q, s, done, step_in_ep, goal, potential, fixed_start = step_carry
+            Q, s, done, step_in_ep, goal, potential, fixed_start, buf_s, buf_a, buf_r, buf_ptr, buf_len = step_carry
 
             reset_key, eps_key, rand_key, env_key, tie_key = jax.random.split(step_key, 5)
             at_reset = step_in_ep == 0
@@ -171,8 +178,10 @@ def run_q_learning(
                     new_start_raw,
                 )
             new_start = jnp.where(fixed_start >= 0, fixed_start, new_start_random)
-            s    = jnp.where(at_reset, new_start, s)
-            done = jnp.where(at_reset, jnp.array(False), done)
+            s       = jnp.where(at_reset, new_start, s)
+            done    = jnp.where(at_reset, jnp.array(False), done)
+            buf_len = jnp.where(at_reset, jnp.zeros((), jnp.int32), buf_len)
+            buf_ptr = jnp.where(at_reset, jnp.zeros((), jnp.int32), buf_ptr)
 
             use_random = jax.random.uniform(eps_key) < epsilon
             q_s    = Q[s]
@@ -198,8 +207,60 @@ def run_q_learning(
             r = jnp.where(reached, 1.0, 0.0)
             r = r + shaping_coef * (gamma * potential[s_prime] - potential[s])
 
-            target = jnp.where(reached, r, r + gamma * Q[s_prime].max())
-            Q = Q.at[s, a].add(lr * (target - Q[s, a]))
+            # ── Write transition to n-step buffer ─────────────────────
+            buf_s   = buf_s.at[buf_ptr].set(s)
+            buf_a   = buf_a.at[buf_ptr].set(a)
+            buf_r   = buf_r.at[buf_ptr].set(r)
+            new_buf_ptr = (buf_ptr + 1) % n
+            new_buf_len = jnp.minimum(buf_len + 1, n)
+            # oldest valid entry in the circular buffer
+            oldest = (new_buf_ptr - new_buf_len + n) % n
+
+            # Bootstrap value: 0 at terminal, Q-max otherwise
+            timeout       = step_in_ep == max_steps_per_episode - 1
+            episode_end   = reached | timeout
+            bootstrap_val = Q[s_prime].max() * jnp.where(reached, 0.0, 1.0)
+
+            # ── Normal n-step update (buffer full, mid-episode) ────────
+            # G = Σ_{k=0}^{n-1} γ^k · r_{oldest+k}  +  γ^n · bootstrap
+            G_normal = (
+                jnp.dot(gammas_jax, buf_r[(oldest + k_indices) % n])
+                + gamma_n * bootstrap_val
+            )
+            do_normal = (new_buf_len == n) & ~episode_end
+            Q = Q.at[buf_s[oldest], buf_a[oldest]].add(
+                lr * jnp.where(do_normal, G_normal - Q[buf_s[oldest], buf_a[oldest]], 0.0)
+            )
+
+            # ── Episode-end flush: update all remaining buffer entries ─
+            # Entry i (0 = oldest) gets a variable-length return to terminal.
+            def flush_entry(i, Q):
+                entry_idx = (oldest + i) % n
+                entry_s   = buf_s[entry_idx]
+                entry_a   = buf_a[entry_idx]
+                b_indices = (entry_idx + k_indices) % n
+                mask      = k_indices < (new_buf_len - i)
+                remaining = jnp.maximum(new_buf_len - i, 0)
+                G_flush   = (
+                    jnp.dot(gammas_jax * mask, buf_r[b_indices])
+                    + jnp.pow(gamma, remaining) * bootstrap_val
+                )
+                delta = G_flush - Q[entry_s, entry_a]
+                Q = Q.at[entry_s, entry_a].add(
+                    lr * jnp.where(i < new_buf_len, delta, 0.0)
+                )
+                return Q
+
+            Q = jax.lax.cond(
+                episode_end,
+                lambda Q: jax.lax.fori_loop(0, n, flush_entry, Q),
+                lambda Q: Q,
+                Q,
+            )
+
+            # ── Reset buffer at episode end ────────────────────────────
+            new_buf_len_out = jnp.where(episode_end, jnp.zeros((), jnp.int32), new_buf_len)
+            new_buf_ptr_out = jnp.where(episode_end, jnp.zeros((), jnp.int32), new_buf_ptr)
 
             new_done        = done | reached
             new_s           = jnp.where(new_done, s, s_prime)
@@ -208,7 +269,8 @@ def run_q_learning(
                 jnp.zeros((), jnp.int32),
                 step_in_ep + 1,
             )
-            return (Q, new_s, new_done, next_step_in_ep, goal, potential, fixed_start), None
+            return (Q, new_s, new_done, next_step_in_ep, goal, potential, fixed_start,
+                    buf_s, buf_a, buf_r, new_buf_ptr_out, new_buf_len_out), None
 
         step_keys = jax.random.split(chunk_key, eval_interval)
         new_carry, _ = jax.lax.scan(run_step, carry, step_keys)
@@ -279,6 +341,11 @@ def run_q_learning(
         goal_jax,
         potential_jax,
         train_start_jax,
+        jnp.zeros((num_seeds, n), jnp.int32),    # buf_s
+        jnp.zeros((num_seeds, n), jnp.int32),    # buf_a
+        jnp.zeros((num_seeds, n), jnp.float32),  # buf_r
+        jnp.zeros((num_seeds,),   jnp.int32),    # buf_ptr
+        jnp.zeros((num_seeds,),   jnp.int32),    # buf_len
     )
 
     all_eval_sr      = []
