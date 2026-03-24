@@ -648,6 +648,7 @@ def main() -> None:
                 shaping_coef     = shaping_coef_cond,
                 max_steps        = args.max_steps,
                 debug_dir        = cond_dir,
+                n_step_td        = args.n_step_td,
                 portals          = dbg_door_markers if dbg_door_markers else None,
                 portal_sources   = dbg_portal_sources if dbg_portal_sources else None,
                 portal_ends      = dbg_portal_ends   if dbg_portal_ends   else None,

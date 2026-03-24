@@ -11,6 +11,7 @@ Outputs written to <debug_dir>/:
 
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
 
 import jax
@@ -435,6 +436,7 @@ def run_step_by_step_debug(
     shaping_coef: float,
     max_steps: int,
     debug_dir: Path,
+    n_step_td: int = 1,
     portals=None,
     portal_sources=None,
     portal_ends=None,
@@ -481,6 +483,12 @@ def run_step_by_step_debug(
     ax_TD  = fig.add_subplot(gs[3, 1])
     cb_store: list = []
 
+    n   = n_step_td
+    buf = deque()   # stores (s, a, r_total) tuples; managed manually (no maxlen)
+
+    # Pre-compute gamma powers for the return sum: gamma^0, gamma^1, …, gamma^{n-1}
+    gamma_pows = [gamma ** k for k in range(n)]
+
     rng = np.random.default_rng(0)
     s   = start_canonical
     print(f"  [debug] Starting episode: start={start_canonical} goal={goal_canonical}")
@@ -507,32 +515,66 @@ def run_step_by_step_debug(
         can_idx   = int(full_to_can[next_full])
         s_prime   = can_idx if can_idx >= 0 else s
 
-        reached     = (s_prime == goal_canonical)
-        R           = 1.0 if reached else 0.0
-        F_shape     = float(shaping_coef * (gamma * potential_np[s_prime] - potential_np[s]))
-        r_total     = R + F_shape
+        reached = (s_prime == goal_canonical)
+        R       = 1.0 if reached else 0.0
+        F_shape = float(shaping_coef * (gamma * potential_np[s_prime] - potential_np[s]))
+        r_total = R + F_shape
 
-        Q_sa_before = float(Q[s, a])
-        target      = r_total if reached else r_total + gamma * float(Q[s_prime].max())
-        td_error    = target - Q_sa_before
-        Q[s, a]    += lr * td_error
-        td_abs      = abs(td_error)
+        # ── Write transition to n-step buffer ─────────────────────────
+        buf.append((s, a, r_total))
+        episode_end   = reached or (t == max_steps - 1)
+        bootstrap_val = 0.0 if reached else float(Q[s_prime].max())
+
+        # Collect (state, |ΔQ|) pairs for all updates that fire this step
+        updates_this_step: list[tuple[int, float]] = []
+
+        # ── Normal n-step update (buffer full, mid-episode) ────────────
+        if len(buf) == n and not episode_end:
+            s0, a0, _ = buf[0]
+            G = sum(gamma_pows[k] * buf[k][2] for k in range(n)) + (gamma ** n) * bootstrap_val
+            td_error = G - float(Q[s0, a0])
+            Q[s0, a0] += lr * td_error
+            updates_this_step.append((s0, abs(td_error)))
+            buf.popleft()
+
+        # ── Episode-end flush: update all remaining buffer entries ──────
+        elif episode_end:
+            buf_list = list(buf)   # snapshot; index 0 = oldest
+            m = len(buf_list)
+            for i in range(m):
+                s_i, a_i, _ = buf_list[i]
+                remaining = m - i
+                G_i = (
+                    sum(gamma_pows[k] * buf_list[i + k][2] for k in range(remaining))
+                    + (gamma ** remaining) * bootstrap_val
+                )
+                td_error_i = G_i - float(Q[s_i, a_i])
+                Q[s_i, a_i] += lr * td_error_i
+                updates_this_step.append((s_i, abs(td_error_i)))
+            buf.clear()
+
+        # ── Per-step recording ─────────────────────────────────────────
+        Q_sa_now   = float(Q[s, a])   # current state's Q value (post any update)
+        td_abs     = sum(delta for _, delta in updates_this_step)
 
         hist_R.append(R)
         hist_F.append(F_shape)
-        hist_Q.append(Q_sa_before)
+        hist_Q.append(Q_sa_now)
         hist_TD.append(td_abs)
 
-        cy, cx           = divmod(full_idx, W)
-        td_sum[cy, cx]   += td_abs
-        td_count[cy, cx] += 1
+        # TD heatmap: accumulate only at states that were actually updated
+        for s_upd, delta in updates_this_step:
+            full_upd        = int(canonical_states[s_upd])
+            cy, cx          = divmod(full_upd, W)
+            td_sum[cy, cx]  += delta
+            td_count[cy, cx] += 1
 
         _draw_step_figure(
             fig,
             ax_pot, ax_val,
             ax_R, ax_F, ax_Q, ax_TD,
             cb_store,
-            t, s, s_prime, a, R, F_shape, Q_sa_before, td_abs,
+            t, s, s_prime, a, R, F_shape, Q_sa_now, td_abs,
             hist_R, hist_F, hist_Q, hist_TD,
             potential_np, Q, canonical_states, env,
             portals=portals, portal_sources=portal_sources, portal_ends=portal_ends,
@@ -542,7 +584,7 @@ def run_step_by_step_debug(
 
         print(f"    step {t:4d}  s={s:4d}→{s_prime:4d}  "
               f"a={a}  R={R:.1f}  F={F_shape:+.4f}  "
-              f"Q={Q_sa_before:.4f}  |ΔQ|={td_abs:.4f}  → {frame_path.name}")
+              f"Q={Q_sa_now:.4f}  |ΔQ|={td_abs:.4f}  → {frame_path.name}")
 
         s = s_prime
         if reached:
