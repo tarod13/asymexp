@@ -60,6 +60,8 @@ MIN_GOAL_DISTANCE=8
 START_STATE="1,1"
 NUM_EIGENVECTORS=8
 N_STEP_TD=1
+POTENTIAL_MODE=negative
+POTENTIAL_TEMP=1.0
 SKIP_QLEARNING=false
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
@@ -83,6 +85,8 @@ while [[ $# -gt 0 ]]; do
         --start_state)        START_STATE="$2";        shift 2 ;;
         --num_eigenvectors)   NUM_EIGENVECTORS="$2";   shift 2 ;;
         --n_step_td)          N_STEP_TD="$2";          shift 2 ;;
+        --potential_mode)     POTENTIAL_MODE="$2";     shift 2 ;;
+        --potential_temp)     POTENTIAL_TEMP="$2";     shift 2 ;;
         --skip_qlearning)     SKIP_QLEARNING=true;     shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -116,13 +120,15 @@ echo "  Total tasks    : $NUM_TASKS  (task IDs 0-$MAX_TASK_ID)"
 echo "  Total steps    : $TOTAL_STEPS"
 echo "  Shaping coef   : $SHAPING_COEF"
 echo "  Num eigenvectors: $NUM_EIGENVECTORS"
+echo "  Potential mode : $POTENTIAL_MODE"
+echo "  Potential temp : $POTENTIAL_TEMP"
 echo "========================================"
 
 # ── Export env vars so child scripts inherit them ─────────────────────────────
 export ENV MODEL_DIR OUTPUT_DIR
 export NUM_SEEDS NUM_METHODS TOTAL_STEPS MAX_STEPS
 export SHAPING_COEF GAMMA_RL LR EPSILON EVAL_INTERVAL EVAL_SEED NUM_EVAL_EPISODES
-export MIN_GOAL_DISTANCE START_STATE NUM_EIGENVECTORS N_STEP_TD
+export MIN_GOAL_DISTANCE START_STATE NUM_EIGENVECTORS N_STEP_TD POTENTIAL_MODE POTENTIAL_TEMP
 
 mkdir -p logs
 mkdir -p "${OUTPUT_DIR}/partial"

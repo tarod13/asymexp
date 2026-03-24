@@ -141,6 +141,18 @@ def main() -> None:
         "--n_step_td", type=int, default=1,
         help="Number of steps for n-step Q-learning returns (default: 1).",
     )
+    parser.add_argument(
+        "--potential_mode", type=str, default="negative",
+        choices=["negative", "inverse", "exp-negative"],
+        help="Transformation applied to normalised hitting times to produce Φ(s). "
+             "'negative': Φ=−h (default), 'inverse': Φ=1/(h/temp+1e-5), "
+             "'exp-negative': Φ=exp(−h/temp).",
+    )
+    parser.add_argument(
+        "--potential_temp", type=float, default=1.0,
+        help="Temperature τ used by 'inverse' and 'exp-negative' potential modes "
+             "(default: 1.0).",
+    )
     args = parser.parse_args()
 
     # --method gt implies --use_gt
@@ -433,12 +445,20 @@ def main() -> None:
     # ------------------------------------------------------------------
     complex_potential_per_seed = None
     if hitting_times is not None:
-        complex_potential_matrix   = build_all_potentials(hitting_times)
+        complex_potential_matrix   = build_all_potentials(
+            hitting_times,
+            potential_mode=args.potential_mode,
+            potential_temp=args.potential_temp,
+        )
         complex_potential_per_seed = complex_potential_matrix[:, goal_per_seed].T
 
     allo_potential_per_seed = None
     if allo_hitting_times is not None:
-        allo_potential_matrix   = build_all_potentials(allo_hitting_times)
+        allo_potential_matrix   = build_all_potentials(
+            allo_hitting_times,
+            potential_mode=args.potential_mode,
+            potential_temp=args.potential_temp,
+        )
         allo_potential_per_seed = allo_potential_matrix[:, goal_per_seed].T
 
     _method_to_cond = {

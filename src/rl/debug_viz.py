@@ -211,6 +211,7 @@ def _plot_vector_field(
     portals=None,
     portal_sources=None,
     portal_ends=None,
+    potential_mode: str = "negative",
 ) -> None:
     """Quiver plot of shaping gravity F(s,a) = γΦ(s') − Φ(s).
 
@@ -279,7 +280,7 @@ def _plot_vector_field(
     ax.set_xlim(-0.5, W - 0.5)
     ax.set_ylim(H - 0.5, -0.5)
     ax.set_title(
-        "Shaping gravity: net F(s, a) vector field\n"
+        f"Shaping gravity: net F(s, a) vector field  [mode: {potential_mode}]\n"
         r"$V_x=F(\rightarrow)-F(\leftarrow)$, "
         r"$V_y=F(\downarrow)-F(\uparrow)$  "
         "(arrows normalised to [min, max] size)",
@@ -440,6 +441,8 @@ def run_step_by_step_debug(
     portals=None,
     portal_sources=None,
     portal_ends=None,
+    potential_mode: str = "negative",
+    potential_temp: float = 1.0,
 ) -> None:
     """Run one training episode with step-by-step visualisation."""
     debug_dir.mkdir(parents=True, exist_ok=True)
@@ -458,6 +461,7 @@ def run_step_by_step_debug(
         goal_canonical, start_canonical,
         debug_dir / "vector_field.png",
         portals=portals, portal_sources=portal_sources, portal_ends=portal_ends,
+        potential_mode=potential_mode,
     )
 
     Q        = np.zeros((N, 4), dtype=np.float32)
@@ -491,7 +495,8 @@ def run_step_by_step_debug(
 
     rng = np.random.default_rng(0)
     s   = start_canonical
-    print(f"  [debug] Starting episode: start={start_canonical} goal={goal_canonical}")
+    print(f"  [debug] Starting episode: start={start_canonical} goal={goal_canonical}"
+          f"  potential_mode={potential_mode}  potential_temp={potential_temp}")
 
     for t in range(max_steps):
         if rng.random() < epsilon:

@@ -16,54 +16,85 @@ from src.envs.gridworld import GridWorldState
 # Potential function
 # ===========================================================================
 
-def build_potential(hitting_times: np.ndarray, goal_idx: int, clamp_negatives: bool = False) -> np.ndarray:
+def build_potential(
+    hitting_times: np.ndarray,
+    goal_idx: int,
+    clamp_negatives: bool = False,
+    potential_mode: str = "negative",
+    potential_temp: float = 1.0,
+) -> np.ndarray:
     """
-    Build the potential F(s) = −h(s, goal) used for reward shaping.
+    Build the potential Φ(s) used for reward shaping.
 
-    Hitting times are normalised by the abs-max finite value.
-    Non-finite values are replaced with 0 (neutral potential).
-    If clamp_negatives=True, negative values are also clamped to 0 before
-    normalisation.
+    Hitting times are normalised to [0, 100] before the transformation.
+    Non-finite values are replaced with the column maximum before normalisation.
+    If clamp_negatives=True, negative values are clamped to 0 before normalisation.
+
+    potential_mode controls the transformation applied to the normalised
+    hitting time h ∈ [0, 100]:
+      "negative"    : Φ(s) = −h                          (default; closer = higher)
+      "inverse"     : Φ(s) = 1 / (h / temp + 1e-5)
+      "exp-negative": Φ(s) = exp(−h / temp)
     """
     h = hitting_times[:, goal_idx].copy()
 
     finite_mask = np.isfinite(h)
     if finite_mask.sum() == 0:
         return np.zeros(len(h), dtype=np.float32)
-    
+
     h = np.where(
-        finite_mask, 
-        h, 
+        finite_mask,
+        h,
         float(h[finite_mask].max()) if finite_mask.any() else 0.0
     )
 
     if clamp_negatives:
         non_negative_mask = (h >= 0)
         h = np.where(
-            non_negative_mask, 
-            h, 
+            non_negative_mask,
+            h,
             float(h[non_negative_mask].max()) if non_negative_mask.any() else 0.0
         )
 
     h = h - np.min(h, axis=0, keepdims=True)  # shift so min is zero (prevents large negative potentials when normalising by max)
     h_max = np.max(h, axis=0, keepdims=True)  # max absolute value across states
-    h = 100 * h / h_max.clip(1e-8)  # normalize
+    h = 100 * h / h_max.clip(1e-8)  # normalize to [0, 100]
 
-    return -h.astype(np.float32)   # higher potential = closer to goal
+    if potential_mode == "negative":
+        return -h.astype(np.float32)
+    elif potential_mode == "inverse":
+        return (1.0 / (h / potential_temp + 1e-5)).astype(np.float32)
+    elif potential_mode == "exp-negative":
+        return np.exp(-h / potential_temp).astype(np.float32)
+    else:
+        raise ValueError(
+            f"Unknown potential_mode '{potential_mode}'. "
+            "Expected one of: 'negative', 'inverse', 'exp-negative'."
+        )
 
 
-def build_all_potentials(hitting_times: np.ndarray, clamp_negatives: bool = False) -> np.ndarray:
+def build_all_potentials(
+    hitting_times: np.ndarray,
+    clamp_negatives: bool = False,
+    potential_mode: str = "negative",
+    potential_temp: float = 1.0,
+) -> np.ndarray:
     """
-    Build the full potential matrix F[s, g] for every possible goal g.
+    Build the full potential matrix Φ[s, g] for every possible goal g.
 
     Returns an [N, N] float32 array where column g equals
-    build_potential(hitting_times, g).  Pre-computing this once lets
+    build_potential(hitting_times, g, ...).  Pre-computing this once lets
     per-seed potentials be retrieved with a simple column slice.
     """
     N = hitting_times.shape[0]
     F = np.empty((N, N), dtype=np.float32)
     for g in range(N):
-        F[:, g] = build_potential(hitting_times, g, clamp_negatives=clamp_negatives)
+        F[:, g] = build_potential(
+            hitting_times, g,
+            clamp_negatives=clamp_negatives,
+            potential_mode=potential_mode,
+            potential_temp=potential_temp,
+        )
     return F
 
 

@@ -84,6 +84,16 @@ def main() -> None:
         "--min_goal_distance", type=int, default=0,
         help="Minimum taxi distance from start to goal. Passed to run_reward_shaping_local.py.",
     )
+    parser.add_argument(
+        "--potential_mode", type=str, default="negative",
+        choices=["negative", "inverse", "exp-negative"],
+        help="Potential transformation mode. Passed to run_reward_shaping_local.py.",
+    )
+    parser.add_argument(
+        "--potential_temp", type=float, default=1.0,
+        help="Temperature for 'inverse' and 'exp-negative' modes. "
+             "Passed to run_reward_shaping_local.py.",
+    )
     args = parser.parse_args()
 
     if args.allo_dir:
@@ -228,6 +238,8 @@ def main() -> None:
         rs_cmd += ["--start_state", args.start_state]
     if args.min_goal_distance > 0:
         rs_cmd += ["--min_goal_distance", str(args.min_goal_distance)]
+    rs_cmd += ["--potential_mode", args.potential_mode]
+    rs_cmd += ["--potential_temp", str(args.potential_temp)]
     run(rs_cmd)
 
     print()

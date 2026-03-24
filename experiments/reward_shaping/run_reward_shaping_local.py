@@ -177,6 +177,18 @@ def main() -> None:
              "per-step figure to <output_dir>/debug_frames/.  Skips normal "
              "Q-learning, results saving, and learning-curve plots.",
     )
+    parser.add_argument(
+        "--potential_mode", type=str, default="negative",
+        choices=["negative", "inverse", "exp-negative"],
+        help="Transformation applied to normalised hitting times to produce Φ(s). "
+             "'negative': Φ=−h (default), 'inverse': Φ=1/(h/temp+1e-5), "
+             "'exp-negative': Φ=exp(−h/temp).",
+    )
+    parser.add_argument(
+        "--potential_temp", type=float, default=1.0,
+        help="Temperature τ used by 'inverse' and 'exp-negative' potential modes "
+             "(default: 1.0).",
+    )
     args = parser.parse_args()
 
     model_dir = Path(args.model_dir) if args.model_dir else None
@@ -569,15 +581,27 @@ def main() -> None:
     # ------------------------------------------------------------------
     complex_potential_per_seed = None
     if hitting_times is not None:
-        complex_potential_per_seed = build_all_potentials(hitting_times)[:, goal_per_seed].T
+        complex_potential_per_seed = build_all_potentials(
+            hitting_times,
+            potential_mode=args.potential_mode,
+            potential_temp=args.potential_temp,
+        )[:, goal_per_seed].T
 
     gt_potential_per_seed = None
     if gt_hitting_times is not None:
-        gt_potential_per_seed = build_all_potentials(gt_hitting_times)[:, goal_per_seed].T
+        gt_potential_per_seed = build_all_potentials(
+            gt_hitting_times,
+            potential_mode=args.potential_mode,
+            potential_temp=args.potential_temp,
+        )[:, goal_per_seed].T
 
     allo_potential_per_seed = None
     if allo_hitting_times is not None:
-        allo_potential_per_seed = build_all_potentials(allo_hitting_times)[:, goal_per_seed].T
+        allo_potential_per_seed = build_all_potentials(
+            allo_hitting_times,
+            potential_mode=args.potential_mode,
+            potential_temp=args.potential_temp,
+        )[:, goal_per_seed].T
 
     conditions = {
         "baseline": dict(potential_per_seed=None, shaping_coef=0.0),
@@ -652,6 +676,8 @@ def main() -> None:
                 portals          = dbg_door_markers if dbg_door_markers else None,
                 portal_sources   = dbg_portal_sources if dbg_portal_sources else None,
                 portal_ends      = dbg_portal_ends   if dbg_portal_ends   else None,
+                potential_mode   = args.potential_mode,
+                potential_temp   = args.potential_temp,
             )
 
         print(f"\nDone.  All debug frames written to {output_dir / 'debug_frames'}/")
