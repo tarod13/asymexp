@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from src.envs.gridworld import GridWorldState
+from src.utils.plotting import _draw_door_markers, _draw_portal_tile_overlays
 
 # Action indices (matches gridworld.py action_effects ordering)
 _UP    = 0
@@ -133,7 +134,9 @@ def _draw_heatmap(
     s_curr: int | None = None,
     s_next: int | None = None,
     cmap_name: str = "viridis",
-    nan_is_unvisited: bool = False,
+    portals=None,
+    portal_sources=None,
+    portal_ends=None,
 ) -> object:
     """Draw a per-state heatmap on a white-free / gray-wall maze background.
 
@@ -163,6 +166,8 @@ def _draw_heatmap(
     cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
     _draw_grid_lines(ax, H, W)
+    _draw_door_markers(ax, portals, W)
+    _draw_portal_tile_overlays(ax, portal_sources, portal_ends, W)
     ax.set_title(title, fontsize=9)
     ax.set_xticks([])
     ax.set_yticks([])
@@ -202,6 +207,9 @@ def _plot_vector_field(
     goal_idx: int,
     start_idx: int,
     save_path: Path,
+    portals=None,
+    portal_sources=None,
+    portal_ends=None,
 ) -> None:
     """Quiver plot of shaping gravity F(s,a) = γΦ(s') − Φ(s).
 
@@ -243,6 +251,8 @@ def _plot_vector_field(
     extent  = [-0.5, W - 0.5, H - 0.5, -0.5]
     ax.imshow(bg_rgba, origin="upper", interpolation="nearest", extent=extent)
     _draw_grid_lines(ax, H, W)
+    _draw_door_markers(ax, portals, W)
+    _draw_portal_tile_overlays(ax, portal_sources, portal_ends, W)
 
     if nonzero.any():
         q = ax.quiver(
@@ -291,6 +301,9 @@ def _plot_td_heatmap(
     td_count: np.ndarray,
     canonical_states: np.ndarray,
     save_path: Path,
+    portals=None,
+    portal_sources=None,
+    portal_ends=None,
 ) -> None:
     H, W = env.height, env.width
     N    = len(canonical_states)
@@ -319,6 +332,8 @@ def _plot_td_heatmap(
     plt.colorbar(im, ax=ax, label="mean |ΔQ|")
 
     _draw_grid_lines(ax, H, W)
+    _draw_door_markers(ax, portals, W)
+    _draw_portal_tile_overlays(ax, portal_sources, portal_ends, W)
     ax.set_title("Episode TD-error heatmap (mean |ΔQ| per grid cell)")
     ax.set_xticks([])
     ax.set_yticks([])
@@ -353,6 +368,9 @@ def _draw_step_figure(
     Q_table: np.ndarray,
     canonical_states: np.ndarray,
     env,
+    portals=None,
+    portal_sources=None,
+    portal_ends=None,
 ) -> None:
     action_names = ["Up", "Right", "Down", "Left"]
     steps = list(range(t + 1))
@@ -371,10 +389,12 @@ def _draw_step_figure(
     cb_pot = _draw_heatmap(
         ax_pot, fig, f"Φ(s)  [step {t}]",
         potential_N, canonical_states, env, s, s_prime, cmap_name="viridis",
+        portals=portals, portal_sources=portal_sources, portal_ends=portal_ends,
     )
     cb_val = _draw_heatmap(
         ax_val, fig, f"V(s)=max Q  [step {t}]",
         Q_table.max(axis=1), canonical_states, env, s, s_prime, cmap_name="plasma",
+        portals=portals, portal_sources=portal_sources, portal_ends=portal_ends,
     )
     cb_store.extend([cb_pot, cb_val])
 
@@ -415,6 +435,9 @@ def run_step_by_step_debug(
     shaping_coef: float,
     max_steps: int,
     debug_dir: Path,
+    portals=None,
+    portal_sources=None,
+    portal_ends=None,
 ) -> None:
     """Run one training episode with step-by-step visualisation."""
     debug_dir.mkdir(parents=True, exist_ok=True)
@@ -432,6 +455,7 @@ def run_step_by_step_debug(
         env, canonical_states, next_can, potential_np, gamma,
         goal_canonical, start_canonical,
         debug_dir / "vector_field.png",
+        portals=portals, portal_sources=portal_sources, portal_ends=portal_ends,
     )
 
     Q        = np.zeros((N, 4), dtype=np.float32)
@@ -511,6 +535,7 @@ def run_step_by_step_debug(
             t, s, s_prime, a, R, F_shape, Q_sa_before, td_abs,
             hist_R, hist_F, hist_Q, hist_TD,
             potential_np, Q, canonical_states, env,
+            portals=portals, portal_sources=portal_sources, portal_ends=portal_ends,
         )
         frame_path = debug_dir / f"step_{t:04d}.png"
         fig.savefig(frame_path, dpi=150, bbox_inches="tight")
@@ -529,5 +554,6 @@ def run_step_by_step_debug(
     plt.close(fig)
 
     _plot_td_heatmap(env, td_sum, td_count, canonical_states,
-                     debug_dir / "episode_td_error_heatmap.png")
+                     debug_dir / "episode_td_error_heatmap.png",
+                     portals=portals, portal_sources=portal_sources, portal_ends=portal_ends)
     print(f"  [debug] All frames written to {debug_dir}")

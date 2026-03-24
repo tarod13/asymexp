@@ -58,7 +58,7 @@ from src.rl.loading import (
 from src.rl.qlearning import build_all_potentials, run_q_learning
 from src.rl.debug_viz import run_step_by_step_debug
 from src.rl.plotting import plot_results, plot_hitting_times_grid
-from src.utils.envs import create_gridworld_env, get_canonical_free_states, get_env_transition_markers
+from src.utils.envs import create_gridworld_env, get_canonical_free_states, get_env_transition_markers, get_portal_tile_sets
 from src.utils.plotting import plot_potential_vs_value
 from src.utils.metrics import compute_hitting_times_from_eigenvectors
 
@@ -603,6 +603,9 @@ def main() -> None:
         for i, s in enumerate(canonical_states):
             full_to_can_dbg[int(s)] = i
 
+        dbg_door_markers = get_env_transition_markers(env)
+        dbg_portal_sources, dbg_portal_ends = get_portal_tile_sets(env)
+
         for cond_name, cond_kwargs in conditions.items():
             potential_per_seed = cond_kwargs.get("potential_per_seed")
             shaping_coef_cond  = cond_kwargs.get("shaping_coef", 0.0)
@@ -641,6 +644,9 @@ def main() -> None:
                 shaping_coef     = shaping_coef_cond,
                 max_steps        = args.max_steps,
                 debug_dir        = cond_dir,
+                portals          = dbg_door_markers if dbg_door_markers else None,
+                portal_sources   = dbg_portal_sources if dbg_portal_sources else None,
+                portal_ends      = dbg_portal_ends   if dbg_portal_ends   else None,
             )
 
         print(f"\nDone.  All debug frames written to {output_dir / 'debug_frames'}/")
