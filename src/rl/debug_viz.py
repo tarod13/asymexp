@@ -11,7 +11,6 @@ Outputs written to <debug_dir>/:
 
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 
 import jax
@@ -31,8 +30,12 @@ _DOWN  = 2
 _LEFT  = 3
 
 # Arrow length bounds (in grid-cell data units)
-_ARROW_MIN_LEN = 0.08   # shortest arrow drawn for the weakest non-zero field
-_ARROW_MAX_LEN = 0.42   # longest arrow; 0.42 < 0.5 so it stays inside its tile
+_ARROW_MIN_LEN = 0.08   # shortest arrow for the weakest non-zero field
+_ARROW_MAX_LEN = 0.42   # longest arrow; stays inside its tile (< 0.5)
+
+# Maze colours (match training-plot convention: wall_color='gray')
+_WALL_RGBA  = np.array([0.5, 0.5, 0.5, 1.0], dtype=float)   # mid-gray
+_FREE_RGBA  = np.array([1.0, 1.0, 1.0, 1.0], dtype=float)   # white
 
 
 # ---------------------------------------------------------------------------
@@ -45,11 +48,7 @@ def _build_transition_table(
     full_to_can_jax: jnp.ndarray,
     N: int,
 ) -> np.ndarray:
-    """Return next_can[N, 4]: canonical index reached from state s via action a.
-
-    Wall collisions keep the agent in state s (self-loop), matching the
-    training loop behaviour.
-    """
+    """Return next_can[N, 4]: canonical index reached from state s via action a."""
     fixed_key = jax.random.PRNGKey(0)
 
     def step_one(s_can: jnp.ndarray, a: jnp.ndarray) -> jnp.ndarray:
@@ -66,7 +65,6 @@ def _build_transition_table(
         can_idx   = full_to_can_jax[next_full]
         return jnp.where(can_idx >= 0, can_idx, s_can)
 
-    # vmap over actions (inner), then over states (outer)
     actions_all = jnp.arange(4, dtype=jnp.int32)
     next_can_jax = jax.jit(
         jax.vmap(lambda s: jax.vmap(lambda a: step_one(s, a))(actions_all))
@@ -76,8 +74,25 @@ def _build_transition_table(
 
 
 # ---------------------------------------------------------------------------
+# Maze RGBA background helper
+# ---------------------------------------------------------------------------
+
+def _make_maze_bg_rgba(env, canonical_states: np.ndarray) -> np.ndarray:
+    """Return [H, W, 4] RGBA: free cells = white, walls = gray.
+
+    Matches the training-plot convention (wall_color='gray',
+    visualize_eigenvector_on_grid).
+    """
+    H, W  = env.height, env.width
+    bg    = np.tile(_WALL_RGBA, (H, W, 1))  # start all walls
+    for full_idx in canonical_states:
+        y, x    = divmod(int(full_idx), W)
+        bg[y, x] = _FREE_RGBA
+    return bg
+
+
+# ---------------------------------------------------------------------------
 # Shared: build a [H, W] grid from per-canonical-state values
-# (walls/unvisited cells remain NaN)
 # ---------------------------------------------------------------------------
 
 def _values_to_grid(
@@ -94,7 +109,7 @@ def _values_to_grid(
 
 
 # ---------------------------------------------------------------------------
-# Shared: draw grid lines (thin gray, same as training plots)
+# Shared: draw grid lines
 # ---------------------------------------------------------------------------
 
 def _draw_grid_lines(ax, H: int, W: int) -> None:
@@ -105,7 +120,7 @@ def _draw_grid_lines(ax, H: int, W: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Heatmap panel helper — matches plot_potential_vs_value style exactly
+# Heatmap panel helper
 # ---------------------------------------------------------------------------
 
 def _draw_heatmap(
@@ -118,29 +133,36 @@ def _draw_heatmap(
     s_curr: int | None = None,
     s_next: int | None = None,
     cmap_name: str = "viridis",
+    nan_is_unvisited: bool = False,
 ) -> object:
-    """Draw a per-state heatmap; walls = NaN → black (set_bad).
+    """Draw a per-state heatmap on a white-free / gray-wall maze background.
 
-    Returns the colorbar object so the caller can remove it on the next frame.
+    Layer 1: RGBA background (white free, gray walls) — always fully opaque.
+    Layer 2: data colormap — NaN renders as transparent so layer 1 shows through.
+
+    Returns the colorbar object so the caller can call cb.remove() next frame.
     """
     H, W  = env.height, env.width
     grid  = _values_to_grid(values_N, canonical_states, H, W)
 
-    cmap = cm.get_cmap(cmap_name).copy()
-    cmap.set_bad(color="black")
+    cmap_data = cm.get_cmap(cmap_name).copy()
+    cmap_data.set_bad(color="none")  # transparent → background shows through
 
+    # Layer 1: maze background
+    bg_rgba = _make_maze_bg_rgba(env, canonical_states)
+    extent  = [-0.5, W - 0.5, H - 0.5, -0.5]
+    ax.imshow(bg_rgba, origin="upper", interpolation="nearest", extent=extent)
+
+    # Layer 2: data
     vmin = float(np.nanmin(grid)) if not np.all(np.isnan(grid)) else 0.0
     vmax = float(np.nanmax(grid)) if not np.all(np.isnan(grid)) else 1.0
-
-    im = ax.imshow(
-        grid, cmap=cmap, origin="upper", interpolation="nearest",
-        extent=[-0.5, W - 0.5, H - 0.5, -0.5],
-        vmin=vmin, vmax=vmax,
+    im   = ax.imshow(
+        grid, cmap=cmap_data, origin="upper", interpolation="nearest",
+        extent=extent, vmin=vmin, vmax=vmax,
     )
     cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
     _draw_grid_lines(ax, H, W)
-
     ax.set_title(title, fontsize=9)
     ax.set_xticks([])
     ax.set_yticks([])
@@ -149,21 +171,20 @@ def _draw_heatmap(
     ax.set_aspect("equal")
 
     for s_idx, color, label in [
-        (s_curr, "white",  "s\u209c"),        # sₜ
-        (s_next, "yellow", "s\u209c\u208a\u2081"),  # sₜ₊₁
+        (s_curr, "white",  "s\u209c"),
+        (s_next, "yellow", "s\u209c\u208a\u2081"),
     ]:
         if s_idx is None:
             continue
         full_idx = int(canonical_states[s_idx])
         gy, gx   = divmod(full_idx, W)
-        rect     = mpatches.Rectangle(
+        rect = mpatches.Rectangle(
             (gx - 0.5, gy - 0.5), 1.0, 1.0,
             linewidth=2, edgecolor=color, facecolor="none", zorder=10,
         )
         ax.add_patch(rect)
         ax.text(gx, gy - 0.38, label, color=color,
-                ha="center", va="top", fontsize=7, zorder=11,
-                fontweight="bold")
+                ha="center", va="top", fontsize=7, zorder=11, fontweight="bold")
 
     return cb
 
@@ -175,74 +196,54 @@ def _draw_heatmap(
 def _plot_vector_field(
     env,
     canonical_states: np.ndarray,
-    next_can: np.ndarray,    # [N, 4]
-    potential: np.ndarray,   # [N]
+    next_can: np.ndarray,
+    potential: np.ndarray,
     gamma: float,
     goal_idx: int,
     start_idx: int,
     save_path: Path,
 ) -> None:
-    """Save a quiver plot of shaping gravity F(s,a) = γΦ(s') − Φ(s).
+    """Quiver plot of shaping gravity F(s,a) = γΦ(s') − Φ(s).
 
     Arrows are normalised to unit direction then linearly re-scaled to
-    [_ARROW_MIN_LEN, _ARROW_MAX_LEN] in data-unit space so they never
-    overflow their tile, and the weakest non-zero arrow is still visible.
+    [_ARROW_MIN_LEN, _ARROW_MAX_LEN] in data-unit space.
     """
-    N  = len(canonical_states)
-    W  = env.width
-    H  = env.height
+    N = len(canonical_states)
+    W = env.width
+    H = env.height
 
-    # Vectorised shaping field [N, 4]
     Phi       = potential
     Phi_prime = Phi[next_can]
     F_all     = gamma * Phi_prime - Phi[:, None]
 
-    # Net x/y shaping force per cell (signed)
     Vx = F_all[:, _RIGHT] - F_all[:, _LEFT]
     Vy = F_all[:, _DOWN]  - F_all[:, _UP]
 
-    # 2-D coordinates
-    xs = np.array([int(s) % W  for s in canonical_states], dtype=float)
-    ys = np.array([int(s) // W for s in canonical_states], dtype=float)
+    xs  = np.array([int(s) % W  for s in canonical_states], dtype=float)
+    ys  = np.array([int(s) // W for s in canonical_states], dtype=float)
+    mag = np.sqrt(Vx**2 + Vy**2)
 
-    mag     = np.sqrt(Vx**2 + Vy**2)
     nonzero = mag > 1e-10
-
-    # --- Re-scale arrows to [_ARROW_MIN_LEN, _ARROW_MAX_LEN] ---
     mag_min = mag[nonzero].min() if nonzero.any() else 1.0
     mag_max = mag[nonzero].max() if nonzero.any() else 1.0
     denom   = (mag_max - mag_min) if mag_max > mag_min else 1.0
 
-    scaled_len = np.zeros_like(mag)
-    scaled_len[nonzero] = (
+    scaled_len            = np.zeros_like(mag)
+    scaled_len[nonzero]   = (
         _ARROW_MIN_LEN
         + (mag[nonzero] - mag_min) / denom * (_ARROW_MAX_LEN - _ARROW_MIN_LEN)
     )
-
-    # Unit-vector components scaled to desired length
-    Ux = np.where(nonzero, Vx / np.where(nonzero, mag, 1.0) * scaled_len, 0.0)
-    Uy = np.where(nonzero, Vy / np.where(nonzero, mag, 1.0) * scaled_len, 0.0)
-
-    # ── Figure ───────────────────────────────────────────────────────
-    grid_bg = _values_to_grid(
-        np.zeros(N, dtype=np.float32), canonical_states, H, W
-    )
-    cmap_bg = cm.get_cmap("Greys").copy()
-    cmap_bg.set_bad(color="black")
+    safe_mag = np.where(nonzero, mag, 1.0)
+    Ux = np.where(nonzero, Vx / safe_mag * scaled_len, 0.0)
+    Uy = np.where(nonzero, Vy / safe_mag * scaled_len, 0.0)
 
     fig, ax = plt.subplots(figsize=(max(6, W * 0.7), max(5, H * 0.7)))
 
-    # Maze background (free cells = light gray, walls = black)
-    free_grid = np.where(np.isnan(grid_bg), np.nan, 0.25)  # free → 0.25 → light gray
-    ax.imshow(
-        free_grid, cmap=cmap_bg, origin="upper", interpolation="nearest",
-        extent=[-0.5, W - 0.5, H - 0.5, -0.5],
-        vmin=0.0, vmax=1.0,
-    )
+    bg_rgba = _make_maze_bg_rgba(env, canonical_states)
+    extent  = [-0.5, W - 0.5, H - 0.5, -0.5]
+    ax.imshow(bg_rgba, origin="upper", interpolation="nearest", extent=extent)
     _draw_grid_lines(ax, H, W)
 
-    # Quiver — scale=1 with scale_units="xy" means arrow length == vector magnitude
-    # (in data units), so our pre-scaled vectors give the exact desired lengths.
     if nonzero.any():
         q = ax.quiver(
             xs[nonzero], ys[nonzero],
@@ -253,15 +254,14 @@ def _plot_vector_field(
             width=0.005, headwidth=4, headlength=5, headaxislength=4,
             zorder=5,
         )
-        plt.colorbar(q, ax=ax, label="|F(→)−F(←)|² + |F(↓)−F(↑)|²  (raw magnitude)")
+        plt.colorbar(q, ax=ax, label="raw magnitude |F(→)−F(←)|² + |F(↓)−F(↑)|²")
 
-    # Goal / start markers
     g_full = int(canonical_states[goal_idx])
     s_full = int(canonical_states[start_idx])
     gx, gy = g_full % W, g_full // W
     sx, sy = s_full % W, s_full // W
-    ax.plot(gx, gy, marker="*", ms=14, color="gold",  zorder=15, label="goal")
-    ax.plot(sx, sy, marker="o", ms=10, color="cyan",  zorder=15,
+    ax.plot(gx, gy, marker="*", ms=14, color="gold", zorder=15, label="goal")
+    ax.plot(sx, sy, marker="o", ms=10, color="cyan", zorder=15,
             markeredgecolor="black", label="start")
     ax.legend(fontsize=8, loc="upper right")
 
@@ -271,7 +271,7 @@ def _plot_vector_field(
         "Shaping gravity: net F(s, a) vector field\n"
         r"$V_x=F(\rightarrow)-F(\leftarrow)$, "
         r"$V_y=F(\downarrow)-F(\uparrow)$  "
-        "(arrows normalised to [min,max] size)",
+        "(arrows normalised to [min, max] size)",
     )
     ax.set_xticks([])
     ax.set_yticks([])
@@ -282,7 +282,7 @@ def _plot_vector_field(
 
 
 # ---------------------------------------------------------------------------
-# Episode TD-error heatmap
+# Episode TD-error heatmap (same visual format as vector field)
 # ---------------------------------------------------------------------------
 
 def _plot_td_heatmap(
@@ -292,29 +292,33 @@ def _plot_td_heatmap(
     canonical_states: np.ndarray,
     save_path: Path,
 ) -> None:
-    H, W   = env.height, env.width
-    N      = len(canonical_states)
+    H, W = env.height, env.width
+    N    = len(canonical_states)
 
-    # Compute per-canonical-state mean TD error
-    avg_vals = np.zeros(N, dtype=np.float32)
+    # NaN for unvisited cells → they show as white (background) not black
+    avg_vals = np.full(N, np.nan, dtype=np.float32)
     for i, full_idx in enumerate(canonical_states):
         y, x = divmod(int(full_idx), W)
         if td_count[y, x] > 0:
             avg_vals[i] = float(td_sum[y, x] / td_count[y, x])
 
+    grid      = _values_to_grid(avg_vals, canonical_states, H, W)
+    cmap_data = cm.get_cmap("hot").copy()
+    cmap_data.set_bad(color="none")  # transparent → background shows through
+
     fig, ax = plt.subplots(figsize=(max(6, W * 0.7), max(5, H * 0.7)))
+    extent  = [-0.5, W - 0.5, H - 0.5, -0.5]
 
-    grid = _values_to_grid(avg_vals, canonical_states, H, W)
-    cmap = cm.get_cmap("hot").copy()
-    cmap.set_bad(color="black")
+    # Layer 1: maze background (white free, gray walls)
+    bg_rgba = _make_maze_bg_rgba(env, canonical_states)
+    ax.imshow(bg_rgba, origin="upper", interpolation="nearest", extent=extent)
 
-    im = ax.imshow(
-        grid, cmap=cmap, origin="upper", interpolation="nearest",
-        extent=[-0.5, W - 0.5, H - 0.5, -0.5],
-    )
+    # Layer 2: TD error data (only visited cells)
+    im = ax.imshow(grid, cmap=cmap_data, origin="upper", interpolation="nearest",
+                   extent=extent)
     plt.colorbar(im, ax=ax, label="mean |ΔQ|")
-    _draw_grid_lines(ax, H, W)
 
+    _draw_grid_lines(ax, H, W)
     ax.set_title("Episode TD-error heatmap (mean |ΔQ| per grid cell)")
     ax.set_xticks([])
     ax.set_yticks([])
@@ -335,7 +339,7 @@ def _draw_step_figure(
     fig,
     ax_pot, ax_val,
     ax_R, ax_F, ax_Q, ax_TD,
-    cb_store: list,           # mutable list[cb | None, cb | None] for pot and val
+    cb_store: list,
     t: int,
     s: int,
     s_prime: int,
@@ -353,7 +357,6 @@ def _draw_step_figure(
     action_names = ["Up", "Right", "Down", "Left"]
     steps = list(range(t + 1))
 
-    # Remove existing colorbars (they are separate axes; ax.cla() does not touch them)
     for cb in cb_store:
         if cb is not None:
             try:
@@ -365,7 +368,6 @@ def _draw_step_figure(
     for ax in (ax_pot, ax_val, ax_R, ax_F, ax_Q, ax_TD):
         ax.cla()
 
-    # --- Col 0: heatmaps ---
     cb_pot = _draw_heatmap(
         ax_pot, fig, f"Φ(s)  [step {t}]",
         potential_N, canonical_states, env, s, s_prime, cmap_name="viridis",
@@ -376,7 +378,6 @@ def _draw_step_figure(
     )
     cb_store.extend([cb_pot, cb_val])
 
-    # --- Col 1: time series ---
     def _plot_ts(ax, data, ylabel, color):
         ax.plot(steps, data, color=color, lw=1.2)
         ax.axvline(t, color="red", lw=0.8, ls="--", alpha=0.6)
@@ -384,10 +385,10 @@ def _draw_step_figure(
         ax.tick_params(labelsize=7)
         ax.grid(True, alpha=0.25)
 
-    _plot_ts(ax_R,  hist_R,  "R",           "#2ca02c")
-    _plot_ts(ax_F,  hist_F,  "F (shaping)", "#1f77b4")
-    _plot_ts(ax_Q,  hist_Q,  "Q(s\u209c,a\u209c)", "#ff7f0e")
-    _plot_ts(ax_TD, hist_TD, "|ΔQ|",        "#d62728")
+    _plot_ts(ax_R,  hist_R,  "R",                   "#2ca02c")
+    _plot_ts(ax_F,  hist_F,  "F (shaping)",          "#1f77b4")
+    _plot_ts(ax_Q,  hist_Q,  "Q(s\u209c,a\u209c)",  "#ff7f0e")
+    _plot_ts(ax_TD, hist_TD, "|ΔQ|",                "#d62728")
     ax_TD.set_xlabel("step", fontsize=8)
 
     fig.suptitle(
@@ -442,7 +443,6 @@ def run_step_by_step_debug(
     hist_Q:  list[float] = []
     hist_TD: list[float] = []
 
-    # ── Create the step figure once ───────────────────────────────────
     fig = plt.figure(figsize=(16, 10))
     gs  = gridspec.GridSpec(
         4, 2, figure=fig,
@@ -455,8 +455,6 @@ def run_step_by_step_debug(
     ax_F   = fig.add_subplot(gs[1, 1])
     ax_Q   = fig.add_subplot(gs[2, 1])
     ax_TD  = fig.add_subplot(gs[3, 1])
-
-    # Mutable list to track active colorbar objects (pot, val)
     cb_store: list = []
 
     rng = np.random.default_rng(0)
@@ -464,7 +462,6 @@ def run_step_by_step_debug(
     print(f"  [debug] Starting episode: start={start_canonical} goal={goal_canonical}")
 
     for t in range(max_steps):
-        # ε-greedy
         if rng.random() < epsilon:
             a = int(rng.integers(0, 4))
         else:
@@ -473,7 +470,6 @@ def run_step_by_step_debug(
             greedy = np.where(q_s == max_q)[0]
             a      = int(rng.choice(greedy))
 
-        # Environment step
         step_key  = jax.random.PRNGKey(t)
         full_idx  = int(canonical_states[s])
         env_state = GridWorldState(
@@ -487,13 +483,11 @@ def run_step_by_step_debug(
         can_idx   = int(full_to_can[next_full])
         s_prime   = can_idx if can_idx >= 0 else s
 
-        # Reward + shaping
         reached     = (s_prime == goal_canonical)
         R           = 1.0 if reached else 0.0
         F_shape     = float(shaping_coef * (gamma * potential_np[s_prime] - potential_np[s]))
         r_total     = R + F_shape
 
-        # TD update
         Q_sa_before = float(Q[s, a])
         target      = r_total if reached else r_total + gamma * float(Q[s_prime].max())
         td_error    = target - Q_sa_before
@@ -534,5 +528,6 @@ def run_step_by_step_debug(
 
     plt.close(fig)
 
-    _plot_td_heatmap(env, td_sum, td_count, canonical_states, debug_dir / "episode_td_error_heatmap.png")
+    _plot_td_heatmap(env, td_sum, td_count, canonical_states,
+                     debug_dir / "episode_td_error_heatmap.png")
     print(f"  [debug] All frames written to {debug_dir}")
