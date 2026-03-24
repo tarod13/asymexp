@@ -599,39 +599,51 @@ def main() -> None:
         print("STEP-BY-STEP VISUAL DEBUG MODE")
         print(f"{'='*60}")
 
-        # Pick the first shaped condition; fall back to baseline (zero potential)
-        debug_cond = next(
-            (k for k in conditions if k != "baseline"), "baseline"
-        )
-        debug_potential = conditions[debug_cond].get("potential_per_seed")
-        if debug_potential is not None:
-            potential_seed0 = np.array(debug_potential[0], dtype=np.float32)
-        else:
-            potential_seed0 = np.zeros(num_canonical, dtype=np.float32)
-
-        print(f"  Condition          : {debug_cond}")
-        print(f"  Goal (canonical)   : {goal_per_seed[0]}")
-        print(f"  Start (canonical)  : {eval_starts_per_seed[0]}")
-
         full_to_can_dbg = np.full(env.width * env.height, -1, dtype=np.int32)
         for i, s in enumerate(canonical_states):
             full_to_can_dbg[int(s)] = i
 
-        run_step_by_step_debug(
-            env              = env,
-            canonical_states = canonical_states,
-            full_to_can      = full_to_can_dbg,
-            potential        = potential_seed0,
-            goal_canonical   = int(goal_per_seed[0]),
-            start_canonical  = int(eval_starts_per_seed[0]),
-            gamma            = args.gamma_rl,
-            lr               = args.lr,
-            epsilon          = args.epsilon,
-            shaping_coef     = args.shaping_coef,
-            max_steps        = args.max_steps,
-            debug_dir        = output_dir / "debug_frames",
-        )
-        print(f"\nDone.  Debug frames written to {output_dir / 'debug_frames'}")
+        for cond_name, cond_kwargs in conditions.items():
+            potential_per_seed = cond_kwargs.get("potential_per_seed")
+            shaping_coef_cond  = cond_kwargs.get("shaping_coef", 0.0)
+
+            if potential_per_seed is not None:
+                potential_seed0 = np.array(potential_per_seed[0], dtype=np.float32)
+            else:
+                potential_seed0 = np.zeros(num_canonical, dtype=np.float32)
+
+            # Build a filesystem-safe subdirectory name from the condition label
+            safe_name = (
+                cond_name
+                .replace(" ", "_")
+                .replace("=", "")
+                .replace("(", "")
+                .replace(")", "")
+                .replace("/", "-")
+            )
+            cond_dir = output_dir / "debug_frames" / safe_name
+
+            print(f"\n  --- Condition: {cond_name} ---")
+            print(f"  Goal (canonical)  : {goal_per_seed[0]}")
+            print(f"  Start (canonical) : {eval_starts_per_seed[0]}")
+            print(f"  Output dir        : {cond_dir}")
+
+            run_step_by_step_debug(
+                env              = env,
+                canonical_states = canonical_states,
+                full_to_can      = full_to_can_dbg,
+                potential        = potential_seed0,
+                goal_canonical   = int(goal_per_seed[0]),
+                start_canonical  = int(eval_starts_per_seed[0]),
+                gamma            = args.gamma_rl,
+                lr               = args.lr,
+                epsilon          = args.epsilon,
+                shaping_coef     = shaping_coef_cond,
+                max_steps        = args.max_steps,
+                debug_dir        = cond_dir,
+            )
+
+        print(f"\nDone.  All debug frames written to {output_dir / 'debug_frames'}/")
         return
 
     # ------------------------------------------------------------------
