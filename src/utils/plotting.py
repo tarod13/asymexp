@@ -491,6 +491,120 @@ def _plot_eigvec_grid(
     return fig
 
 
+def plot_potential_vs_value(
+    canonical_states: np.ndarray,
+    grid_width: int,
+    grid_height: int,
+    potential_per_seed: np.ndarray,
+    value_per_seed: np.ndarray,
+    goal_per_seed: np.ndarray,
+    baseline_value_per_seed: Optional[np.ndarray] = None,
+    cond_name: str = "",
+    portals=None,
+    portal_sources=None,
+    portal_ends=None,
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """(2 or 3) × num_seeds figure: row 0 = potential Φ(s), row 1 = shaped V(s),
+    optional row 2 = baseline V(s) (when baseline_value_per_seed is provided).
+
+    Each column is one seed.  Colorbars are independent per subplot.
+    The goal cell is marked with a white star.
+
+    Args:
+        canonical_states:         flat grid indices of free states, shape [num_canonical]
+        grid_width/height:        environment dimensions
+        potential_per_seed:       Φ(s) for each seed, shape [num_seeds, num_canonical]
+        value_per_seed:           V(s)=max_a Q(s,a) for each seed, shape [num_seeds, num_canonical]
+        goal_per_seed:            canonical state index of each seed's goal, shape [num_seeds]
+        baseline_value_per_seed:  baseline V(s) for each seed, shape [num_seeds, num_canonical] (optional)
+        cond_name:                figure super-title (condition label)
+        portals:                  {(src_flat, action): dst_flat} door markers (optional)
+        portal_sources/ends:      flat state indices for stochastic portal overlays (optional)
+        save_path:                if provided, save figure here and close it
+    """
+    import matplotlib.cm as cm
+
+    num_seeds = len(goal_per_seed)
+
+    if baseline_value_per_seed is not None:
+        row_labels = ["Potential Φ(s)", "Value V(s) [shaped]", "Value V(s) [baseline]"]
+        data_rows  = [potential_per_seed, value_per_seed, baseline_value_per_seed]
+        cmap_names = ["plasma", "viridis", "viridis"]
+    else:
+        row_labels = ["Potential Φ(s)", "Value V(s)"]
+        data_rows  = [potential_per_seed, value_per_seed]
+        cmap_names = ["plasma", "viridis"]
+
+    num_rows = len(row_labels)
+    fig, axes = plt.subplots(num_rows, num_seeds, figsize=(num_seeds * 3, num_rows * 3),
+                             squeeze=False)
+
+    for row_idx, (row_label, data, cmap_name) in enumerate(
+        zip(row_labels, data_rows, cmap_names)
+    ):
+        cmap = cm.get_cmap(cmap_name).copy()
+        cmap.set_bad(color="black")
+
+        for col_idx in range(num_seeds):
+            ax   = axes[row_idx, col_idx]
+            vals = data[col_idx]
+
+            grid = np.full((grid_height, grid_width), np.nan)
+            for canon_idx, full_state_idx in enumerate(canonical_states):
+                y = int(full_state_idx) // grid_width
+                x = int(full_state_idx) % grid_width
+                grid[y, x] = float(vals[canon_idx])
+
+            vmin = float(np.nanmin(grid)) if not np.all(np.isnan(grid)) else 0.0
+            vmax = float(np.nanmax(grid)) if not np.all(np.isnan(grid)) else 1.0
+
+            im = ax.imshow(
+                grid, cmap=cmap, origin="upper", interpolation="nearest",
+                extent=[-0.5, grid_width - 0.5, grid_height - 0.5, -0.5],
+                vmin=vmin, vmax=vmax,
+            )
+
+            for i in range(grid_height + 1):
+                ax.axhline(i - 0.5, color="gray", linewidth=0.3, alpha=0.3)
+            for j in range(grid_width + 1):
+                ax.axvline(j - 0.5, color="gray", linewidth=0.3, alpha=0.3)
+
+            _draw_door_markers(ax, portals, grid_width)
+            _draw_portal_tile_overlays(ax, portal_sources, portal_ends, grid_width)
+
+            # Mark goal with a white star
+            goal_flat = int(canonical_states[goal_per_seed[col_idx]])
+            goal_y, goal_x = divmod(goal_flat, grid_width)
+            ax.plot(goal_x, goal_y, marker="*", markersize=12, color="white",
+                    markeredgecolor="black", markeredgewidth=0.8, zorder=20)
+
+            ax.set_xlim(-0.5, grid_width - 0.5)
+            ax.set_ylim(grid_height - 0.5, -0.5)
+            ax.set_aspect("equal")
+            ax.set_xticks([])
+            ax.set_yticks([])
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+            if row_idx == 0:
+                ax.set_title(f"seed {col_idx} (goal {goal_per_seed[col_idx]})",
+                             fontsize=9)
+            if col_idx == 0:
+                ax.set_ylabel(row_label, fontsize=9)
+
+    if cond_name:
+        fig.suptitle(cond_name, fontsize=12, fontweight="bold")
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"  Saved {Path(save_path).name}")
+
+    return fig
+
+
 def _plot_eigvec_magnitude_comparison(
     learned_real: np.ndarray,
     learned_imag: np.ndarray,

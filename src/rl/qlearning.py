@@ -218,50 +218,50 @@ def run_q_learning(
 
     # ── Evaluation ────────────────────────────────────────────────────
     def eval_one_seed(Q, eval_start, goal):
-        """Greedy rollout; returns (done_flat, ep_end_flat) over all eval steps."""
-        def eval_step(carry, step_key):
-            s, done, step_in_ep = carry
-            at_reset = step_in_ep == 0
-            s    = jnp.where(at_reset, eval_start, s)
-            done = jnp.where(at_reset, jnp.array(False), done)
+        """Greedy rollout; returns (success, length) per episode."""
+        def eval_one_episode(episode_key):
+            def eval_step(carry, step_key):
+                s, done = carry
+                env_key, tie_key = jax.random.split(step_key)
+                q_s    = Q[s]
+                is_max = (q_s == q_s.max()).astype(jnp.float32)
+                a      = jax.random.choice(tie_key, num_actions, p=is_max / is_max.sum())
 
-            env_key, tie_key = jax.random.split(step_key)
-            q_s    = Q[s]
-            is_max = (q_s == q_s.max()).astype(jnp.float32)
-            a      = jax.random.choice(tie_key, num_actions, p=is_max / is_max.sum())
+                full_idx  = canonical_states_jax[s]
+                env_state = GridWorldState(
+                    position=jnp.stack(
+                        [full_idx % env.width, full_idx // env.width]
+                    ).astype(env.dtype),
+                    terminal=jnp.array(False),
+                    steps=jnp.array(0, dtype=env.dtype),
+                )
+                next_env_state, _, _, _ = env.step(env_key, env_state, a)
+                next_full = env.get_state_representation(next_env_state)
+                can_idx   = full_to_can_jax[next_full]
+                s_prime   = jnp.where(can_idx >= 0, can_idx, s)
 
-            full_idx  = canonical_states_jax[s]
-            env_state = GridWorldState(
-                position=jnp.stack(
-                    [full_idx % env.width, full_idx // env.width]
-                ).astype(env.dtype),
-                terminal=jnp.array(False),
-                steps=jnp.array(0, dtype=env.dtype),
+                reached  = s_prime == goal
+                new_done = done | reached
+                new_s    = jnp.where(new_done, s, s_prime)
+                return (new_s, new_done), reached
+
+            step_keys = jax.random.split(episode_key, max_steps_per_episode)
+            _, reached_steps = jax.lax.scan(
+                eval_step,
+                (eval_start, jnp.array(False)),
+                step_keys,
+            )  # reached_steps: [max_steps_per_episode] bool
+            success = reached_steps.any()
+            length  = jnp.where(
+                success,
+                jnp.argmax(reached_steps) + 1,
+                max_steps_per_episode,
             )
-            next_env_state, _, _, _ = env.step(env_key, env_state, a)
-            next_full = env.get_state_representation(next_env_state)
-            can_idx   = full_to_can_jax[next_full]
-            s_prime   = jnp.where(can_idx >= 0, can_idx, s)
+            return success, length
 
-            reached = s_prime == goal
-            new_done = done | reached
-            new_s    = jnp.where(new_done, s, s_prime)
-            next_step_in_ep = jnp.where(
-                new_done | (step_in_ep == max_steps_per_episode - 1),
-                jnp.zeros((), jnp.int32),
-                step_in_ep + 1,
-            )
-            episode_end = new_done | (step_in_ep == max_steps_per_episode - 1)
-            return (new_s, new_done, next_step_in_ep), (new_done, episode_end)
-
-        n_eval_steps = num_eval_episodes * max_steps_per_episode
-        eval_keys = jax.random.split(jax.random.PRNGKey(0), n_eval_steps)
-        _, (done_flat, ep_end_flat) = jax.lax.scan(
-            eval_step,
-            (eval_start, jnp.array(False), jnp.zeros((), jnp.int32)),
-            eval_keys,
-        )
-        return done_flat, ep_end_flat
+        episode_keys = jax.random.split(jax.random.PRNGKey(0), num_eval_episodes)
+        successes, lengths = jax.vmap(eval_one_episode)(episode_keys)
+        return successes, lengths  # each [num_eval_episodes]
 
     vmapped_eval = jax.jit(jax.vmap(eval_one_seed))
 
@@ -294,27 +294,15 @@ def run_q_learning(
     for chunk_i in range(num_chunks):
         carry = vmapped_chunk(carry, seed_chunk_keys[:, chunk_i])
 
-        done_np, ep_end_np = (
+        successes_np, lengths_np = (
             np.array(x) for x in vmapped_eval(carry[0], eval_starts_jax, goal_jax)
-        )  # each [num_seeds, n_eval_steps]
+        )  # each [num_seeds, num_eval_episodes]
 
-        eval_sr_np      = np.zeros(num_seeds)
-        eval_len_all_np = np.zeros(num_seeds)
-        eval_len_suc_np = np.full(num_seeds, np.nan)
-        for si in range(num_seeds):
-            ep_ends   = np.where(ep_end_np[si])[0]
-            if len(ep_ends) == 0:
-                continue
-            ep_starts = np.concatenate([[0], ep_ends[:-1] + 1])
-            lengths   = (ep_ends - ep_starts + 1).astype(float)
-            reached   = done_np[si, ep_ends].astype(bool)
-            n = min(len(ep_ends), num_eval_episodes)
-            lengths, reached = lengths[:n], reached[:n]
-            eval_sr_np[si]      = reached.mean()
-            eval_len_all_np[si] = lengths.mean()
-            suc_len = lengths[reached]
-            if len(suc_len):
-                eval_len_suc_np[si] = suc_len.mean()
+        eval_sr_np      = successes_np.mean(axis=1)
+        eval_len_all_np = lengths_np.mean(axis=1)
+        suc_lengths     = np.where(successes_np, lengths_np.astype(float), np.nan)
+        with np.errstate(all="ignore"):
+            eval_len_suc_np = np.nanmean(suc_lengths, axis=1)
 
         all_eval_sr.append(eval_sr_np)
         all_eval_len_all.append(eval_len_all_np)
@@ -339,4 +327,5 @@ def run_q_learning(
         np.stack(all_eval_len_all, axis=0),          # [num_chunks, num_seeds]
         np.stack(all_eval_len_suc, axis=0),          # [num_chunks, num_seeds]
         np.array(all_eval_steps,   dtype=np.int32),  # [num_chunks]
+        np.array(carry[0]),                          # [num_seeds, num_states, num_actions]
     )

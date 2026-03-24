@@ -56,8 +56,10 @@ from src.rl.loading import (
     load_model, compute_gt_model_data, truncate_model_eigenvectors,
 )
 from src.rl.qlearning import build_all_potentials, run_q_learning
+from src.rl.debug_viz import run_step_by_step_debug
 from src.rl.plotting import plot_results, plot_hitting_times_grid
-from src.utils.envs import create_gridworld_env, get_canonical_free_states
+from src.utils.envs import create_gridworld_env, get_canonical_free_states, get_env_transition_markers, get_portal_tile_sets
+from src.utils.plotting import plot_potential_vs_value
 from src.utils.metrics import compute_hitting_times_from_eigenvectors
 
 
@@ -164,6 +166,12 @@ def main() -> None:
     parser.add_argument(
         "--no_hitting_times_plot", action="store_true",
         help="Skip generating hitting-times visualizations (default: generate them).",
+    )
+    parser.add_argument(
+        "--step_by_step_visual", action="store_true",
+        help="Run a single debugging episode (1 seed, 1 episode) and save a "
+             "per-step figure to <output_dir>/debug_frames/.  Skips normal "
+             "Q-learning, results saving, and learning-curve plots.",
     )
     args = parser.parse_args()
 
@@ -584,6 +592,67 @@ def main() -> None:
         )
 
     # ------------------------------------------------------------------
+    # 5b. Step-by-step visual debug (bypasses all normal training/plotting)
+    # ------------------------------------------------------------------
+    if args.step_by_step_visual:
+        print(f"\n{'='*60}")
+        print("STEP-BY-STEP VISUAL DEBUG MODE")
+        print(f"{'='*60}")
+
+        full_to_can_dbg = np.full(env.width * env.height, -1, dtype=np.int32)
+        for i, s in enumerate(canonical_states):
+            full_to_can_dbg[int(s)] = i
+
+        dbg_door_markers = get_env_transition_markers(env)
+        dbg_portal_sources, dbg_portal_ends = get_portal_tile_sets(env)
+
+        for cond_name, cond_kwargs in conditions.items():
+            potential_per_seed = cond_kwargs.get("potential_per_seed")
+            shaping_coef_cond  = cond_kwargs.get("shaping_coef", 0.0)
+
+            if potential_per_seed is not None:
+                potential_seed0 = np.array(potential_per_seed[0], dtype=np.float32)
+            else:
+                potential_seed0 = np.zeros(num_canonical, dtype=np.float32)
+
+            # Build a filesystem-safe subdirectory name from the condition label
+            safe_name = (
+                cond_name
+                .replace(" ", "_")
+                .replace("=", "")
+                .replace("(", "")
+                .replace(")", "")
+                .replace("/", "-")
+            )
+            cond_dir = output_dir / "debug_frames" / safe_name
+
+            print(f"\n  --- Condition: {cond_name} ---")
+            print(f"  Goal (canonical)  : {goal_per_seed[0]}")
+            print(f"  Start (canonical) : {eval_starts_per_seed[0]}")
+            print(f"  Output dir        : {cond_dir}")
+
+            run_step_by_step_debug(
+                env              = env,
+                canonical_states = canonical_states,
+                full_to_can      = full_to_can_dbg,
+                potential        = potential_seed0,
+                goal_canonical   = int(goal_per_seed[0]),
+                start_canonical  = int(eval_starts_per_seed[0]),
+                gamma            = args.gamma_rl,
+                lr               = args.lr,
+                epsilon          = args.epsilon,
+                shaping_coef     = shaping_coef_cond,
+                max_steps        = args.max_steps,
+                debug_dir        = cond_dir,
+                portals          = dbg_door_markers if dbg_door_markers else None,
+                portal_sources   = dbg_portal_sources if dbg_portal_sources else None,
+                portal_ends      = dbg_portal_ends   if dbg_portal_ends   else None,
+            )
+
+        print(f"\nDone.  All debug frames written to {output_dir / 'debug_frames'}/")
+        return
+
+    # ------------------------------------------------------------------
     # 6. Run Q-learning for every condition
     # ------------------------------------------------------------------
     results = {}
@@ -592,7 +661,7 @@ def main() -> None:
         print(f"Q-learning: {cond_name}")
         print(f"{'='*60}")
 
-        eval_sr, eval_len_all, eval_len_suc, eval_steps = run_q_learning(
+        eval_sr, eval_len_all, eval_len_suc, eval_steps, Q_final = run_q_learning(
             env                  = env,
             canonical_states     = canonical_states,
             goal_per_seed        = goal_per_seed,
@@ -621,10 +690,12 @@ def main() -> None:
                   f"  eval_len_suc={suc_disp}")
 
         results[cond_name] = dict(
-            eval_sr      = eval_sr,
-            eval_len_all = eval_len_all,
-            eval_len_suc = eval_len_suc,
-            eval_steps   = eval_steps,
+            eval_sr           = eval_sr,
+            eval_len_all      = eval_len_all,
+            eval_len_suc      = eval_len_suc,
+            eval_steps        = eval_steps,
+            Q_final           = Q_final,
+            potential_per_seed= cond_kwargs.get("potential_per_seed"),
         )
 
     # ------------------------------------------------------------------
@@ -648,6 +719,51 @@ def main() -> None:
     print(f"  results.pkl saved  → {output_dir / 'results.pkl'}")
 
     plot_results(results, output_dir / "learning_curves.png")
+
+    # ------------------------------------------------------------------
+    # 8. Potential vs value plots (one figure per condition)
+    # ------------------------------------------------------------------
+    print(f"\n{'='*60}")
+    print("Plotting potential vs value ...")
+    print(f"{'='*60}")
+
+    pv_dir = output_dir / "potential_vs_value"
+    pv_dir.mkdir(exist_ok=True)
+
+    door_markers = get_env_transition_markers(env)
+    num_canonical = len(canonical_states)
+
+    # Extract baseline V(s) to use as a reference row in shaped-condition plots.
+    baseline_V = None
+    if "baseline" in results:
+        baseline_V = results["baseline"]["Q_final"].max(axis=-1)  # [num_seeds, num_canonical]
+
+    for cond_name, cond_data in results.items():
+        # Baseline has no potential — skip; its values appear as row 2 in other plots.
+        if cond_name == "baseline":
+            continue
+
+        Q_fin = cond_data["Q_final"]            # [num_seeds, num_states, num_actions]
+        pot   = cond_data["potential_per_seed"]  # [num_seeds, num_states] or None
+
+        V_per_seed   = Q_fin.max(axis=-1)                          # [num_seeds, num_canonical]
+        pot_per_seed = np.array(pot, dtype=np.float32)             # always non-None here
+
+        safe_name = cond_name.replace(" ", "_").replace("=", "").replace("/", "_")
+        save_path = str(pv_dir / f"{safe_name}_potential_vs_value.png")
+
+        plot_potential_vs_value(
+            canonical_states        = canonical_states,
+            grid_width              = env.width,
+            grid_height             = env.height,
+            potential_per_seed      = pot_per_seed,
+            value_per_seed          = V_per_seed,
+            goal_per_seed           = goal_per_seed,
+            baseline_value_per_seed = baseline_V,
+            cond_name               = cond_name,
+            portals                 = door_markers if door_markers else None,
+            save_path               = save_path,
+        )
 
     print(f"\nDone.  All outputs written to {output_dir}")
 
