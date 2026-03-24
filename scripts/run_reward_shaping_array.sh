@@ -59,6 +59,7 @@ NUM_EVAL_EPISODES=30
 MIN_GOAL_DISTANCE=8
 START_STATE="1,1"
 NUM_EIGENVECTORS=8
+N_STEP_TD=1
 SKIP_QLEARNING=false
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
@@ -81,6 +82,7 @@ while [[ $# -gt 0 ]]; do
         --min_goal_distance)  MIN_GOAL_DISTANCE="$2";  shift 2 ;;
         --start_state)        START_STATE="$2";        shift 2 ;;
         --num_eigenvectors)   NUM_EIGENVECTORS="$2";   shift 2 ;;
+        --n_step_td)          N_STEP_TD="$2";          shift 2 ;;
         --skip_qlearning)     SKIP_QLEARNING=true;     shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -120,7 +122,7 @@ echo "========================================"
 export ENV MODEL_DIR OUTPUT_DIR
 export NUM_SEEDS NUM_METHODS TOTAL_STEPS MAX_STEPS
 export SHAPING_COEF GAMMA_RL LR EPSILON EVAL_INTERVAL EVAL_SEED NUM_EVAL_EPISODES
-export MIN_GOAL_DISTANCE START_STATE NUM_EIGENVECTORS
+export MIN_GOAL_DISTANCE START_STATE NUM_EIGENVECTORS N_STEP_TD
 
 mkdir -p logs
 mkdir -p "${OUTPUT_DIR}/partial"

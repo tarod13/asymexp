@@ -137,6 +137,10 @@ def main() -> None:
         "--seed_idx", type=int, required=True,
         help="Which seed to run (0-indexed, up to --num_seeds-1).",
     )
+    parser.add_argument(
+        "--n_step_td", type=int, default=1,
+        help="Number of steps for n-step Q-learning returns (default: 1).",
+    )
     args = parser.parse_args()
 
     # --method gt implies --use_gt
@@ -470,7 +474,7 @@ def main() -> None:
     print(f"Q-learning: {cond_name}  (seed {si})")
     print(f"{'='*60}")
 
-    eval_sr, eval_len_all, eval_len_suc, eval_steps = run_q_learning(
+    eval_sr, eval_len_all, eval_len_suc, eval_steps, _Q_final = run_q_learning(
         env                  = env,
         canonical_states     = canonical_states,
         goal_per_seed        = goal_per_seed,
@@ -486,6 +490,7 @@ def main() -> None:
         epsilon              = args.epsilon,
         seed                 = args.seed_idx,
         eval_interval        = args.eval_interval,
+        n_step_td            = args.n_step_td,
         **cond_kwargs,
     )
 

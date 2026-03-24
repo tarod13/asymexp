@@ -61,6 +61,7 @@ NUM_EVAL_EPISODES="${NUM_EVAL_EPISODES:-30}"
 MIN_GOAL_DISTANCE="${MIN_GOAL_DISTANCE:-8}"
 START_STATE="${START_STATE:-1,1}"
 NUM_EIGENVECTORS="${NUM_EIGENVECTORS:-8}"
+N_STEP_TD="${N_STEP_TD:-1}"
 
 # ── Decode (method, seed) from task ID ───────────────────────────────────────
 method_idx=$(( JOB_ID / NUM_SEEDS ))
@@ -95,6 +96,7 @@ CMD=(
     --eval_seed          "$EVAL_SEED"
     --num_eval_episodes  "$NUM_EVAL_EPISODES"
     --output_dir         "$OUTPUT_DIR"
+    --n_step_td          "$N_STEP_TD"
 )
 
 # Complex representation: load from trained model dir.
