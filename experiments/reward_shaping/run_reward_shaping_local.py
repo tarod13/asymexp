@@ -439,10 +439,12 @@ def main() -> None:
             )
 
     # ── 3b. GT truncated ─────────────────────────────────────────────────────
+    # The gt_* files were already truncated to num_eigenvector_pairs during
+    # training.  Do NOT apply a second truncation — use exactly what was loaded.
     gt_hitting_times_trunc = None
     if gt_model_data_trunc is not None:
         gt_model_data_trunc = truncate_model_eigenvectors(
-            gt_model_data_trunc, args.num_eigenvectors
+            gt_model_data_trunc, None
         )
         print(f"\n{'='*60}")
         print("Computing hitting times (GT truncated) ...")

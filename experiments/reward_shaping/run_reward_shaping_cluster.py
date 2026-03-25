@@ -432,7 +432,8 @@ def main() -> None:
 
     elif args.method == "gt_truncated":
         if model_data is not None:
-            model_data = truncate_model_eigenvectors(model_data, args.num_eigenvectors)
+            # gt_* files were already truncated at training time — use as-is.
+            model_data = truncate_model_eigenvectors(model_data, None)
             print(f"\n{'='*60}")
             print("Computing hitting times (GT truncated) ...")
             print(f"{'='*60}")
