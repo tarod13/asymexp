@@ -29,6 +29,10 @@
 #   --num_eval_episodes N                         (default: 30)
 #   --min_goal_distance N                         (default: 8)
 #   --start_state "R,C"                           (default: "1,1")
+#   --n_step_td N             n-step TD return     (default: 1)
+#   --potential_mode STR      Potential transform  (default: inverse-sqrt)
+#   --potential_temp F        Temperature τ        (default: 1.0)
+#   --potential_delta F       Denominator offset δ (default: 1.0)
 #   --skip_train              Skip stage 1 (reuse existing manifests)
 #   --skip_plot               Skip stage 2
 #   --skip_qlearning          Skip stage 3 array job; run analysis only
@@ -54,21 +58,25 @@ EXP_NUMBER=1
 SEED=42
 NUM_EIGENVECTORS=8
 NUM_SEEDS=100
-TOTAL_STEPS=12000000
-MAX_STEPS=200
+TOTAL_STEPS=1000000
+MAX_STEPS=250
 SHAPING_COEF=0.1
 GAMMA_RL=0.99
 LR=0.1
-EPSILON=0.5
-EVAL_INTERVAL=500000
+EPSILON=0.05
+EVAL_INTERVAL=1000
 EVAL_SEED=0
 NUM_EVAL_EPISODES=30
 MIN_GOAL_DISTANCE=8
 START_STATE="1,1"
+N_STEP_TD=1
+POTENTIAL_MODE=inverse-sqrt
+POTENTIAL_TEMP=1.0
+POTENTIAL_DELTA=1.0
 SKIP_TRAIN=false
 SKIP_PLOT=false
 SKIP_QLEARNING=false
-ENV_LIST="GridRoom-4 GridRoom-4-Doors GridRoom-1 GridRoom-1-Portals GridMaze-OGBench GridMaze-OGBench-Portals"
+ENV_LIST="GridRoom-4 GridRoom-4-Doors GridRoom-1 GridRoom-1-Portals GridMaze-OGBench GridMaze-OGBench-Portals GridMaze-OGBench-Hard GridMaze-OGBench-Hard-Portals"
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -92,6 +100,10 @@ while [[ $# -gt 0 ]]; do
         --num_eval_episodes)  NUM_EVAL_EPISODES="$2";  shift 2 ;;
         --min_goal_distance)  MIN_GOAL_DISTANCE="$2";  shift 2 ;;
         --start_state)        START_STATE="$2";        shift 2 ;;
+        --n_step_td)          N_STEP_TD="$2";          shift 2 ;;
+        --potential_mode)     POTENTIAL_MODE="$2";     shift 2 ;;
+        --potential_temp)     POTENTIAL_TEMP="$2";     shift 2 ;;
+        --potential_delta)    POTENTIAL_DELTA="$2";    shift 2 ;;
         --skip_train)         SKIP_TRAIN=true;         shift ;;
         --skip_plot)          SKIP_PLOT=true;          shift ;;
         --skip_qlearning)     SKIP_QLEARNING=true;     shift ;;
@@ -183,6 +195,10 @@ RS_JID=$(sbatch --parsable \
         --min_goal_distance  "$MIN_GOAL_DISTANCE" \
         --start_state        "$START_STATE" \
         --num_eigenvectors   "$NUM_EIGENVECTORS" \
+        --n_step_td          "$N_STEP_TD" \
+        --potential_mode     "$POTENTIAL_MODE" \
+        --potential_temp     "$POTENTIAL_TEMP" \
+        --potential_delta    "$POTENTIAL_DELTA" \
         $([ "$SKIP_QLEARNING" = true ] && echo "--skip_qlearning"))
 echo "[3/3] Reward-shaping launcher submitted: job $RS_JID$([ -n "$PLOT_JID" ] && echo "  (after $PLOT_JID)")"
 
