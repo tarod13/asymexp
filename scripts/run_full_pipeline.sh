@@ -15,7 +15,7 @@
 #   --base_dir PATH           Root output dir     (default: ./results)
 #   --exp_name STR            Experiment label    (default: parallel_clf_eval)
 #   --seed N                  Training seed       (default: 42)
-#   --envs "E1 E2 ..."        Environments        (default: all 6)
+#   --envs "E1 E2 ..."        Environments        (default: all 8)
 #   --num_eigenvectors N                          (default: 8)
 #   --num_seeds N             Q-learning seeds    (default: 100)
 #   --total_steps N           Q-learning steps    (default: 12000000)
