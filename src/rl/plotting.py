@@ -51,10 +51,11 @@ def plot_results(
             (eval_len_suc, axes[2]),
         ]:
             mean = np.nanmean(metric, axis=1)
-            std  = np.nanstd(metric,  axis=1)
+            n    = np.sum(~np.isnan(metric), axis=1).clip(1)
+            se   = np.nanstd(metric, axis=1) / np.sqrt(n)
             ax.plot(eval_steps, mean, label=label, color=c,
                     linewidth=1.5, marker="o", markersize=3)
-            ax.fill_between(eval_steps, mean - std, mean + std, color=c, alpha=0.15)
+            ax.fill_between(eval_steps, mean - se, mean + se, color=c, alpha=0.15)
 
     axes[0].set_title("Eval: success rate  (↑ better)", fontsize=11)
     axes[0].set_ylabel("Success rate", fontsize=10)
