@@ -45,6 +45,7 @@ fi
 ACCOUNT="${ACCOUNT:-rrg-machado}"
 ENV=""
 MODEL_DIR=""
+ALLO_MODEL_DIR=""
 OUTPUT_DIR=""
 NUM_SEEDS=100
 TOTAL_STEPS=12000000
@@ -71,6 +72,7 @@ while [[ $# -gt 0 ]]; do
         --account)            ACCOUNT="$2";            shift 2 ;;
         --env)                ENV="$2";                shift 2 ;;
         --model_dir)          MODEL_DIR="$2";          shift 2 ;;
+        --allo_model_dir)     ALLO_MODEL_DIR="$2";     shift 2 ;;
         --output_dir)         OUTPUT_DIR="$2";         shift 2 ;;
         --num_seeds)          NUM_SEEDS="$2";          shift 2 ;;
         --total_steps)        TOTAL_STEPS="$2";        shift 2 ;;
@@ -105,9 +107,14 @@ if [ -z "$OUTPUT_DIR" ]; then
     echo "ERROR: --output_dir is required." >&2; exit 1
 fi
 
-# ── Three fixed methods: baseline, complex (learned), gt (ground-truth) ───────
-NUM_METHODS=3
-METHODS_LABEL="baseline, complex, gt"
+# ── Method count: 7 (with ALLO) or 4 (without) ───────────────────────────────
+if [ -n "$ALLO_MODEL_DIR" ]; then
+    NUM_METHODS=7
+    METHODS_LABEL="baseline, complex, gt_truncated, gt_full, allo_hitting_time, allo_squared_diff, allo_weighted_squared_diff"
+else
+    NUM_METHODS=4
+    METHODS_LABEL="baseline, complex, gt_truncated, gt_full"
+fi
 
 NUM_TASKS=$(( NUM_METHODS * NUM_SEEDS ))
 MAX_TASK_ID=$(( NUM_TASKS - 1 ))
@@ -115,6 +122,7 @@ MAX_TASK_ID=$(( NUM_TASKS - 1 ))
 echo "========================================"
 echo "Reward-shaping distributed submission"
 echo "  Model dir      : $MODEL_DIR"
+echo "  Allo model dir : ${ALLO_MODEL_DIR:-(not set)}"
 echo "  Output dir     : $OUTPUT_DIR"
 echo "  Methods        : $METHODS_LABEL  (NUM_METHODS=$NUM_METHODS)"
 echo "  Num seeds      : $NUM_SEEDS"
@@ -131,7 +139,7 @@ echo "========================================"
 export ENV MODEL_DIR OUTPUT_DIR
 export NUM_SEEDS NUM_METHODS TOTAL_STEPS MAX_STEPS
 export SHAPING_COEF GAMMA_RL LR EPSILON EVAL_INTERVAL EVAL_SEED NUM_EVAL_EPISODES
-export MIN_GOAL_DISTANCE START_STATE NUM_EIGENVECTORS N_STEP_TD POTENTIAL_MODE POTENTIAL_TEMP POTENTIAL_DELTA
+export MIN_GOAL_DISTANCE START_STATE NUM_EIGENVECTORS N_STEP_TD POTENTIAL_MODE POTENTIAL_TEMP POTENTIAL_DELTA ALLO_MODEL_DIR
 
 mkdir -p logs
 mkdir -p "${OUTPUT_DIR}/partial"

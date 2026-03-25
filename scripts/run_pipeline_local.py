@@ -77,6 +77,16 @@ def main() -> None:
     parser.add_argument("--allo_dir",           type=str,   default="")
     parser.add_argument("--complex_dir",        type=str,   default="")
     parser.add_argument(
+        "--use_gt", action="store_true",
+        help="Include GT conditions (gt_truncated + gt_full). "
+             "Passed through to run_reward_shaping_local.py.",
+    )
+    parser.add_argument(
+        "--num_eigenvectors", type=int, default=None,
+        help="Number of eigenvector pairs to use for truncated methods. "
+             "Passed through to run_reward_shaping_local.py.",
+    )
+    parser.add_argument(
         "--start_state", type=str, default="",
         help="Optional fixed starting state as 'x,y'. Passed to run_reward_shaping_local.py.",
     )
@@ -243,6 +253,10 @@ def main() -> None:
         rs_cmd += ["--start_state", args.start_state]
     if args.min_goal_distance > 0:
         rs_cmd += ["--min_goal_distance", str(args.min_goal_distance)]
+    if args.use_gt:
+        rs_cmd += ["--use_gt"]
+    if args.num_eigenvectors is not None:
+        rs_cmd += ["--num_eigenvectors", str(args.num_eigenvectors)]
     rs_cmd += ["--potential_mode",  args.potential_mode]
     rs_cmd += ["--potential_temp",  str(args.potential_temp)]
     rs_cmd += ["--potential_delta", str(args.potential_delta)]

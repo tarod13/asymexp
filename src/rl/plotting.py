@@ -24,11 +24,22 @@ def plot_results(
       Right  – mean episode length, successful episodes only (↓ better)
     Each panel shows mean ± std across seeds.
     """
+    # Fixed 7-entry Tableau-10 palette — one slot per method, consistent
+    # ordering regardless of matplotlib stylesheet.
+    _PALETTE = [
+        "#1f77b4",  # blue   → baseline
+        "#ff7f0e",  # orange → complex
+        "#2ca02c",  # green  → gt truncated
+        "#9467bd",  # purple → gt full
+        "#d62728",  # red    → allo hitting time
+        "#8c564b",  # brown  → allo squared diff
+        "#17becf",  # cyan   → allo weighted diff
+    ]
+
     fig, axes = plt.subplots(1, 3, figsize=(18, 4.5))
-    colours = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
     for idx, (label, data) in enumerate(results.items()):
-        c            = colours[idx % len(colours)]
+        c            = _PALETTE[idx % len(_PALETTE)]
         eval_sr      = data["eval_sr"]       # [chunks, seeds]
         eval_len_all = data["eval_len_all"]  # [chunks, seeds]
         eval_len_suc = data["eval_len_suc"]  # [chunks, seeds]

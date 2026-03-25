@@ -114,6 +114,62 @@ def build_all_potentials(
     return F
 
 
+def compute_allo_distance_matrices(
+    allo_model_data: dict,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute two alternative distance matrices from ALLO right eigenvectors.
+
+    Both matrices have shape [N, N] (same as a hitting-times matrix) and can
+    be fed directly into ``build_all_potentials``.
+
+    Returns
+    -------
+    sq_diff : [N, N] float32
+        Unweighted sum of squared right-eigenvector differences:
+            D(s, g) = Σ_{k≥1} (φ_k(s) − φ_k(g))²
+
+    weighted_sq_diff : [N, N] float32
+        Spectrally-weighted version – same as the hitting-time formula but
+        with the left eigenvector ψ_jk replaced by the right eigenvector
+        difference (φ_jk − φ_ik), i.e. the left-eigenvector "telescope" is
+        dropped and the squared difference carries the weight:
+            D(s, g) = Σ_{k≥1} w_k · (φ_k(s) − φ_k(g))²
+        where  w_k = 1 / (1 − λ_P,k)  and λ_P are the transition-matrix
+        eigenvalues (converted from the stored eigenvalue type).
+    """
+    right = allo_model_data["right_real"]          # [N, K]  — real, imag≈0 for ALLO
+    eig   = allo_model_data["eigenvalues_real"]    # [K]
+    evtype = allo_model_data.get("eigenvalue_type", "kernel")
+    gamma  = float(allo_model_data["training_args"].get("gamma", 0.95))
+    delta  = float(allo_model_data["training_args"].get("delta", 0.1))
+
+    phi = right[:, 1:].astype(np.float32)          # [N, K-1]  skip trivial k=0
+    lam = eig[1:].astype(np.float64)               # [K-1]
+
+    # Convert to transition-matrix eigenvalues (mirrors metrics.py formula)
+    if evtype == "kernel":
+        lam_p = lam / (1.0 - gamma + gamma * lam)
+    elif evtype == "laplacian":
+        lam_p = (1.0 + delta - lam) / (1.0 + gamma * delta - gamma * lam)
+    else:  # "transition" — already λ_P
+        lam_p = lam
+
+    # Clip for numerical stability (eigenvalues near 1 → huge weights)
+    lam_p_clipped = np.where(np.abs(lam_p) > 0.9999,
+                             0.9999 * lam_p / np.abs(lam_p).clip(1e-8),
+                             lam_p).astype(np.float32)
+    w = (1.0 / (1.0 - lam_p_clipped)).astype(np.float32)  # [K-1]
+
+    # Pairwise right-eigenvector differences: diff[s, g, k] = φ_k(s) − φ_k(g)
+    diff = phi[:, np.newaxis, :] - phi[np.newaxis, :, :]   # [N, N, K-1]
+
+    sq_diff          = (diff ** 2).sum(axis=-1).astype(np.float32)            # [N, N]
+    weighted_sq_diff = (w[np.newaxis, np.newaxis, :] * diff ** 2).sum(axis=-1).astype(np.float32)  # [N, N]
+
+    return sq_diff, weighted_sq_diff
+
+
 # ===========================================================================
 # Tabular Q-learning
 # ===========================================================================
