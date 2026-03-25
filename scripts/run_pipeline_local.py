@@ -86,12 +86,17 @@ def main() -> None:
     )
     parser.add_argument(
         "--potential_mode", type=str, default="negative",
-        choices=["negative", "inverse", "exp-negative"],
+        choices=["negative", "inverse", "exp-negative", "inverse-sqrt"],
         help="Potential transformation mode. Passed to run_reward_shaping_local.py.",
     )
     parser.add_argument(
         "--potential_temp", type=float, default=1.0,
-        help="Temperature for 'inverse' and 'exp-negative' modes. "
+        help="Temperature τ for 'inverse', 'exp-negative', and 'inverse-sqrt' modes. "
+             "Passed to run_reward_shaping_local.py.",
+    )
+    parser.add_argument(
+        "--potential_delta", type=float, default=1.0,
+        help="Denominator offset δ for 'inverse' and 'inverse-sqrt' modes. "
              "Passed to run_reward_shaping_local.py.",
     )
     args = parser.parse_args()
@@ -238,8 +243,9 @@ def main() -> None:
         rs_cmd += ["--start_state", args.start_state]
     if args.min_goal_distance > 0:
         rs_cmd += ["--min_goal_distance", str(args.min_goal_distance)]
-    rs_cmd += ["--potential_mode", args.potential_mode]
-    rs_cmd += ["--potential_temp", str(args.potential_temp)]
+    rs_cmd += ["--potential_mode",  args.potential_mode]
+    rs_cmd += ["--potential_temp",  str(args.potential_temp)]
+    rs_cmd += ["--potential_delta", str(args.potential_delta)]
     run(rs_cmd)
 
     print()

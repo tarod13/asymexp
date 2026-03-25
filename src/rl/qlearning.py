@@ -22,19 +22,29 @@ def build_potential(
     clamp_negatives: bool = False,
     potential_mode: str = "negative",
     potential_temp: float = 1.0,
+    potential_delta: float = 1.0,
+    gamma: float = 0.99,
 ) -> np.ndarray:
     """
     Build the potential Φ(s) used for reward shaping.
 
-    Hitting times are normalised to [0, 100] before the transformation.
+    Hitting times are normalised by the column max and then scaled by the
+    effective horizon 1/(1−γ), so h ∈ [0, 1/(1−γ)] after normalisation.
     Non-finite values are replaced with the column maximum before normalisation.
     If clamp_negatives=True, negative values are clamped to 0 before normalisation.
 
-    potential_mode controls the transformation applied to the normalised
-    hitting time h ∈ [0, 100]:
-      "negative"    : Φ(s) = −h                          (default; closer = higher)
-      "inverse"     : Φ(s) = 1 / (h / temp + 1e-5)
-      "exp-negative": Φ(s) = exp(−h / temp)
+    potential_mode controls the transformation applied to normalised h:
+      "negative"     : Φ(s) = −h                            (default; closer = higher)
+      "inverse"      : Φ(s) = 1 / (h / τ + δ)              (max = 1/δ at goal)
+      "exp-negative" : Φ(s) = exp(−h / τ)
+      "inverse-sqrt" : Φ(s) = 1 / (√(h / τ) + δ)          (slower decay than inverse)
+
+    Parameters
+    ----------
+    gamma           : RL discount factor γ; determines the effective horizon 1/(1−γ).
+    potential_temp  : Temperature τ used by inverse, exp-negative, and inverse-sqrt modes.
+    potential_delta : Offset δ in the denominator of inverse and inverse-sqrt modes.
+                      Defaults to 1.0, which caps the maximum potential at exactly 1.0.
     """
     h = hitting_times[:, goal_idx].copy()
 
@@ -56,20 +66,22 @@ def build_potential(
             float(h[non_negative_mask].max()) if non_negative_mask.any() else 0.0
         )
 
-    h = h - np.min(h, axis=0, keepdims=True)  # shift so min is zero (prevents large negative potentials when normalising by max)
-    h_max = np.max(h, axis=0, keepdims=True)  # max absolute value across states
-    h = 100 * h / h_max.clip(1e-8)  # normalize to [0, 100]
+    h = h - np.min(h, axis=0, keepdims=True)  # shift so min is zero
+    h_max = np.max(h, axis=0, keepdims=True)
+    h = h / h_max.clip(1e-8) * (1.0 / (1.0 - gamma))  # normalise to [0, 1/(1−γ)]
 
     if potential_mode == "negative":
         return -h.astype(np.float32)
     elif potential_mode == "inverse":
-        return (1.0 / (h / potential_temp + 1e-5)).astype(np.float32)
+        return (1.0 / (h / potential_temp + potential_delta)).astype(np.float32)
     elif potential_mode == "exp-negative":
         return np.exp(-h / potential_temp).astype(np.float32)
+    elif potential_mode == "inverse-sqrt":
+        return (1.0 / (np.sqrt(h / potential_temp) + potential_delta)).astype(np.float32)
     else:
         raise ValueError(
             f"Unknown potential_mode '{potential_mode}'. "
-            "Expected one of: 'negative', 'inverse', 'exp-negative'."
+            "Expected one of: 'negative', 'inverse', 'exp-negative', 'inverse-sqrt'."
         )
 
 
@@ -78,6 +90,8 @@ def build_all_potentials(
     clamp_negatives: bool = False,
     potential_mode: str = "negative",
     potential_temp: float = 1.0,
+    potential_delta: float = 1.0,
+    gamma: float = 0.99,
 ) -> np.ndarray:
     """
     Build the full potential matrix Φ[s, g] for every possible goal g.
@@ -94,6 +108,8 @@ def build_all_potentials(
             clamp_negatives=clamp_negatives,
             potential_mode=potential_mode,
             potential_temp=potential_temp,
+            potential_delta=potential_delta,
+            gamma=gamma,
         )
     return F
 

@@ -64,6 +64,7 @@ NUM_EIGENVECTORS="${NUM_EIGENVECTORS:-8}"
 N_STEP_TD="${N_STEP_TD:-1}"
 POTENTIAL_MODE="${POTENTIAL_MODE:-negative}"
 POTENTIAL_TEMP="${POTENTIAL_TEMP:-1.0}"
+POTENTIAL_DELTA="${POTENTIAL_DELTA:-1.0}"
 
 # ── Decode (method, seed) from task ID ───────────────────────────────────────
 method_idx=$(( JOB_ID / NUM_SEEDS ))
@@ -101,6 +102,7 @@ CMD=(
     --n_step_td          "$N_STEP_TD"
     --potential_mode     "$POTENTIAL_MODE"
     --potential_temp     "$POTENTIAL_TEMP"
+    --potential_delta    "$POTENTIAL_DELTA"
 )
 
 # Complex representation: load from trained model dir.

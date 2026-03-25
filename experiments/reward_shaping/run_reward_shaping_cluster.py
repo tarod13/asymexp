@@ -143,15 +143,20 @@ def main() -> None:
     )
     parser.add_argument(
         "--potential_mode", type=str, default="negative",
-        choices=["negative", "inverse", "exp-negative"],
+        choices=["negative", "inverse", "exp-negative", "inverse-sqrt"],
         help="Transformation applied to normalised hitting times to produce Φ(s). "
-             "'negative': Φ=−h (default), 'inverse': Φ=1/(h/temp+1e-5), "
-             "'exp-negative': Φ=exp(−h/temp).",
+             "'negative': Φ=−h (default), 'inverse': Φ=1/(h/τ+δ), "
+             "'exp-negative': Φ=exp(−h/τ), 'inverse-sqrt': Φ=1/(√(h/τ)+δ).",
     )
     parser.add_argument(
         "--potential_temp", type=float, default=1.0,
-        help="Temperature τ used by 'inverse' and 'exp-negative' potential modes "
-             "(default: 1.0).",
+        help="Temperature τ used by 'inverse', 'exp-negative', and 'inverse-sqrt' "
+             "potential modes (default: 1.0).",
+    )
+    parser.add_argument(
+        "--potential_delta", type=float, default=1.0,
+        help="Denominator offset δ for 'inverse' and 'inverse-sqrt' modes. "
+             "Caps the maximum potential at 1/δ; default 1.0 gives max=1.0.",
     )
     args = parser.parse_args()
 
@@ -449,6 +454,8 @@ def main() -> None:
             hitting_times,
             potential_mode=args.potential_mode,
             potential_temp=args.potential_temp,
+            potential_delta=args.potential_delta,
+            gamma=args.gamma_rl,
         )
         complex_potential_per_seed = complex_potential_matrix[:, goal_per_seed].T
 
@@ -458,6 +465,8 @@ def main() -> None:
             allo_hitting_times,
             potential_mode=args.potential_mode,
             potential_temp=args.potential_temp,
+            potential_delta=args.potential_delta,
+            gamma=args.gamma_rl,
         )
         allo_potential_per_seed = allo_potential_matrix[:, goal_per_seed].T
 
