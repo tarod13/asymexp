@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.rl.loading import load_model, compute_gt_model_data, truncate_model_eigenvectors
-from src.rl.qlearning import build_all_potentials, run_q_learning
+from src.rl.qlearning import build_all_potentials, compute_allo_distance_matrices, run_q_learning
 from src.utils.envs import create_gridworld_env, get_canonical_free_states
 from src.utils.metrics import compute_hitting_times_from_eigenvectors
 
@@ -130,8 +130,15 @@ def main() -> None:
     )
     parser.add_argument(
         "--method", type=str, required=True,
-        choices=["baseline", "complex", "allo", "gt"],
-        help="Which condition to run. 'gt' implies --use_gt.",
+        choices=[
+            "baseline", "complex",
+            "gt_truncated", "gt_full",
+            "allo_hitting_time", "allo_squared_diff", "allo_weighted_squared_diff",
+            # Legacy aliases kept for backward-compatibility
+            "gt", "allo",
+        ],
+        help="Which condition to run.  gt/allo are legacy aliases for "
+             "gt_truncated/allo_hitting_time.",
     )
     parser.add_argument(
         "--seed_idx", type=int, required=True,
@@ -141,18 +148,42 @@ def main() -> None:
         "--n_step_td", type=int, default=1,
         help="Number of steps for n-step Q-learning returns (default: 1).",
     )
+    parser.add_argument(
+        "--potential_mode", type=str, default="negative",
+        choices=["negative", "inverse", "exp-negative", "inverse-sqrt"],
+        help="Transformation applied to normalised hitting times to produce Φ(s). "
+             "'negative': Φ=−h (default), 'inverse': Φ=1/(h/τ+δ), "
+             "'exp-negative': Φ=exp(−h/τ), 'inverse-sqrt': Φ=1/(√(h/τ)+δ).",
+    )
+    parser.add_argument(
+        "--potential_temp", type=float, default=1.0,
+        help="Temperature τ used by 'inverse', 'exp-negative', and 'inverse-sqrt' "
+             "potential modes (default: 1.0).",
+    )
+    parser.add_argument(
+        "--potential_delta", type=float, default=1.0,
+        help="Denominator offset δ for 'inverse' and 'inverse-sqrt' modes. "
+             "Caps the maximum potential at 1/δ; default 1.0 gives max=1.0.",
+    )
     args = parser.parse_args()
 
-    # --method gt implies --use_gt
+    # Resolve legacy aliases
     if args.method == "gt":
+        args.method = "gt_truncated"
+    if args.method == "allo":
+        args.method = "allo_hitting_time"
+
+    # gt_* methods imply --use_gt
+    if args.method in ("gt_truncated", "gt_full"):
         args.use_gt = True
 
     if args.seed_idx >= args.num_seeds:
         parser.error(
             f"--seed_idx {args.seed_idx} is out of range for --num_seeds {args.num_seeds}."
         )
-    if args.method == "allo" and args.allo_model_dir is None:
-        parser.error("--method=allo requires --allo_model_dir.")
+    _allo_methods = ("allo_hitting_time", "allo_squared_diff", "allo_weighted_squared_diff")
+    if args.method in _allo_methods and args.allo_model_dir is None:
+        parser.error(f"--method={args.method} requires --allo_model_dir.")
 
     model_dir = Path(args.model_dir) if args.model_dir else None
     if args.output_dir:
@@ -169,9 +200,10 @@ def main() -> None:
     model_data = None
     evtype     = None
 
-    if (model_dir is not None) and (args.method in ("complex", "gt")):
-        if args.use_gt:
-            # Try loading saved GT eigenvectors from the model directory.
+    _allo_methods = ("allo_hitting_time", "allo_squared_diff", "allo_weighted_squared_diff")
+
+    if (model_dir is not None) and (args.method in ("complex", "gt_truncated", "gt_full")):
+        if args.use_gt and args.method == "gt_truncated":
             gt_files = [
                 model_dir / "gt_left_real.npy",
                 model_dir / "gt_left_imag.npy",
@@ -182,24 +214,60 @@ def main() -> None:
             ]
             if all(f.exists() for f in gt_files):
                 print(f"\n{'='*60}")
-                print(f"Loading GT eigenvectors from training artifacts: {model_dir}")
+                print(f"Loading GT eigenvectors (truncated) from: {model_dir}")
                 print(f"{'='*60}")
                 model_data = load_model(
                     model_dir, use_gt=True,
                     checkpoint_prefix=args.checkpoint_prefix,
                 )
                 evtype = model_data["eigenvalue_type"]
-                print(f"  Eigenvector source : ground truth (saved during training)")
+                print(f"  Eigenvector source : gt truncated (saved during training)")
                 print(f"  Eigenvalue type    : {evtype}")
                 print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
             else:
                 print(
-                    f"WARNING: GT eigenvector files not found in {model_dir}; "
-                    "computing ground-truth eigenvectors from environment samples.",
+                    f"WARNING: gt_* eigenvector files not found in {model_dir}; "
+                    "will compute GT from environment.",
                     file=sys.stderr,
                 )
                 # model_data stays None → GT fallback in section 2c
-        else:
+
+        elif args.use_gt and args.method == "gt_full":
+            full_files = [
+                model_dir / "full_left_real.npy",
+                model_dir / "full_left_imag.npy",
+                model_dir / "full_right_real.npy",
+                model_dir / "full_right_imag.npy",
+                model_dir / "full_eigenvalues_real.npy",
+                model_dir / "full_eigenvalues_imag.npy",
+            ]
+            precomp_full_ht = model_dir / "full_ideal_gt_hitting_times.npy"
+            if precomp_full_ht.exists():
+                print(f"\n{'='*60}")
+                print("Found pre-computed full GT hitting times — will load in section 3.")
+                print(f"{'='*60}")
+                # model_data left as None; handled via sentinel in section 3
+            elif all(f.exists() for f in full_files):
+                print(f"\n{'='*60}")
+                print(f"Loading full GT eigenvectors from: {model_dir}")
+                print(f"{'='*60}")
+                model_data = load_model(
+                    model_dir, use_gt=True, gt_prefix="full_",
+                    checkpoint_prefix=args.checkpoint_prefix,
+                )
+                evtype = model_data["eigenvalue_type"]
+                print(f"  Eigenvector source : gt full (saved during training)")
+                print(f"  Eigenvalue type    : {evtype}")
+                print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
+            else:
+                print(
+                    "WARNING: full_ideal_gt_hitting_times.npy and full_* eigenvector "
+                    f"files not found in {model_dir}. Skipping gt_full condition.",
+                    file=sys.stderr,
+                )
+                sys.exit(0)   # graceful skip — not an error
+
+        else:  # "complex"
             print(f"\n{'='*60}")
             print(f"Loading complex (learned) representation from: {model_dir}")
             print(f"{'='*60}")
@@ -213,10 +281,10 @@ def main() -> None:
             print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
 
     allo_model_data = None
-    if args.method == "allo":
+    if args.method in _allo_methods:
         allo_model_dir = Path(args.allo_model_dir)
         print(f"\n{'='*60}")
-        print(f"Loading ALLO representation model from: {allo_model_dir}")
+        print(f"Loading ALLO representation from: {allo_model_dir}")
         print(f"{'='*60}")
         allo_model_data = load_model(
             allo_model_dir,
@@ -308,7 +376,7 @@ def main() -> None:
     _need_gt_fallback = (
         args.use_gt
         and model_data is None
-        and args.method in ("complex", "gt")
+        and args.method in ("complex", "gt_truncated")
     )
     if _need_gt_fallback:
         print(f"\n{'='*60}")
@@ -325,61 +393,98 @@ def main() -> None:
         print(f"  Eigenvectors (K)   : {model_data['eigenvalues_real'].shape[0]}")
 
     # ------------------------------------------------------------------
-    # 3. Compute hitting times
+    # 3. Compute distance matrix for this method
     # ------------------------------------------------------------------
-    hitting_times = None
-    if model_data is not None:
-        model_data = truncate_model_eigenvectors(model_data, args.num_eigenvectors)
-        print(f"\n{'='*60}")
-        print("Computing hitting times (complex representation) ...")
-        print(f"{'='*60}")
-        hitting_times = np.array(
+    def _compute_ht(md, label):
+        return np.array(
             compute_hitting_times_from_eigenvectors(
-                left_real        = model_data["left_real"],
-                left_imag        = model_data["left_imag"],
-                right_real       = model_data["right_real"],
-                right_imag       = model_data["right_imag"],
-                eigenvalues_real = model_data["eigenvalues_real"],
-                eigenvalues_imag = model_data["eigenvalues_imag"],
-                gamma            = model_data["training_args"].get("gamma", 0.95),
-                delta            = model_data["training_args"].get("delta", 0.1),
-                eigenvalue_type  = evtype,
+                left_real        = md["left_real"],
+                left_imag        = md["left_imag"],
+                right_real       = md["right_real"],
+                right_imag       = md["right_imag"],
+                eigenvalues_real = md["eigenvalues_real"],
+                eigenvalues_imag = md["eigenvalues_imag"],
+                gamma            = md["training_args"].get("gamma", 0.95),
+                delta            = md["training_args"].get("delta", 0.1),
+                eigenvalue_type  = md["eigenvalue_type"],
             )
         )
-        finite = hitting_times[np.isfinite(hitting_times) & (hitting_times >= 0)]
-        print(f"  Shape              : {hitting_times.shape}")
-        print(f"  Finite values      : {len(finite)} / {hitting_times.size}"
-              f"  ({len(finite)/hitting_times.size:.1%})")
+
+    def _log(mat):
+        finite = mat[np.isfinite(mat) & (mat >= 0)]
+        print(f"  Shape              : {mat.shape}")
+        print(f"  Finite values      : {len(finite)} / {mat.size}"
+              f"  ({len(finite)/mat.size:.1%})")
         if len(finite) > 0:
             print(f"  Range              : [{finite.min():.2f}, {finite.max():.2f}]")
 
-    allo_hitting_times = None
-    if allo_model_data is not None:
+    # The single distance matrix used by this task (shape [N, N])
+    dist_matrix = None
+
+    if args.method == "complex":
+        if model_data is not None:
+            model_data = truncate_model_eigenvectors(model_data, args.num_eigenvectors)
+            print(f"\n{'='*60}")
+            print("Computing hitting times (complex) ...")
+            print(f"{'='*60}")
+            dist_matrix = _compute_ht(model_data, "complex")
+            _log(dist_matrix)
+
+    elif args.method == "gt_truncated":
+        if model_data is not None:
+            # gt_* files were already truncated at training time — use as-is.
+            model_data = truncate_model_eigenvectors(model_data, None)
+            print(f"\n{'='*60}")
+            print("Computing hitting times (GT truncated) ...")
+            print(f"{'='*60}")
+            dist_matrix = _compute_ht(model_data, "gt_truncated")
+            _log(dist_matrix)
+
+    elif args.method == "gt_full":
+        precomp_full_ht = (
+            model_dir / "full_ideal_gt_hitting_times.npy"
+            if model_dir is not None else None
+        )
+        if precomp_full_ht is not None and precomp_full_ht.exists():
+            print(f"\n{'='*60}")
+            print("Loading pre-computed GT hitting times (gt_full) ...")
+            print(f"{'='*60}")
+            dist_matrix = np.load(precomp_full_ht)
+            _log(dist_matrix)
+        elif model_data is not None:
+            model_data = truncate_model_eigenvectors(model_data, None)
+            print(f"\n{'='*60}")
+            print("Computing hitting times (GT full) ...")
+            print(f"{'='*60}")
+            dist_matrix = _compute_ht(model_data, "gt_full")
+            _log(dist_matrix)
+        else:
+            print("WARNING: no GT full data available; skipping.", file=sys.stderr)
+            sys.exit(0)
+
+    elif args.method == "allo_hitting_time":
         allo_model_data = truncate_model_eigenvectors(allo_model_data, args.num_eigenvectors)
         print(f"\n{'='*60}")
-        print("Computing hitting times (ALLO representation) ...")
+        print("Computing hitting times (ALLO) ...")
         print(f"{'='*60}")
-        allo_hitting_times = np.array(
-            compute_hitting_times_from_eigenvectors(
-                left_real        = allo_model_data["left_real"],
-                left_imag        = allo_model_data["left_imag"],
-                right_real       = allo_model_data["right_real"],
-                right_imag       = allo_model_data["right_imag"],
-                eigenvalues_real = allo_model_data["eigenvalues_real"],
-                eigenvalues_imag = allo_model_data["eigenvalues_imag"],
-                gamma            = allo_model_data["training_args"].get("gamma", 0.95),
-                delta            = allo_model_data["training_args"].get("delta", 0.1),
-                eigenvalue_type  = allo_model_data["eigenvalue_type"],
-            )
-        )
-        allo_finite = allo_hitting_times[
-            np.isfinite(allo_hitting_times) & (allo_hitting_times >= 0)
-        ]
-        print(f"  Shape              : {allo_hitting_times.shape}")
-        print(f"  Finite values      : {len(allo_finite)} / {allo_hitting_times.size}"
-              f"  ({len(allo_finite)/allo_hitting_times.size:.1%})")
-        if len(allo_finite) > 0:
-            print(f"  Range              : [{allo_finite.min():.2f}, {allo_finite.max():.2f}]")
+        dist_matrix = _compute_ht(allo_model_data, "allo_hitting_time")
+        _log(dist_matrix)
+
+    elif args.method == "allo_squared_diff":
+        allo_model_data = truncate_model_eigenvectors(allo_model_data, args.num_eigenvectors)
+        print(f"\n{'='*60}")
+        print("Computing ALLO squared-diff distance matrix ...")
+        print(f"{'='*60}")
+        dist_matrix, _ = compute_allo_distance_matrices(allo_model_data)
+        _log(dist_matrix)
+
+    elif args.method == "allo_weighted_squared_diff":
+        allo_model_data = truncate_model_eigenvectors(allo_model_data, args.num_eigenvectors)
+        print(f"\n{'='*60}")
+        print("Computing ALLO weighted-squared-diff distance matrix ...")
+        print(f"{'='*60}")
+        _, dist_matrix = compute_allo_distance_matrices(allo_model_data)
+        _log(dist_matrix)
 
     # ------------------------------------------------------------------
     # 4. Sample one fixed (goal, eval_start) per seed; narrow to requested seed
@@ -431,44 +536,41 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 5. Build condition and run Q-learning
     # ------------------------------------------------------------------
-    complex_potential_per_seed = None
-    if hitting_times is not None:
-        complex_potential_matrix   = build_all_potentials(hitting_times)
-        complex_potential_per_seed = complex_potential_matrix[:, goal_per_seed].T
+    b = args.shaping_coef
 
-    allo_potential_per_seed = None
-    if allo_hitting_times is not None:
-        allo_potential_matrix   = build_all_potentials(allo_hitting_times)
-        allo_potential_per_seed = allo_potential_matrix[:, goal_per_seed].T
-
-    _method_to_cond = {
-        "baseline": dict(potential_per_seed=None,                    shaping_coef=0.0),
-        "complex":  dict(potential_per_seed=complex_potential_per_seed, shaping_coef=args.shaping_coef),
-        "gt":       dict(potential_per_seed=complex_potential_per_seed, shaping_coef=args.shaping_coef),
-        "allo":     dict(potential_per_seed=allo_potential_per_seed,  shaping_coef=args.shaping_coef),
-    }
     _method_to_label = {
-        "baseline": "baseline",
-        "complex":  f"shaped β={args.shaping_coef} (complex)",
-        "gt":       f"shaped β={args.shaping_coef} (gt)",
-        "allo":     f"shaped β={args.shaping_coef} (allo)",
+        "baseline":                  "baseline",
+        "complex":                   f"shaped β={b} (complex)",
+        "gt_truncated":              f"shaped β={b} (gt truncated)",
+        "gt_full":                   f"shaped β={b} (gt full)",
+        "allo_hitting_time":         f"shaped β={b} (allo hitting time)",
+        "allo_squared_diff":         f"shaped β={b} (allo squared diff)",
+        "allo_weighted_squared_diff":f"shaped β={b} (allo weighted diff)",
     }
+    cond_name = _method_to_label[args.method]
 
-    cond_name   = _method_to_label[args.method]
-    cond_kwargs = _method_to_cond[args.method]
-
-    if cond_kwargs["potential_per_seed"] is None and args.method != "baseline":
-        hints = {
-            "allo":    "Did you forget --allo_model_dir?",
-            "complex": "Did you forget --model_dir?",
-            "gt":      "Did you forget --num_eigenvectors?",
-        }
-        print(
-            f"ERROR: No potential available for method '{args.method}'. "
-            + hints.get(args.method, ""),
-            file=sys.stderr,
+    if args.method == "baseline":
+        potential_per_seed = None
+        shaping_coef_use   = 0.0
+    else:
+        if dist_matrix is None:
+            print(
+                f"ERROR: No distance matrix computed for method '{args.method}'. "
+                "Check that the required --model_dir / --allo_model_dir files exist.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        pot_matrix = build_all_potentials(
+            dist_matrix,
+            potential_mode=args.potential_mode,
+            potential_temp=args.potential_temp,
+            potential_delta=args.potential_delta,
+            gamma=args.gamma_rl,
         )
-        sys.exit(1)
+        potential_per_seed = pot_matrix[:, goal_per_seed].T
+        shaping_coef_use   = b
+
+    cond_kwargs = dict(potential_per_seed=potential_per_seed, shaping_coef=shaping_coef_use)
 
     print(f"\n{'='*60}")
     print(f"Q-learning: {cond_name}  (seed {si})")

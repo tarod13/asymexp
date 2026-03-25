@@ -16,55 +16,158 @@ from src.envs.gridworld import GridWorldState
 # Potential function
 # ===========================================================================
 
-def build_potential(hitting_times: np.ndarray, goal_idx: int, clamp_negatives: bool = False) -> np.ndarray:
+def build_potential(
+    hitting_times: np.ndarray,
+    goal_idx: int,
+    clamp_negatives: bool = False,
+    potential_mode: str = "negative",
+    potential_temp: float = 1.0,
+    potential_delta: float = 1.0,
+    gamma: float = 0.99,
+) -> np.ndarray:
     """
-    Build the potential F(s) = −h(s, goal) used for reward shaping.
+    Build the potential Φ(s) used for reward shaping.
 
-    Hitting times are normalised by the abs-max finite value.
-    Non-finite values are replaced with 0 (neutral potential).
-    If clamp_negatives=True, negative values are also clamped to 0 before
-    normalisation.
+    Hitting times are normalised by the column max and then scaled by the
+    effective horizon 1/(1−γ), so h ∈ [0, 1/(1−γ)] after normalisation.
+    Non-finite values are replaced with the column maximum before normalisation.
+    If clamp_negatives=True, negative values are clamped to 0 before normalisation.
+
+    potential_mode controls the transformation applied to normalised h:
+      "negative"     : Φ(s) = −h                            (default; closer = higher)
+      "inverse"      : Φ(s) = 1 / (h / τ + δ)              (max = 1/δ at goal)
+      "exp-negative" : Φ(s) = exp(−h / τ)
+      "inverse-sqrt" : Φ(s) = 1 / (√(h / τ) + δ)          (slower decay than inverse)
+
+    Parameters
+    ----------
+    gamma           : RL discount factor γ; determines the effective horizon 1/(1−γ).
+    potential_temp  : Temperature τ used by inverse, exp-negative, and inverse-sqrt modes.
+    potential_delta : Offset δ in the denominator of inverse and inverse-sqrt modes.
+                      Defaults to 1.0, which caps the maximum potential at exactly 1.0.
     """
     h = hitting_times[:, goal_idx].copy()
 
     finite_mask = np.isfinite(h)
     if finite_mask.sum() == 0:
         return np.zeros(len(h), dtype=np.float32)
-    
+
     h = np.where(
-        finite_mask, 
-        h, 
+        finite_mask,
+        h,
         float(h[finite_mask].max()) if finite_mask.any() else 0.0
     )
 
     if clamp_negatives:
         non_negative_mask = (h >= 0)
         h = np.where(
-            non_negative_mask, 
-            h, 
+            non_negative_mask,
+            h,
             float(h[non_negative_mask].max()) if non_negative_mask.any() else 0.0
         )
 
-    h = h - np.min(h, axis=0, keepdims=True)  # shift so min is zero (prevents large negative potentials when normalising by max)
-    h_max = np.max(h, axis=0, keepdims=True)  # max absolute value across states
-    h = 100 * h / h_max.clip(1e-8)  # normalize
+    h = h - np.min(h, axis=0, keepdims=True)  # shift so min is zero
+    h_max = np.max(h, axis=0, keepdims=True)
+    h = h / h_max.clip(1e-8) * (1.0 / (1.0 - gamma))  # normalise to [0, 1/(1−γ)]
 
-    return -h.astype(np.float32)   # higher potential = closer to goal
+    if potential_mode == "negative":
+        return -h.astype(np.float32)
+    elif potential_mode == "inverse":
+        return (1.0 / (h / potential_temp + potential_delta)).astype(np.float32)
+    elif potential_mode == "exp-negative":
+        return np.exp(-h / potential_temp).astype(np.float32)
+    elif potential_mode == "inverse-sqrt":
+        return (1.0 / (np.sqrt(h / potential_temp) + potential_delta)).astype(np.float32)
+    else:
+        raise ValueError(
+            f"Unknown potential_mode '{potential_mode}'. "
+            "Expected one of: 'negative', 'inverse', 'exp-negative', 'inverse-sqrt'."
+        )
 
 
-def build_all_potentials(hitting_times: np.ndarray, clamp_negatives: bool = False) -> np.ndarray:
+def build_all_potentials(
+    hitting_times: np.ndarray,
+    clamp_negatives: bool = False,
+    potential_mode: str = "negative",
+    potential_temp: float = 1.0,
+    potential_delta: float = 1.0,
+    gamma: float = 0.99,
+) -> np.ndarray:
     """
-    Build the full potential matrix F[s, g] for every possible goal g.
+    Build the full potential matrix Φ[s, g] for every possible goal g.
 
     Returns an [N, N] float32 array where column g equals
-    build_potential(hitting_times, g).  Pre-computing this once lets
+    build_potential(hitting_times, g, ...).  Pre-computing this once lets
     per-seed potentials be retrieved with a simple column slice.
     """
     N = hitting_times.shape[0]
     F = np.empty((N, N), dtype=np.float32)
     for g in range(N):
-        F[:, g] = build_potential(hitting_times, g, clamp_negatives=clamp_negatives)
+        F[:, g] = build_potential(
+            hitting_times, g,
+            clamp_negatives=clamp_negatives,
+            potential_mode=potential_mode,
+            potential_temp=potential_temp,
+            potential_delta=potential_delta,
+            gamma=gamma,
+        )
     return F
+
+
+def compute_allo_distance_matrices(
+    allo_model_data: dict,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute two alternative distance matrices from ALLO right eigenvectors.
+
+    Both matrices have shape [N, N] (same as a hitting-times matrix) and can
+    be fed directly into ``build_all_potentials``.
+
+    Returns
+    -------
+    sq_diff : [N, N] float32
+        Unweighted sum of squared right-eigenvector differences:
+            D(s, g) = Σ_{k≥1} (φ_k(s) − φ_k(g))²
+
+    weighted_sq_diff : [N, N] float32
+        Spectrally-weighted version – same as the hitting-time formula but
+        with the left eigenvector ψ_jk replaced by the right eigenvector
+        difference (φ_jk − φ_ik), i.e. the left-eigenvector "telescope" is
+        dropped and the squared difference carries the weight:
+            D(s, g) = Σ_{k≥1} w_k · (φ_k(s) − φ_k(g))²
+        where  w_k = 1 / (1 − λ_P,k)  and λ_P are the transition-matrix
+        eigenvalues (converted from the stored eigenvalue type).
+    """
+    right = allo_model_data["right_real"]          # [N, K]  — real, imag≈0 for ALLO
+    eig   = allo_model_data["eigenvalues_real"]    # [K]
+    evtype = allo_model_data.get("eigenvalue_type", "kernel")
+    gamma  = float(allo_model_data["training_args"].get("gamma", 0.95))
+    delta  = float(allo_model_data["training_args"].get("delta", 0.1))
+
+    phi = right[:, 1:].astype(np.float32)          # [N, K-1]  skip trivial k=0
+    lam = eig[1:].astype(np.float64)               # [K-1]
+
+    # Convert to transition-matrix eigenvalues (mirrors metrics.py formula)
+    if evtype == "kernel":
+        lam_p = lam / (1.0 - gamma + gamma * lam)
+    elif evtype == "laplacian":
+        lam_p = (1.0 + delta - lam) / (1.0 + gamma * delta - gamma * lam)
+    else:  # "transition" — already λ_P
+        lam_p = lam
+
+    # Clip for numerical stability (eigenvalues near 1 → huge weights)
+    lam_p_clipped = np.where(np.abs(lam_p) > 0.9999,
+                             0.9999 * lam_p / np.abs(lam_p).clip(1e-8),
+                             lam_p).astype(np.float32)
+    w = (1.0 / (1.0 - lam_p_clipped)).astype(np.float32)  # [K-1]
+
+    # Pairwise right-eigenvector differences: diff[s, g, k] = φ_k(s) − φ_k(g)
+    diff = phi[:, np.newaxis, :] - phi[np.newaxis, :, :]   # [N, N, K-1]
+
+    sq_diff          = (diff ** 2).sum(axis=-1).astype(np.float32)            # [N, N]
+    weighted_sq_diff = (w[np.newaxis, np.newaxis, :] * diff ** 2).sum(axis=-1).astype(np.float32)  # [N, N]
+
+    return sq_diff, weighted_sq_diff
 
 
 # ===========================================================================

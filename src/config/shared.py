@@ -72,7 +72,7 @@ class SharedArgs:
     num_wind_buckets: int = 20  # Buckets for wind-conditioned EMA; only active when random_wind=True and sample_episodes=True
 
     # Logging and saving
-    log_freq: int = 100
+    log_freq: int = 500
     plot_freq: int = 1000
     save_freq: int = 1000
     checkpoint_freq: int = 5000  # How often to save checkpoints (in gradient steps)

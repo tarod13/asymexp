@@ -49,7 +49,7 @@ SCRIPTS_DIR="${SLURM_SUBMIT_DIR}/scripts"
 # ── Defaults ──────────────────────────────────────────────────────────────────
 ACCOUNT="rrg-machado"
 BASE_DIR="./results"
-EXP_NAME="parallel_clf_eval"
+EXP_NAME="parallel_reward_shaping_eval"
 EXP_NUMBER=1
 SEED=42
 NUM_EIGENVECTORS=8
@@ -100,9 +100,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── Derived paths ─────────────────────────────────────────────────────────────
-RESULTS_DIR="${BASE_DIR}/parallel_clf_eval"
+RESULTS_DIR="${BASE_DIR}/parallel_reward_shaping_eval"
 MANIFEST_DIR="${BASE_DIR}/eval_manifest"
-PLOTS_DIR="${BASE_DIR}/parallel_eval_plots"
+PLOTS_DIR="${BASE_DIR}/parallel_reward_shaping_eval_plots"
 
 read -ra ENVS <<< "$ENV_LIST"
 NUM_ENVS=${#ENVS[@]}

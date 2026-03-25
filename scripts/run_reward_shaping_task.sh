@@ -14,8 +14,11 @@
 # Each task handles one (method, seed) pair, keeping per-job memory small.
 #
 # Task-ID encoding:
-#   task_id = method_idx * NUM_SEEDS + seed_idx
-#   method_idx : 0 = baseline, 1 = complex, 2 = gt
+#   task_id    = method_idx * NUM_SEEDS + seed_idx
+#   method_idx : 0=baseline, 1=complex, 2=gt_truncated, 3=gt_full,
+#                4=allo_hitting_time, 5=allo_squared_diff,
+#                6=allo_weighted_squared_diff
+#   (If ALLO_MODEL_DIR is unset, NUM_METHODS is 4 and allo tasks are omitted.)
 #
 # All configuration is passed via environment variables exported by
 # scripts/run_reward_shaping_array.sh (or set manually before sbatch):
@@ -23,11 +26,11 @@
 #   Required : MODEL_DIR, OUTPUT_DIR, NUM_SEEDS, NUM_METHODS
 #   Q-learning: TOTAL_STEPS, MAX_STEPS, SHAPING_COEF, GAMMA_RL, LR,
 #               EPSILON, EVAL_INTERVAL, EVAL_SEED, NUM_EVAL_EPISODES
-#   Optional  : MIN_GOAL_DISTANCE, START_STATE, NUM_EIGENVECTORS
+#   Optional  : MIN_GOAL_DISTANCE, START_STATE, NUM_EIGENVECTORS, ALLO_MODEL_DIR
 #
 # Usage
 # -----
-#   sbatch --array=0-299 --export=ALL scripts/run_reward_shaping_task.sh
+#   sbatch --array=0-699 --export=ALL scripts/run_reward_shaping_task.sh
 #   bash   scripts/run_reward_shaping_task.sh <task_id>   # local single run
 # =============================================================================
 
@@ -48,7 +51,8 @@ export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads
 # ── Defaults (overridden by exported env vars from run_reward_shaping_array.sh) ──
 ENV="${ENV:-GridRoom-4-Doors}"
 NUM_SEEDS="${NUM_SEEDS:-100}"
-NUM_METHODS="${NUM_METHODS:-3}"
+NUM_METHODS="${NUM_METHODS:-4}"
+ALLO_MODEL_DIR="${ALLO_MODEL_DIR:-}"
 TOTAL_STEPS="${TOTAL_STEPS:-12000000}"
 MAX_STEPS="${MAX_STEPS:-200}"
 SHAPING_COEF="${SHAPING_COEF:-0.1}"
@@ -62,13 +66,22 @@ MIN_GOAL_DISTANCE="${MIN_GOAL_DISTANCE:-8}"
 START_STATE="${START_STATE:-1,1}"
 NUM_EIGENVECTORS="${NUM_EIGENVECTORS:-8}"
 N_STEP_TD="${N_STEP_TD:-1}"
+POTENTIAL_MODE="${POTENTIAL_MODE:-negative}"
+POTENTIAL_TEMP="${POTENTIAL_TEMP:-1.0}"
+POTENTIAL_DELTA="${POTENTIAL_DELTA:-1.0}"
 
 # ── Decode (method, seed) from task ID ───────────────────────────────────────
 method_idx=$(( JOB_ID / NUM_SEEDS ))
 seed_idx=$(( JOB_ID % NUM_SEEDS ))
 
-METHODS=("baseline" "complex" "gt")
+METHODS=("baseline" "complex" "gt_truncated" "gt_full" "allo_hitting_time" "allo_squared_diff" "allo_weighted_squared_diff")
 METHOD="${METHODS[$method_idx]}"
+
+# Graceful skip: allo methods require ALLO_MODEL_DIR
+if [[ "$METHOD" == allo_* ]] && [ -z "${ALLO_MODEL_DIR:-}" ]; then
+    echo "SKIP: method=$METHOD requires ALLO_MODEL_DIR (not set). Exiting cleanly."
+    exit 0
+fi
 
 echo "========================================"
 echo "Reward-shaping Q-learning (distributed)"
@@ -97,20 +110,35 @@ CMD=(
     --num_eval_episodes  "$NUM_EVAL_EPISODES"
     --output_dir         "$OUTPUT_DIR"
     --n_step_td          "$N_STEP_TD"
+    --potential_mode     "$POTENTIAL_MODE"
+    --potential_temp     "$POTENTIAL_TEMP"
+    --potential_delta    "$POTENTIAL_DELTA"
 )
 
-# Complex representation: load from trained model dir.
+# Complex: load from trained model dir.
 if [ "$METHOD" = "complex" ] && [ -n "${MODEL_DIR:-}" ]; then
     CMD+=(--model_dir "$MODEL_DIR")
 fi
 
-# GT condition: load GT eigenvectors from model dir if available, else compute
-# from the environment.  --method gt implies --use_gt inside the Python script.
-if [ "$METHOD" = "gt" ]; then
+# GT truncated: load gt_* eigenvectors + apply truncation.
+if [ "$METHOD" = "gt_truncated" ]; then
     CMD+=(--num_eigenvectors "$NUM_EIGENVECTORS")
     if [ -n "${MODEL_DIR:-}" ]; then
         CMD+=(--model_dir "$MODEL_DIR")
     fi
+fi
+
+# GT full: load full_* eigenvectors / precomputed file — no truncation.
+if [ "$METHOD" = "gt_full" ]; then
+    if [ -n "${MODEL_DIR:-}" ]; then
+        CMD+=(--model_dir "$MODEL_DIR")
+    fi
+fi
+
+# ALLO variants: all require --allo_model_dir.
+if [[ "$METHOD" == allo_* ]]; then
+    CMD+=(--allo_model_dir "$ALLO_MODEL_DIR")
+    CMD+=(--num_eigenvectors "$NUM_EIGENVECTORS")
 fi
 
 if [ "${MIN_GOAL_DISTANCE:-0}" -gt 0 ]; then
