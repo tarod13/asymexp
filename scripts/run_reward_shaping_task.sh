@@ -64,6 +64,7 @@ EVAL_SEED="${EVAL_SEED:-0}"
 NUM_EVAL_EPISODES="${NUM_EVAL_EPISODES:-30}"
 MIN_GOAL_DISTANCE="${MIN_GOAL_DISTANCE:-8}"
 START_STATE="${START_STATE:-1,1}"
+GOAL_STATE="${GOAL_STATE:-}"
 NUM_EIGENVECTORS="${NUM_EIGENVECTORS:-8}"
 N_STEP_TD="${N_STEP_TD:-1}"
 POTENTIAL_MODE="${POTENTIAL_MODE:-negative}"
@@ -147,6 +148,10 @@ fi
 
 if [ -n "${START_STATE:-}" ]; then
     CMD+=(--start_state "$START_STATE")
+fi
+
+if [ -n "${GOAL_STATE:-}" ]; then
+    CMD+=(--goal_state "$GOAL_STATE")
 fi
 
 "${CMD[@]}"
