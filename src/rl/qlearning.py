@@ -41,6 +41,8 @@ def build_potential(
       "inverse-power" : Φ(s) = 1 / ((h / τ)^p + δ)                 (p=0.5 recovers inverse-sqrt)
       "inverse-log"   : Φ(s) = 1 / (log1p(h / τ) + δ)              (log1p avoids −∞ at goal)
       "pos-exp"       : Φ(s) = b^h                                   (b < 1 decays to 0 far from goal)
+      "max-minus"     : Φ(s) = h_max − h                            (non-negative; max at goal)
+      "max-minus-log" : Φ(s) = log1p(h_max − h)                    (compressed; log1p(0)=0 at farthest)
 
     Parameters
     ----------
@@ -85,10 +87,17 @@ def build_potential(
         return (1.0 / (np.log1p(h / potential_temp) + potential_delta)).astype(np.float32)
     elif potential_mode == "pos-exp":
         return (potential_base ** h).astype(np.float32)
+    elif potential_mode == "max-minus":
+        h_max_val = 1.0 / (1.0 - gamma)
+        return (h_max_val - h).astype(np.float32)
+    elif potential_mode == "max-minus-log":
+        h_max_val = 1.0 / (1.0 - gamma)
+        return np.log1p(h_max_val - h).astype(np.float32)
     else:
         raise ValueError(
             f"Unknown potential_mode '{potential_mode}'. "
-            "Expected one of: 'negative', 'inverse', 'inverse-power', 'inverse-log', 'pos-exp'."
+            "Expected one of: 'negative', 'inverse', 'inverse-power', 'inverse-log', "
+            "'pos-exp', 'max-minus', 'max-minus-log'."
         )
 
 

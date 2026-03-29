@@ -155,11 +155,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--potential_mode", type=str, default="inverse-power",
-        choices=["negative", "inverse", "inverse-power", "inverse-log", "pos-exp"],
+        choices=["negative", "inverse", "inverse-power", "inverse-log", "pos-exp",
+                 "max-minus", "max-minus-log"],
         help="Transformation applied to normalised hitting times to produce Φ(s). "
              "'negative': Φ=−h, 'inverse': Φ=1/(h/τ+δ), "
              "'inverse-power': Φ=1/((h/τ)^p+δ) (default, p=--potential_power), "
-             "'inverse-log': Φ=1/(log1p(h/τ)+δ), 'pos-exp': Φ=b^h (b=--potential_base).",
+             "'inverse-log': Φ=1/(log1p(h/τ)+δ), 'pos-exp': Φ=b^h (b=--potential_base), "
+             "'max-minus': Φ=h_max−h, 'max-minus-log': Φ=log1p(h_max−h).",
     )
     parser.add_argument(
         "--potential_temp", type=float, default=1.0,
