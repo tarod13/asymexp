@@ -37,6 +37,11 @@ source ~/ENV/bin/activate
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 
+# Ensure the project root is on PYTHONPATH so `src` is importable regardless
+# of which directory Python resolves from the script path.
+REPO_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+
 echo "========================================"
 echo "Reward-shaping analysis"
 echo "  Output dir : ${OUTPUT_DIR:-<unset>}"

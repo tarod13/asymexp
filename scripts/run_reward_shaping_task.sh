@@ -48,6 +48,11 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 export XLA_FLAGS="--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=${SLURM_CPUS_PER_TASK:-4}"
 
+# Ensure the project root is on PYTHONPATH so `src` is importable regardless
+# of which directory Python resolves from the script path.
+REPO_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+
 # ── Defaults (overridden by exported env vars from run_reward_shaping_array.sh) ──
 ENV="${ENV:-GridRoom-4-Doors}"
 NUM_SEEDS="${NUM_SEEDS:-100}"
