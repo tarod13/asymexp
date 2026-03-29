@@ -59,6 +59,7 @@ EVAL_SEED=0
 NUM_EVAL_EPISODES=30
 MIN_GOAL_DISTANCE=8
 START_STATE="1,1"
+GOAL_STATE=""
 NUM_EIGENVECTORS=8
 N_STEP_TD=1
 POTENTIAL_MODE=inverse-sqrt
@@ -86,6 +87,7 @@ while [[ $# -gt 0 ]]; do
         --num_eval_episodes)  NUM_EVAL_EPISODES="$2";  shift 2 ;;
         --min_goal_distance)  MIN_GOAL_DISTANCE="$2";  shift 2 ;;
         --start_state)        START_STATE="$2";        shift 2 ;;
+        --goal_state)         GOAL_STATE="$2";         shift 2 ;;
         --num_eigenvectors)   NUM_EIGENVECTORS="$2";   shift 2 ;;
         --n_step_td)          N_STEP_TD="$2";          shift 2 ;;
         --potential_mode)     POTENTIAL_MODE="$2";     shift 2 ;;
@@ -105,6 +107,12 @@ if [ -z "$MODEL_DIR" ]; then
 fi
 if [ -z "$OUTPUT_DIR" ]; then
     echo "ERROR: --output_dir is required." >&2; exit 1
+fi
+
+# ── If a fixed goal is requested, a single seed suffices ─────────────────────
+if [ -n "$GOAL_STATE" ] && [ "$NUM_SEEDS" -gt 1 ]; then
+    echo "  NOTE: --goal_state provided; overriding --num_seeds from $NUM_SEEDS → 1."
+    NUM_SEEDS=1
 fi
 
 # ── Method count: 7 (with ALLO) or 4 (without) ───────────────────────────────
@@ -139,7 +147,7 @@ echo "========================================"
 export ENV MODEL_DIR OUTPUT_DIR
 export NUM_SEEDS NUM_METHODS TOTAL_STEPS MAX_STEPS
 export SHAPING_COEF GAMMA_RL LR EPSILON EVAL_INTERVAL EVAL_SEED NUM_EVAL_EPISODES
-export MIN_GOAL_DISTANCE START_STATE NUM_EIGENVECTORS N_STEP_TD POTENTIAL_MODE POTENTIAL_TEMP POTENTIAL_DELTA ALLO_MODEL_DIR
+export MIN_GOAL_DISTANCE START_STATE GOAL_STATE NUM_EIGENVECTORS N_STEP_TD POTENTIAL_MODE POTENTIAL_TEMP POTENTIAL_DELTA ALLO_MODEL_DIR
 
 mkdir -p logs
 mkdir -p "${OUTPUT_DIR}/partial"

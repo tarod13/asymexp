@@ -119,6 +119,11 @@ def main() -> None:
              "If provided, every training and evaluation episode begins from this state.",
     )
     parser.add_argument(
+        "--goal_state", type=str, default=None,
+        help="Fixed goal state as 'x,y' grid coordinates (e.g. '15,15'). "
+             "If provided, overrides random goal sampling and forces num_seeds=1.",
+    )
+    parser.add_argument(
         "--min_goal_distance", type=int, default=8,
         help="Minimum taxi (Manhattan) distance from the fixed starting state to any "
              "sampled goal (default: 8). Requires a valid --start_state.",
@@ -176,6 +181,17 @@ def main() -> None:
     # gt_* methods imply --use_gt
     if args.method in ("gt_truncated", "gt_full"):
         args.use_gt = True
+
+    # --goal_state forces a single deterministic trajectory; override counts.
+    if args.goal_state is not None:
+        if args.num_seeds != 1:
+            print(
+                f"  NOTE: --goal_state provided; overriding --num_seeds "
+                f"from {args.num_seeds} → 1.",
+                file=sys.stderr,
+            )
+            args.num_seeds = 1
+        args.seed_idx = 0
 
     if args.seed_idx >= args.num_seeds:
         parser.error(
@@ -319,8 +335,10 @@ def main() -> None:
     print(f"  Canonical states   : {num_canonical}")
 
     # ------------------------------------------------------------------
-    # 2b. Validate optional fixed starting state; build eligible goal set.
+    # 2b. Validate optional fixed starting/goal states; build eligible goal set.
     # ------------------------------------------------------------------
+    can_lookup = {int(s): i for i, s in enumerate(canonical_states)}
+
     fixed_start_canonical = None
     fixed_start_coords    = None
 
@@ -335,7 +353,6 @@ def main() -> None:
             )
         else:
             start_full = int(sy * env.width + sx)
-            can_lookup = {int(s): i for i, s in enumerate(canonical_states)}
             if start_full in can_lookup:
                 fixed_start_canonical = can_lookup[start_full]
                 fixed_start_coords    = (sx, sy)
@@ -345,6 +362,32 @@ def main() -> None:
                 print(
                     f"WARNING: starting state ({sx},{sy}) is blocked or out of bounds. "
                     "Falling back to random starts.",
+                    file=sys.stderr,
+                )
+
+    fixed_goal_canonical = None
+    fixed_goal_coords    = None
+
+    if args.goal_state is not None:
+        try:
+            gx, gy = [int(v.strip()) for v in args.goal_state.split(",")]
+        except Exception:
+            print(
+                f"WARNING: could not parse --goal_state '{args.goal_state}'. "
+                "Expected 'x,y' format. Falling back to random goal sampling.",
+                file=sys.stderr,
+            )
+        else:
+            goal_full = int(gy * env.width + gx)
+            if goal_full in can_lookup:
+                fixed_goal_canonical = can_lookup[goal_full]
+                fixed_goal_coords    = (gx, gy)
+                print(f"\n  Fixed goal state   : ({gx},{gy})"
+                      f"  [full={goal_full}, canonical={fixed_goal_canonical}]")
+            else:
+                print(
+                    f"WARNING: goal state ({gx},{gy}) is blocked or out of bounds. "
+                    "Falling back to random goal sampling.",
                     file=sys.stderr,
                 )
 
@@ -490,10 +533,13 @@ def main() -> None:
     # 4. Sample one fixed (goal, eval_start) per seed; narrow to requested seed
     # ------------------------------------------------------------------
     eval_rng = np.random.default_rng(args.eval_seed)
-    goal_per_seed = eval_rng.choice(
-        eligible_goals, size=args.num_seeds,
-        replace=args.num_seeds > len(eligible_goals),
-    ).astype(np.int32)
+    if fixed_goal_canonical is not None:
+        goal_per_seed = np.array([fixed_goal_canonical], dtype=np.int32)
+    else:
+        goal_per_seed = eval_rng.choice(
+            eligible_goals, size=args.num_seeds,
+            replace=args.num_seeds > len(eligible_goals),
+        ).astype(np.int32)
 
     if fixed_start_canonical is not None:
         eval_starts_per_seed = np.full(args.num_seeds, fixed_start_canonical, dtype=np.int32)
@@ -525,6 +571,13 @@ def main() -> None:
         gy,  gx  = divmod(gf,  env.width)
         print(f"    seed {i:2d}  eval_start ({stx},{sty}) → goal ({gx},{gy})"
               f"  [canonical {int(st)} → {int(g)}]")
+
+    if fixed_goal_canonical is not None:
+        stf = int(canonical_states[int(eval_starts_per_seed[0])])
+        sty, stx = divmod(stf, env.width)
+        gfx, gfy = fixed_goal_coords
+        print(f"\n  Evaluating single deterministic trajectory: "
+              f"Start ({stx},{sty}) -> Goal ({gfx},{gfy})")
 
     # Narrow to the requested seed
     si = args.seed_idx
