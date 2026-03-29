@@ -14,3 +14,5 @@ class ClfArgs(SharedArgs):
     normalize_eigenvalue_targets: bool = False  # Normalize Rayleigh quotient targets by state norms before EMA update
     use_sg_ip: bool = True  # Apply stop_gradient to smaller-indexed eigenvector in bi-orthogonality inner products to break symmetry
     use_clf_symmetry_weights: bool = True  # Scale f vectors by monotonically decreasing weights [1, 1/k] to break permutation symmetry across eigenvector pairs
+    use_batch_lambda: bool = False  # Use instantaneous batch targets directly in graph loss instead of stored EMA lambda params
+    estimate_ema_lambda: bool = True  # When use_batch_lambda=True, still compute and optimise the EMA lambda tracking loss (keeps EMA params trained as a diagnostic signal)

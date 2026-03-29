@@ -12,7 +12,9 @@
 #       [--max_steps N] [--shaping_coef F] [--gamma_rl F] [--lr F] \
 #       [--epsilon F] [--eval_interval N] [--eval_seed N] \
 #       [--num_eval_episodes N] [--min_goal_distance N] \
-#       [--start_state "R,C"] [--num_eigenvectors N] [--skip_qlearning]
+#       [--start_state "R,C"] [--num_eigenvectors N] \
+#       [--n_step_td N] [--potential_mode STR] [--potential_temp F] \
+#       [--potential_delta F] [--skip_qlearning]
 # =============================================================================
 
 #SBATCH --job-name=rs_per_env
@@ -29,18 +31,22 @@ set -euo pipefail
 ACCOUNT="rrg-machado"
 MANIFEST_DIR="./results/eval_manifest"
 NUM_SEEDS=100
-TOTAL_STEPS=12000000
-MAX_STEPS=200
+TOTAL_STEPS=1000000
+MAX_STEPS=250
 SHAPING_COEF=0.1
 GAMMA_RL=0.99
 LR=0.1
-EPSILON=0.5
-EVAL_INTERVAL=500000
+EPSILON=0.05
+EVAL_INTERVAL=1000
 EVAL_SEED=0
 NUM_EVAL_EPISODES=30
 MIN_GOAL_DISTANCE=8
 START_STATE="1,1"
 NUM_EIGENVECTORS=8
+N_STEP_TD=1
+POTENTIAL_MODE=inverse-sqrt
+POTENTIAL_TEMP=1.0
+POTENTIAL_DELTA=1.0
 SKIP_QLEARNING=false
 
 while [[ $# -gt 0 ]]; do
@@ -60,6 +66,10 @@ while [[ $# -gt 0 ]]; do
         --min_goal_distance)  MIN_GOAL_DISTANCE="$2";  shift 2 ;;
         --start_state)        START_STATE="$2";        shift 2 ;;
         --num_eigenvectors)   NUM_EIGENVECTORS="$2";   shift 2 ;;
+        --n_step_td)          N_STEP_TD="$2";          shift 2 ;;
+        --potential_mode)     POTENTIAL_MODE="$2";     shift 2 ;;
+        --potential_temp)     POTENTIAL_TEMP="$2";     shift 2 ;;
+        --potential_delta)    POTENTIAL_DELTA="$2";    shift 2 ;;
         --skip_qlearning)     SKIP_QLEARNING=true;     shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -88,6 +98,12 @@ for MANIFEST_FILE in "$MANIFEST_DIR"/*.txt; do
     echo "  Model dir  : $MODEL_DIR"
     echo "  Output dir : $OUTPUT_DIR"
 
+    # Hard environments require a larger minimum goal distance
+    ENV_MIN_GOAL_DIST="$MIN_GOAL_DISTANCE"
+    if [[ "$ENV" == *"-Hard"* ]]; then
+        ENV_MIN_GOAL_DIST=20
+    fi
+
     SUBMIT_ARGS=(
         --account           "$ACCOUNT"
         --env               "$ENV"
@@ -103,9 +119,13 @@ for MANIFEST_FILE in "$MANIFEST_DIR"/*.txt; do
         --eval_interval     "$EVAL_INTERVAL"
         --eval_seed         "$EVAL_SEED"
         --num_eval_episodes "$NUM_EVAL_EPISODES"
-        --min_goal_distance "$MIN_GOAL_DISTANCE"
+        --min_goal_distance "$ENV_MIN_GOAL_DIST"
         --start_state       "$START_STATE"
         --num_eigenvectors  "$NUM_EIGENVECTORS"
+        --n_step_td         "$N_STEP_TD"
+        --potential_mode    "$POTENTIAL_MODE"
+        --potential_temp    "$POTENTIAL_TEMP"
+        --potential_delta   "$POTENTIAL_DELTA"
     )
     [ "$SKIP_QLEARNING" = true ] && SUBMIT_ARGS+=(--skip_qlearning)
 

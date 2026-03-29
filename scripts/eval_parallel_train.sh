@@ -47,7 +47,7 @@ done
 
 mkdir -p "$MANIFEST_DIR"
 
-# ── Environment table (index 0-5) ──────────────────────────────────────────────
+# ── Environment table (index 0-7) ──────────────────────────────────────────────
 if [ -n "$ENV_LIST" ]; then
     read -ra ENV_FILES <<< "$ENV_LIST"
 else
@@ -55,6 +55,7 @@ else
         "GridRoom-4"  "GridRoom-4-Doors"
         "GridRoom-1"  "GridRoom-1-Portals"
         "GridMaze-OGBench"  "GridMaze-OGBench-Portals"
+        "GridMaze-OGBench-Hard"  "GridMaze-OGBench-Hard-Portals"
     )
 fi
 

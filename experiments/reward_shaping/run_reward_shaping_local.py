@@ -80,16 +80,16 @@ def main() -> None:
         help="β: weight for the potential-based shaping bonus (default: 0.1).",
     )
     parser.add_argument(
-        "--total_steps", type=int, default=1_500_000,
-        help="Total environment steps per seed (default: 1500000).",
+        "--total_steps", type=int, default=1_000_000,
+        help="Total environment steps per seed (default: 1000000).",
     )
     parser.add_argument(
-        "--max_steps", type=int, default=500,
-        help="Max steps per episode before declaring failure (default: 500).",
+        "--max_steps", type=int, default=250,
+        help="Max steps per episode before declaring failure (default: 250).",
     )
     parser.add_argument(
-        "--num_seeds", type=int, default=5,
-        help="Number of independent seeds to average over (default: 5).",
+        "--num_seeds", type=int, default=100,
+        help="Number of independent seeds to average over (default: 100).",
     )
     parser.add_argument(
         "--gamma_rl", type=float, default=0.99,
@@ -100,19 +100,19 @@ def main() -> None:
         help="Q-learning step size α (default: 0.1).",
     )
     parser.add_argument(
-        "--epsilon", type=float, default=0.1,
-        help="ε-greedy exploration rate (default: 0.1).",
+        "--epsilon", type=float, default=0.05,
+        help="ε-greedy exploration rate (default: 0.05).",
     )
     parser.add_argument(
-        "--eval_interval", type=int, default=100_000,
-        help="Run evaluation every this many environment steps (default: 100000).",
+        "--eval_interval", type=int, default=1_000,
+        help="Run evaluation every this many environment steps (default: 1000).",
     )
     parser.add_argument(
         "--eval_seed", type=int, default=0,
         help="Seed for sampling random goal states (default: 0).",
     )
     parser.add_argument(
-        "--use_gt", action="store_true",
+        "--use_gt", action="store_true", default=True,
         help="Include a ground-truth Laplacian condition.  GT eigenvectors are "
              "loaded from --model_dir if the gt_*.npy files are present there; "
              "otherwise they are computed analytically from the environment.",
@@ -137,7 +137,7 @@ def main() -> None:
         help="Where to write outputs (default: <model_dir>/reward_shaping/).",
     )
     parser.add_argument(
-        "--start_state", type=str, default=None,
+        "--start_state", type=str, default="1,1",
         help="Fixed starting state as 'x,y' grid coordinates (e.g. '3,2'). "
              "If provided, every training and evaluation episode begins from this state.",
     )
@@ -147,9 +147,9 @@ def main() -> None:
              "If provided, overrides random goal sampling and forces num_seeds=1.",
     )
     parser.add_argument(
-        "--min_goal_distance", type=int, default=0,
+        "--min_goal_distance", type=int, default=8,
         help="Minimum taxi (Manhattan) distance from the fixed starting state to any "
-             "sampled goal (default: 0). Requires a valid --start_state.",
+             "sampled goal (default: 8). Requires a valid --start_state.",
     )
     parser.add_argument(
         "--checkpoint_prefix", type=str, default="final_",
@@ -161,8 +161,8 @@ def main() -> None:
         help="Number of steps for n-step Q-learning returns (default: 1).",
     )
     parser.add_argument(
-        "--no_hitting_times_plot", action="store_true",
-        help="Skip generating hitting-times visualizations (default: generate them).",
+        "--no_hitting_times_plot", action="store_true", default=True,
+        help="Skip generating hitting-times visualizations (default: skip them).",
     )
     parser.add_argument(
         "--step_by_step_visual", action="store_true",
@@ -171,11 +171,11 @@ def main() -> None:
              "Q-learning, results saving, and learning-curve plots.",
     )
     parser.add_argument(
-        "--potential_mode", type=str, default="negative",
+        "--potential_mode", type=str, default="inverse-sqrt",
         choices=["negative", "inverse", "exp-negative", "inverse-sqrt"],
         help="Transformation applied to normalised hitting times to produce Φ(s). "
-             "'negative': Φ=−h (default), 'inverse': Φ=1/(h/τ+δ), "
-             "'exp-negative': Φ=exp(−h/τ), 'inverse-sqrt': Φ=1/(√(h/τ)+δ).",
+             "'negative': Φ=−h, 'inverse': Φ=1/(h/τ+δ), "
+             "'exp-negative': Φ=exp(−h/τ), 'inverse-sqrt': Φ=1/(√(h/τ)+δ) (default).",
     )
     parser.add_argument(
         "--potential_temp", type=float, default=1.0,
