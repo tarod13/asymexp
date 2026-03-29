@@ -67,9 +67,11 @@ START_STATE="${START_STATE:-1,1}"
 GOAL_STATE="${GOAL_STATE:-}"
 NUM_EIGENVECTORS="${NUM_EIGENVECTORS:-8}"
 N_STEP_TD="${N_STEP_TD:-1}"
-POTENTIAL_MODE="${POTENTIAL_MODE:-inverse-sqrt}"
+POTENTIAL_MODE="${POTENTIAL_MODE:-inverse-power}"
 POTENTIAL_TEMP="${POTENTIAL_TEMP:-1.0}"
 POTENTIAL_DELTA="${POTENTIAL_DELTA:-1.0}"
+POTENTIAL_POWER="${POTENTIAL_POWER:-0.5}"
+POTENTIAL_BASE="${POTENTIAL_BASE:-0.99}"
 
 # ── Decode (method, seed) from task ID ───────────────────────────────────────
 method_idx=$(( JOB_ID / NUM_SEEDS ))
@@ -114,6 +116,8 @@ CMD=(
     --potential_mode     "$POTENTIAL_MODE"
     --potential_temp     "$POTENTIAL_TEMP"
     --potential_delta    "$POTENTIAL_DELTA"
+    --potential_power    "$POTENTIAL_POWER"
+    --potential_base     "$POTENTIAL_BASE"
 )
 
 # Complex: load from trained model dir.

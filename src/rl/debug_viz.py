@@ -443,6 +443,8 @@ def run_step_by_step_debug(
     portal_ends=None,
     potential_mode: str = "negative",
     potential_temp: float = 1.0,
+    potential_power: float = 0.5,
+    potential_base: float = 0.99,
 ) -> None:
     """Run one training episode with step-by-step visualisation."""
     debug_dir.mkdir(parents=True, exist_ok=True)

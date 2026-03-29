@@ -154,21 +154,30 @@ def main() -> None:
         help="Number of steps for n-step Q-learning returns (default: 1).",
     )
     parser.add_argument(
-        "--potential_mode", type=str, default="inverse-sqrt",
-        choices=["negative", "inverse", "exp-negative", "inverse-sqrt"],
+        "--potential_mode", type=str, default="inverse-power",
+        choices=["negative", "inverse", "inverse-power", "inverse-log", "pos-exp"],
         help="Transformation applied to normalised hitting times to produce Φ(s). "
              "'negative': Φ=−h, 'inverse': Φ=1/(h/τ+δ), "
-             "'exp-negative': Φ=exp(−h/τ), 'inverse-sqrt': Φ=1/(√(h/τ)+δ) (default).",
+             "'inverse-power': Φ=1/((h/τ)^p+δ) (default, p=--potential_power), "
+             "'inverse-log': Φ=1/(log1p(h/τ)+δ), 'pos-exp': Φ=b^h (b=--potential_base).",
     )
     parser.add_argument(
         "--potential_temp", type=float, default=1.0,
-        help="Temperature τ used by 'inverse', 'exp-negative', and 'inverse-sqrt' "
+        help="Temperature τ used by 'inverse', 'inverse-power', and 'inverse-log' "
              "potential modes (default: 1.0).",
     )
     parser.add_argument(
         "--potential_delta", type=float, default=1.0,
-        help="Denominator offset δ for 'inverse' and 'inverse-sqrt' modes. "
+        help="Denominator offset δ for 'inverse', 'inverse-power', and 'inverse-log' modes. "
              "Caps the maximum potential at 1/δ; default 1.0 gives max=1.0.",
+    )
+    parser.add_argument(
+        "--potential_power", type=float, default=0.5,
+        help="Exponent p for 'inverse-power' mode (default: 0.5; 0.5 recovers inverse-sqrt).",
+    )
+    parser.add_argument(
+        "--potential_base", type=float, default=0.99,
+        help="Base b for 'pos-exp' mode: Φ(s)=b^h (default: 0.99; must be in (0,1) for decay).",
     )
     args = parser.parse_args()
 
@@ -618,6 +627,8 @@ def main() -> None:
             potential_mode=args.potential_mode,
             potential_temp=args.potential_temp,
             potential_delta=args.potential_delta,
+            potential_power=args.potential_power,
+            potential_base=args.potential_base,
             gamma=args.gamma_rl,
         )
         potential_per_seed = pot_matrix[:, goal_per_seed].T
