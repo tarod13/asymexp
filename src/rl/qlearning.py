@@ -23,6 +23,8 @@ def build_potential(
     potential_mode: str = "negative",
     potential_temp: float = 1.0,
     potential_delta: float = 1.0,
+    potential_power: float = 0.5,
+    potential_base: float = 0.99,
     gamma: float = 0.99,
 ) -> np.ndarray:
     """
@@ -34,17 +36,22 @@ def build_potential(
     If clamp_negatives=True, negative values are clamped to 0 before normalisation.
 
     potential_mode controls the transformation applied to normalised h:
-      "negative"     : Φ(s) = −h                            (default; closer = higher)
-      "inverse"      : Φ(s) = 1 / (h / τ + δ)              (max = 1/δ at goal)
-      "exp-negative" : Φ(s) = exp(−h / τ)
-      "inverse-sqrt" : Φ(s) = 1 / (√(h / τ) + δ)          (slower decay than inverse)
+      "negative"      : Φ(s) = −h                                   (default; closer = higher)
+      "inverse"       : Φ(s) = 1 / (h / τ + δ)                     (max = 1/δ at goal)
+      "inverse-power" : Φ(s) = 1 / ((h / τ)^p + δ)                 (p=0.5 recovers inverse-sqrt)
+      "inverse-log"   : Φ(s) = 1 / (log1p(h / τ) + δ)              (log1p avoids −∞ at goal)
+      "pos-exp"       : Φ(s) = b^h                                   (b < 1 decays to 0 far from goal)
+      "max-minus"     : Φ(s) = h_max − h                            (non-negative; max at goal)
+      "max-minus-log" : Φ(s) = log1p(h_max − h)                    (compressed; log1p(0)=0 at farthest)
 
     Parameters
     ----------
-    gamma           : RL discount factor γ; determines the effective horizon 1/(1−γ).
-    potential_temp  : Temperature τ used by inverse, exp-negative, and inverse-sqrt modes.
-    potential_delta : Offset δ in the denominator of inverse and inverse-sqrt modes.
-                      Defaults to 1.0, which caps the maximum potential at exactly 1.0.
+    gamma            : RL discount factor γ; determines the effective horizon 1/(1−γ).
+    potential_temp   : Temperature τ used by inverse, inverse-power, and inverse-log modes.
+    potential_delta  : Offset δ in the denominator of inverse, inverse-power, and inverse-log
+                       modes.  Defaults to 1.0, which caps the maximum potential at exactly 1.0.
+    potential_power  : Exponent p used by inverse-power mode (default: 0.5).
+    potential_base   : Base b used by pos-exp mode (default: 0.99; must be in (0, 1) for decay).
     """
     h = hitting_times[:, goal_idx].copy()
 
@@ -74,14 +81,23 @@ def build_potential(
         return -h.astype(np.float32)
     elif potential_mode == "inverse":
         return (1.0 / (h / potential_temp + potential_delta)).astype(np.float32)
-    elif potential_mode == "exp-negative":
-        return np.exp(-h / potential_temp).astype(np.float32)
-    elif potential_mode == "inverse-sqrt":
-        return (1.0 / (np.sqrt(h / potential_temp) + potential_delta)).astype(np.float32)
+    elif potential_mode == "inverse-power":
+        return (1.0 / ((h / potential_temp) ** potential_power + potential_delta)).astype(np.float32)
+    elif potential_mode == "inverse-log":
+        return (1.0 / (np.log1p(h / potential_temp) + potential_delta)).astype(np.float32)
+    elif potential_mode == "pos-exp":
+        return (potential_base ** h).astype(np.float32)
+    elif potential_mode == "max-minus":
+        h_max_val = 1.0 / (1.0 - gamma)
+        return (h_max_val - h).astype(np.float32)
+    elif potential_mode == "max-minus-log":
+        h_max_val = 1.0 / (1.0 - gamma)
+        return np.log1p(h_max_val - h).astype(np.float32)
     else:
         raise ValueError(
             f"Unknown potential_mode '{potential_mode}'. "
-            "Expected one of: 'negative', 'inverse', 'exp-negative', 'inverse-sqrt'."
+            "Expected one of: 'negative', 'inverse', 'inverse-power', 'inverse-log', "
+            "'pos-exp', 'max-minus', 'max-minus-log'."
         )
 
 
@@ -91,6 +107,8 @@ def build_all_potentials(
     potential_mode: str = "negative",
     potential_temp: float = 1.0,
     potential_delta: float = 1.0,
+    potential_power: float = 0.5,
+    potential_base: float = 0.99,
     gamma: float = 0.99,
 ) -> np.ndarray:
     """
@@ -109,6 +127,8 @@ def build_all_potentials(
             potential_mode=potential_mode,
             potential_temp=potential_temp,
             potential_delta=potential_delta,
+            potential_power=potential_power,
+            potential_base=potential_base,
             gamma=gamma,
         )
     return F

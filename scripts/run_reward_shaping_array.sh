@@ -62,9 +62,11 @@ START_STATE="1,1"
 GOAL_STATE=""
 NUM_EIGENVECTORS=8
 N_STEP_TD=1
-POTENTIAL_MODE=inverse-sqrt
+POTENTIAL_MODE=inverse-power
 POTENTIAL_TEMP=1.0
 POTENTIAL_DELTA=1.0
+POTENTIAL_POWER=0.5
+POTENTIAL_BASE=0.99
 SKIP_QLEARNING=false
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
@@ -93,6 +95,8 @@ while [[ $# -gt 0 ]]; do
         --potential_mode)     POTENTIAL_MODE="$2";     shift 2 ;;
         --potential_temp)     POTENTIAL_TEMP="$2";     shift 2 ;;
         --potential_delta)    POTENTIAL_DELTA="$2";    shift 2 ;;
+        --potential_power)    POTENTIAL_POWER="$2";    shift 2 ;;
+        --potential_base)     POTENTIAL_BASE="$2";     shift 2 ;;
         --skip_qlearning)     SKIP_QLEARNING=true;     shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -141,13 +145,15 @@ echo "  Num eigenvectors: $NUM_EIGENVECTORS"
 echo "  Potential mode : $POTENTIAL_MODE"
 echo "  Potential temp : $POTENTIAL_TEMP"
 echo "  Potential delta: $POTENTIAL_DELTA"
+echo "  Potential power: $POTENTIAL_POWER"
+echo "  Potential base : $POTENTIAL_BASE"
 echo "========================================"
 
 # ── Export env vars so child scripts inherit them ─────────────────────────────
 export ENV MODEL_DIR OUTPUT_DIR
 export NUM_SEEDS NUM_METHODS TOTAL_STEPS MAX_STEPS
 export SHAPING_COEF GAMMA_RL LR EPSILON EVAL_INTERVAL EVAL_SEED NUM_EVAL_EPISODES
-export MIN_GOAL_DISTANCE START_STATE GOAL_STATE NUM_EIGENVECTORS N_STEP_TD POTENTIAL_MODE POTENTIAL_TEMP POTENTIAL_DELTA ALLO_MODEL_DIR
+export MIN_GOAL_DISTANCE START_STATE GOAL_STATE NUM_EIGENVECTORS N_STEP_TD POTENTIAL_MODE POTENTIAL_TEMP POTENTIAL_DELTA POTENTIAL_POWER POTENTIAL_BASE ALLO_MODEL_DIR
 
 mkdir -p logs
 mkdir -p "${OUTPUT_DIR}/partial"
