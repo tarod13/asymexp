@@ -12,8 +12,8 @@ from typing import Dict
 from pathlib import Path
 from dataclasses import dataclass
 
-# Add parent directory to path for imports
-sys.path.append(str(Path(__file__).parent.parent))
+# Add project root to path for imports
+sys.path.append(str(Path(__file__).parent.parent.parent))
 
 import numpy as np
 import jax

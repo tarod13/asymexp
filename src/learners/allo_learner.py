@@ -19,8 +19,8 @@ with parameter γ.  This matches the 'kernel' eigenvalue_type used by
 shared_training.py for hitting-time computation.
 
 Usage:
-    from rep_algos.shared_training import learn_eigenvectors
-    from rep_algos import allo_learner
+    from src.learners.shared_training import learn_eigenvectors
+    from src.learners import allo_learner
     from src.config.ded_clf import Args
     import tyro
 

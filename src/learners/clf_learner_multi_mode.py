@@ -18,8 +18,8 @@ Supports 4 constraint enforcement methods (args.constraint_enforcement_method):
               to "barrier"); both updated externally after each gradient step
 
 Usage:
-    from rep_algos.shared_training import learn_eigenvectors
-    from rep_algos import clf_learner_multi_mode
+    from src.learners.shared_training import learn_eigenvectors
+    from src.learners import clf_learner_multi_mode
     from src.config.ded_clf import Args
 
     args = tyro.cli(Args)

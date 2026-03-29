@@ -10,8 +10,8 @@ import json
 import pickle
 from pathlib import Path
 
-# Add parent directory to path for imports
-sys.path.append(str(Path(__file__).parent.parent))
+# Add project root to path for imports
+sys.path.append(str(Path(__file__).parent.parent.parent))
 
 import numpy as np
 import jax

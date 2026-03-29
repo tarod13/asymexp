@@ -9,8 +9,8 @@ Additional Lyapunov function:
 - V_xy_corr_conj: <conj(y_j), x_k> should be 0 (conjugate orthogonality)
 
 Usage:
-    from rep_algos.shared_training import learn_eigenvectors
-    from rep_algos import clf_skip_conj_learner
+    from src.learners.shared_training import learn_eigenvectors
+    from src.learners import clf_skip_conj_learner
     from src.config.ded_clf import Args
 
     args = tyro.cli(Args)
@@ -433,8 +433,8 @@ def create_update_function(encoder, args):
 if __name__ == "__main__":
     import tyro
     from src.config.ded_clf import Args
-    from rep_algos.shared_training import learn_eigenvectors
-    import rep_algos.clf_skip_conj_learner as clf_skip_conj_learner
+    from src.learners.shared_training import learn_eigenvectors
+    import src.learners.clf_skip_conj_learner as clf_skip_conj_learner
 
     args = tyro.cli(Args)
     args.exp_name = "clf_skip_conj"

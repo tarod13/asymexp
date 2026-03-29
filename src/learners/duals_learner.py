@@ -10,8 +10,8 @@ Key differences from base CLF:
 - Conjugate eigenvalue relationship built in
 
 Usage:
-    from rep_algos.shared_training import learn_eigenvectors
-    from rep_algos import duals_learner
+    from src.learners.shared_training import learn_eigenvectors
+    from src.learners import duals_learner
     from src.config.ded_clf import Args
 
     args = tyro.cli(Args)
@@ -497,8 +497,8 @@ def create_update_function(encoder, args):
 if __name__ == "__main__":
     import tyro
     from src.config.ded_clf import Args
-    from rep_algos.shared_training import learn_eigenvectors
-    import rep_algos.duals_learner as duals_learner
+    from src.learners.shared_training import learn_eigenvectors
+    import src.learners.duals_learner as duals_learner
 
     args = tyro.cli(Args)
     args.exp_name = "duals"
