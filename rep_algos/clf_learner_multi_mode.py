@@ -759,12 +759,12 @@ def _compute_lambda_terms(
     params,
     eigenvalue_estimation_method, normalize_eigenvalue_targets,
     ip, sg,
+    use_batch_lambda=False, estimate_ema_lambda=True,
 ):
-    """Compute the EMA eigenvalue tracking loss and return the current EMA values.
+    """Compute the EMA eigenvalue tracking loss and return the lambda values for
+    use in the graph loss.
 
-    Handles all three estimation methods.  Targets are computed internally and
-    never leave this function — only the scalar loss and the four EMA lambda
-    values needed downstream are returned.
+    Handles all three estimation methods.
 
     Args:
         x_r, x_i:                  Current right-eigenvector features, shape (B, k)
@@ -780,10 +780,20 @@ def _compute_lambda_terms(
                                    (ignored for 'two_sided')
         ip:                        Weighted inner-product closure
         sg:                        Stop-gradient alias
+        use_batch_lambda:          If True, return sg(batch targets) as graph-loss
+                                   lambda values instead of the stored EMA params.
+        estimate_ema_lambda:       Only meaningful when use_batch_lambda=True.
+                                   If True, still compute and add the EMA tracking
+                                   loss so the stored params continue to be trained
+                                   (useful as a diagnostic signal).  If False,
+                                   lambda_loss is set to 0.0 and EMA params receive
+                                   no gradient update.
 
     Returns:
-        (lambda_loss, ema_lambda_x_r, ema_lambda_x_i, ema_lambda_y_r, ema_lambda_y_i)
-        For 'average' and 'two_sided' the four EMA values are equal (single shared
+        (lambda_loss, graph_lambda_x_r, graph_lambda_x_i, graph_lambda_y_r, graph_lambda_y_i)
+        The four graph_lambda_* values are the EMA params when use_batch_lambda=False,
+        or sg(batch targets) when use_batch_lambda=True.
+        For 'average' and 'two_sided' the four values are equal (single shared
         lambda); for 'separate' they differ.
     """
     if eigenvalue_estimation_method == 'two_sided':
@@ -799,11 +809,21 @@ def _compute_lambda_terms(
         target_r = (num_r * den_r + num_i * den_i) / den_mag_sq
         target_i = (num_i * den_r - num_r * den_i) / den_mag_sq
 
-        lambda_loss = (
-            ((sg(target_r) - ema_lambda_r) ** 2).sum()
-            + ((sg(target_i) - ema_lambda_i) ** 2).sum()
-        )
-        return lambda_loss, ema_lambda_r, ema_lambda_i, ema_lambda_r, ema_lambda_i
+        if use_batch_lambda:
+            lambda_loss = (
+                (
+                    ((sg(target_r) - ema_lambda_r) ** 2).sum()
+                    + ((sg(target_i) - ema_lambda_i) ** 2).sum()
+                ) if estimate_ema_lambda else 0.0
+            )
+            graph_r, graph_i = sg(target_r), sg(target_i)
+        else:
+            lambda_loss = (
+                ((sg(target_r) - ema_lambda_r) ** 2).sum()
+                + ((sg(target_i) - ema_lambda_i) ** 2).sum()
+            )
+            graph_r, graph_i = ema_lambda_r, ema_lambda_i
+        return lambda_loss, graph_r, graph_i, graph_r, graph_i
 
     elif eigenvalue_estimation_method == 'average':
         # Single shared EMA lambda — averaged Rayleigh quotient from x and y
@@ -824,11 +844,21 @@ def _compute_lambda_terms(
         target_r = 0.5 * (rq_x_r + rq_y_r)
         target_i = 0.5 * (rq_x_i + rq_y_i)
 
-        lambda_loss = (
-            ((sg(target_r) - ema_lambda_r) ** 2).sum()
-            + ((sg(target_i) - ema_lambda_i) ** 2).sum()
-        )
-        return lambda_loss, ema_lambda_r, ema_lambda_i, ema_lambda_r, ema_lambda_i
+        if use_batch_lambda:
+            lambda_loss = (
+                (
+                    ((sg(target_r) - ema_lambda_r) ** 2).sum()
+                    + ((sg(target_i) - ema_lambda_i) ** 2).sum()
+                ) if estimate_ema_lambda else 0.0
+            )
+            graph_r, graph_i = sg(target_r), sg(target_i)
+        else:
+            lambda_loss = (
+                ((sg(target_r) - ema_lambda_r) ** 2).sum()
+                + ((sg(target_i) - ema_lambda_i) ** 2).sum()
+            )
+            graph_r, graph_i = ema_lambda_r, ema_lambda_i
+        return lambda_loss, graph_r, graph_i, graph_r, graph_i
 
     else:  # 'separate'
         # Disentangled EMA lambdas for x (right) and y (left)
@@ -848,13 +878,27 @@ def _compute_lambda_terms(
             rq_x_r, rq_x_i = rq_x_r / norm_x_clip, rq_x_i / norm_x_clip
             rq_y_r, rq_y_i = rq_y_r / norm_y_clip, rq_y_i / norm_y_clip
 
-        lambda_loss = (
-            ((sg(rq_x_r) - ema_lambda_x_r) ** 2).sum()
-            + ((sg(rq_x_i) - ema_lambda_x_i) ** 2).sum()
-            + ((sg(rq_y_r) - ema_lambda_y_r) ** 2).sum()
-            + ((sg(rq_y_i) - ema_lambda_y_i) ** 2).sum()
-        )
-        return lambda_loss, ema_lambda_x_r, ema_lambda_x_i, ema_lambda_y_r, ema_lambda_y_i
+        if use_batch_lambda:
+            lambda_loss = (
+                (
+                    ((sg(rq_x_r) - ema_lambda_x_r) ** 2).sum()
+                    + ((sg(rq_x_i) - ema_lambda_x_i) ** 2).sum()
+                    + ((sg(rq_y_r) - ema_lambda_y_r) ** 2).sum()
+                    + ((sg(rq_y_i) - ema_lambda_y_i) ** 2).sum()
+                ) if estimate_ema_lambda else 0.0
+            )
+            graph_x_r, graph_x_i = sg(rq_x_r), sg(rq_x_i)
+            graph_y_r, graph_y_i = sg(rq_y_r), sg(rq_y_i)
+        else:
+            lambda_loss = (
+                ((sg(rq_x_r) - ema_lambda_x_r) ** 2).sum()
+                + ((sg(rq_x_i) - ema_lambda_x_i) ** 2).sum()
+                + ((sg(rq_y_r) - ema_lambda_y_r) ** 2).sum()
+                + ((sg(rq_y_i) - ema_lambda_y_i) ** 2).sum()
+            )
+            graph_x_r, graph_x_i = ema_lambda_x_r, ema_lambda_x_i
+            graph_y_r, graph_y_i = ema_lambda_y_r, ema_lambda_y_i
+        return lambda_loss, graph_x_r, graph_x_i, graph_y_r, graph_y_i
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -977,6 +1021,14 @@ def get_optimizer_masks(args):
     encoder_mask = {'encoder': True}
     other_mask = {'encoder': False}
 
+    # When use_batch_lambda=True and estimate_ema_lambda=False, lambda params
+    # receive no gradient (lambda_loss=0.0) and should be excluded from the
+    # optimizer entirely to prevent spurious Adam moment accumulation.
+    _lambda_in_optimizer = not (
+        getattr(args, 'use_batch_lambda', False)
+        and not getattr(args, 'estimate_ema_lambda', True)
+    )
+
     if args.eigenvalue_estimation_method == 'separate':
         encoder_mask.update({
             'lambda_x_real': False,
@@ -985,10 +1037,10 @@ def get_optimizer_masks(args):
             'lambda_y_imag': False,
         })
         other_mask.update({
-            'lambda_x_real': True,
-            'lambda_x_imag': True,
-            'lambda_y_real': True,
-            'lambda_y_imag': True,
+            'lambda_x_real': _lambda_in_optimizer,
+            'lambda_x_imag': _lambda_in_optimizer,
+            'lambda_y_real': _lambda_in_optimizer,
+            'lambda_y_imag': _lambda_in_optimizer,
         })
     else:
         encoder_mask.update({
@@ -996,8 +1048,8 @@ def get_optimizer_masks(args):
             'lambda_imag': False,
         })
         other_mask.update({
-            'lambda_real': True,
-            'lambda_imag': True,
+            'lambda_real': _lambda_in_optimizer,
+            'lambda_imag': _lambda_in_optimizer,
         })
 
     # EMA masks only for EMA constraint_mode
@@ -1081,6 +1133,10 @@ def create_update_function(encoder, args):
     B = getattr(args, 'num_wind_buckets', 20)  # number of wind buckets
     use_buckets = use_episodic  # alias for clarity below
 
+    # ── Batch-lambda flags (Python-level constants, resolved at trace time) ──
+    use_batch_lambda    = getattr(args, 'use_batch_lambda', False)
+    estimate_ema_lambda = getattr(args, 'estimate_ema_lambda', True)
+
     def sg(z):
         """Stop gradient utility function."""
         return jax.lax.stop_gradient(z)
@@ -1158,7 +1214,9 @@ def create_update_function(encoder, args):
             params,
             args.eigenvalue_estimation_method,
             args.normalize_eigenvalue_targets,
-            ip_fn, sg
+            ip_fn, sg,
+            use_batch_lambda=use_batch_lambda,
+            estimate_ema_lambda=estimate_ema_lambda,
         )
 
         # ----------------------------------------------------------------
@@ -1279,6 +1337,8 @@ def create_update_function(encoder, args):
             'graph_loss_x_imag':    graph_loss_x_imag.sum(),
             'graph_loss_y_real':    graph_loss_y_real.sum(),
             'graph_loss_y_imag':    graph_loss_y_imag.sum(),
+            # When use_batch_lambda=True these values are the instantaneous batch
+            # targets fed into the graph loss, not the stored EMA params.
             'ema_lambda_x_real':    ema_lambda_x_r.mean(),
             'ema_lambda_x_imag':    ema_lambda_x_i.mean(),
             'ema_lambda_y_real':    ema_lambda_y_r.mean(),
